@@ -5,8 +5,9 @@
 
 // Simulador de bicicleta BPR
 class BikeSimulator {
-private:
+public:
     NimBLEClient* pClient = nullptr;
+private:
     bool connected = false;
     String bikeId = "bike_sim_01";
     float batteryLevel = 3.8;
@@ -182,7 +183,7 @@ public:
 };
 
 BikeSimulator bike;
-enum TestMode { IDLE, BLE_TEST, BATTERY_TEST, MULTI_TEST };
+enum TestMode { IDLE, BLE_TEST, BATTERY_TEST, MULTI_TEST, SIGNAL_TEST };
 TestMode currentTest = IDLE;
 unsigned long testStart = 0;
 
@@ -196,6 +197,7 @@ void setup() {
     Serial.println("1 - Teste de Conexão BLE");
     Serial.println("2 - Teste de Bateria Baixa");
     Serial.println("3 - Teste Multi-bicicleta");
+    Serial.println("4 - Teste de Intensidade do Sinal");
     Serial.println("0 - Desconectar");
     
     bike.init("sim_bike_01");
@@ -206,6 +208,9 @@ void runActiveTest();
 void runBLETest(unsigned long elapsed);
 void runBatteryTest(unsigned long elapsed);
 void runMultiTest(unsigned long elapsed);
+void runSignalTest(unsigned long elapsed);
+int8_t getConnectionRSSI();
+void displaySignalStrength(int8_t rssi);
 
 void loop() {
     // Processa comandos seriais
@@ -240,6 +245,12 @@ void handleCommand(int cmd) {
             testStart = millis();
             break;
             
+        case 4:
+            Serial.println("\n📶 Iniciando teste de intensidade do sinal...");
+            currentTest = SIGNAL_TEST;
+            testStart = millis();
+            break;
+            
         case 0:
             Serial.println("\n🔴 Desconectando...");
             bike.disconnect();
@@ -262,6 +273,10 @@ void runActiveTest() {
             
         case MULTI_TEST:
             runMultiTest(elapsed);
+            break;
+            
+        case SIGNAL_TEST:
+            runSignalTest(elapsed);
             break;
             
         case IDLE:
@@ -316,4 +331,84 @@ void runMultiTest(unsigned long elapsed) {
     Serial.println("📝 Use múltiplos ESP32s com este firmware");
     Serial.println("   Cada um simulará uma bicicleta diferente");
     currentTest = IDLE;
+}
+
+void runSignalTest(unsigned long elapsed) {
+    static bool connected = false;
+    static unsigned long lastCheck = 0;
+    
+    if (elapsed < 5000 && !connected) {
+        if (bike.connectToCentral()) {
+            connected = true;
+            Serial.println("\n📶 Monitoramento de sinal iniciado");
+            Serial.println("   Afaste-se da central para testar alcance");
+            Serial.println("   RSSI | Qualidade | Status");
+            Serial.println("   -----|-----------|--------");
+        }
+    } else if (connected && (elapsed - lastCheck > 2000)) {
+        int8_t rssi = getConnectionRSSI();
+        displaySignalStrength(rssi);
+        lastCheck = elapsed;
+        
+        if (!bike.isConnected()) {
+            Serial.println("\n❌ Conexão perdida! Distância máxima atingida");
+            Serial.println("🔄 Tentando reconectar...");
+            if (bike.connectToCentral()) {
+                Serial.println("✅ Reconectado com sucesso!");
+            }
+        }
+        
+        if (elapsed > 60000) {
+            Serial.println("\n🏁 Teste de sinal concluído");
+            bike.disconnect();
+            currentTest = IDLE;
+            connected = false;
+        }
+    } else if (elapsed > 10000 && !connected) {
+        Serial.println("❌ Timeout - Central não encontrada");
+        currentTest = IDLE;
+    }
+}
+
+int8_t getConnectionRSSI() {
+    if (bike.pClient && bike.isConnected()) {
+        return bike.pClient->getRssi();
+    }
+    return -100; // Sinal perdido
+}
+
+void displaySignalStrength(int8_t rssi) {
+    String quality, status, bars;
+    
+    if (rssi >= -50) {
+        quality = "Excelente";
+        status = "Muito Perto";
+        bars = "████████";
+    } else if (rssi >= -60) {
+        quality = "Muito Bom";
+        status = "Perto";
+        bars = "███████░";
+    } else if (rssi >= -70) {
+        quality = "Bom";
+        status = "Distância OK";
+        bars = "██████░░";
+    } else if (rssi >= -80) {
+        quality = "Regular";
+        status = "Longe";
+        bars = "████░░░░";
+    } else if (rssi >= -90) {
+        quality = "Fraco";
+        status = "Muito Longe";
+        bars = "██░░░░░░";
+    } else {
+        quality = "Crítico";
+        status = "Limite";
+        bars = "█░░░░░░░";
+    }
+    
+    Serial.printf("   %3ddBm | %-9s | %s %s\n", rssi, quality.c_str(), status.c_str(), bars.c_str());
+    
+    if (rssi < -85) {
+        Serial.println("   ⚠️  Sinal fraco - risco de desconexão!");
+    }
 }

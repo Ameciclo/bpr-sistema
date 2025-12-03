@@ -63,4 +63,22 @@ struct BaseConfig {
     uint32_t last_sync;
 };
 
+// Bike conectada
+struct ConnectedBike {
+    char bikeId[8];
+    uint16_t connHandle;
+    bool configSent;
+    bool needsConfig;
+    uint32_t lastSeen;
+    float lastBattery;
+};
+
+// Cache de configurações
+struct ConfigCache {
+    GlobalConfig global;
+    BaseConfig base;
+    uint32_t lastUpdate;
+    bool valid;
+};
+
 #endif

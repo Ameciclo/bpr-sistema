@@ -6,6 +6,8 @@
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include "ble_simple.h"
+#include "config_manager.h"
+#include "bike_manager.h"
 
 // Estados da central
 enum CentralMode {
@@ -130,8 +132,8 @@ void setup() {
     Serial.begin(115200);
     delay(2000);
     
-    Serial.println("\n🚲 BPR Central - ROTINAS");
-    Serial.println("==========================");
+    Serial.println("\n🚲 BPR Central - HUB INTELIGENTE");
+    Serial.println("===================================");
     
     // LittleFS
     if (!LittleFS.begin()) {
@@ -139,6 +141,15 @@ void setup() {
         LittleFS.begin();
     }
     Serial.println("✅ LittleFS OK");
+    
+    // Inicializar módulos
+    initBikeManager();
+    
+    // Carregar cache de configurações
+    if (!loadConfigCache()) {
+        Serial.println("⚠️ Cache de config não encontrado - será baixado na próxima sync");
+        invalidateConfig();
+    }
     
     // BLE sempre ativo
     if (initBLESimple()) {
@@ -151,8 +162,29 @@ void setup() {
 }
 
 void handleBLEMode() {
-    // Verificar se tem dados para sincronizar
-    if (pendingData.length() > 0 || millis() - lastSync > 300000) { // 5min
+    // Processar configurações pendentes
+    processPendingConfigs();
+    
+    // Limpeza periódica de conexões antigas
+    static unsigned long lastCleanup = 0;
+    if (millis() - lastCleanup > 60000) { // 1 minuto
+        cleanupOldConnections();
+        lastCleanup = millis();
+    }
+    
+    // Verificar se precisa sincronizar
+    bool needsSync = false;
+    
+    // Dados pendentes
+    if (pendingData.length() > 0) needsSync = true;
+    
+    // Timeout de sync (5min)
+    if (millis() - lastSync > 300000) needsSync = true;
+    
+    // Config inválida (forçar download)
+    if (!isConfigValid()) needsSync = true;
+    
+    if (needsSync) {
         Serial.println("📶 Ativando WiFi para sync...");
         currentMode = MODE_WIFI_SYNC;
         modeStart = millis();
@@ -198,6 +230,16 @@ void handleWiFiMode() {
                 sendNTPToBike();
             } else {
                 Serial.println("⚠️ NTP falhou - usando millis()");
+            }
+        }
+        
+        // Baixar configurações se necessário
+        if (!isConfigValid()) {
+            Serial.println("📥 Baixando configurações...");
+            if (downloadConfigs()) {
+                // Marcar todas as bikes para receber nova config
+                Serial.println("📝 Marcando bikes para reconfigurar...");
+                // TODO: Implementar marcação de todas as bikes
             }
         }
         
@@ -306,11 +348,13 @@ void loop() {
         String modeStr = (currentMode == MODE_BLE_ONLY) ? "BLE" : 
                         (currentMode == MODE_WIFI_SYNC) ? "WiFi" : "Shutdown";
         
-        Serial.printf("[%lu] 📊 Heap: %d | Modo: %s | BLE: %s\n", 
+        Serial.printf("[%lu] 📊 Heap: %d | Modo: %s | BLE: %s | Bikes: %d | Config: %s\n", 
                      millis()/1000, 
                      ESP.getFreeHeap(),
                      modeStr.c_str(),
-                     isBLEReady() ? "OK" : "FAIL");
+                     isBLEReady() ? "OK" : "FAIL",
+                     getConnectedBikeCount(),
+                     isConfigValid() ? "OK" : "INVALID");
         lastLog = millis();
     }
     

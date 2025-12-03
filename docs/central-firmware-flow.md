@@ -1,152 +1,255 @@
 # Central Firmware - Fluxo Completo
 
-Este diagrama descreve o funcionamento completo do firmware da central BPR, incluindo os três modos de operação, sincronização NTP, correção de timestamps e upload para Firebase.
+Este documento descreve o funcionamento completo do firmware da central BPR como **Hub Inteligente**, incluindo gerenciamento de múltiplas bicicletas e sistema de configuração bidirecional.
+
+## 1. 🔄 Fluxo Principal dos Modos (Atualizado)
 
 ```mermaid
 graph TD
     A[🚀 SETUP] --> B[Inicializar LittleFS]
-    B --> C[Inicializar BLE Server]
-    C --> D[Modo BLE_ONLY]
+    B --> C[Inicializar Bike Manager]
+    C --> D[Carregar Cache Config]
+    D --> E{Config Válida?}
+    E -->|Não| F[Marcar para Download]
+    E -->|Sim| G[Inicializar BLE Server]
+    F --> G
+    G --> H[Modo BLE_ONLY]
     
-    %% Modo BLE Only
-    D --> E{Tem dados pendentes<br/>OU 5min sem sync?}
-    E -->|Não| F[Aguardar dados BLE]
-    F --> G[Receber dados das bikes]
-    G --> H[Adicionar a pendingData]
-    H --> E
-    E -->|Sim| I[Ativar modo WIFI_SYNC]
+    H --> I{"Precisa Sync?<br/>Dados ou 5min ou Config inválida"}
+    I -->|Não| J[Processar Configs Pendentes]
+    J --> K[Limpeza Conexões 1min]
+    K --> L[Aguardar dados BLE]
+    L --> M[Bike conecta/envia dados]
+    M --> N[Registrar/Atualizar bike]
+    N --> O[Enviar config se necessário]
+    O --> I
+    I -->|Sim| P[Ativar modo WIFI_SYNC]
     
-    %% Modo WiFi Sync
-    I --> J[Conectar WiFi]
-    J --> K{WiFi conectado?}
-    K -->|Não| L{Timeout 30s?}
-    L -->|Não| K
-    L -->|Sim| M[Modo SHUTDOWN]
+    P --> Q[Conectar WiFi]
+    Q --> R{WiFi conectado?}
+    R -->|Não| S{Timeout 30s?}
+    S -->|Não| R
+    S -->|Sim| T[Modo SHUTDOWN]
     
-    K -->|Sim| N{NTP sincronizado?}
-    N -->|Não| O[Sincronizar NTP]
-    O --> P{NTP OK?}
-    P -->|Sim| Q[Salvar epoch + millis base]
-    P -->|Não| R[Usar millis como fallback]
-    Q --> S[Preparar correção NTP para bikes]
-    R --> T{Tem dados pendentes?}
-    S --> T
-    N -->|Sim| T
+    T --> U[Desconectar WiFi]
+    U --> V[WiFi.mode OFF]
+    V --> H
     
-    %% Upload Firebase
-    T -->|Sim| U{Dados > 8KB?}
-    U -->|Não| V[Upload direto Firebase]
-    U -->|Sim| W[Dividir em batches]
-    W --> X[Upload batch por batch]
-    X --> Y{Mais batches?}
-    Y -->|Sim| X
-    Y -->|Não| Z[Limpar pendingData]
-    V --> AA{Upload OK?}
-    AA -->|Sim| Z
-    AA -->|Não| BB[Manter dados pendentes]
-    Z --> M
-    BB --> M
-    T -->|Não| M
-    
-    %% Modo Shutdown
-    M --> CC[Desconectar WiFi]
-    CC --> DD[WiFi.mode OFF]
-    DD --> D
-    
-    %% Correção de Timestamps
-    subgraph "🕰️ Correção Temporal"
-        E1[Bike envia timestamp]
-        E2{Timestamp > 2020?}
-        E1 --> E2
-        E2 -->|Sim| E3[Usar timestamp da bike]
-        E2 -->|Não| E4{Central tem NTP?}
-        E4 -->|Sim| E5[Corrigir com NTP central]
-        E4 -->|Não| E6[Usar timestamp original]
-        E5 --> E7[Timestamp corrigido]
-        E3 --> E7
-        E6 --> E7
-    end
-    
-    %% Estados e Variáveis
-    subgraph "📊 Estados Globais"
-        S1[currentMode: BLE_ONLY/WIFI_SYNC/SHUTDOWN]
-        S2[pendingData: String com JSONs]
-        S3[lastSync: último sync timestamp]
-        S4[ntpSynced: bool NTP válido]
-        S5[ntpEpoch: timestamp NTP]
-        S6[ntpMillisBase: millis de referência]
-    end
-    
-    %% Funções Principais
-    subgraph "🔧 Funções Principais"
-        F1[correctTimestamp - Corrige timestamps das bikes]
-        F2[sendNTPToBike - Envia correção via BLE]
-        F3[uploadToFirebase - Upload HTTPS direto]
-        F4[handleBLEMode - Gerencia modo BLE]
-        F5[handleWiFiMode - Gerencia sync WiFi]
-        F6[handleShutdownMode - Desliga WiFi]
-    end
-    
-    %% Loop Principal
-    subgraph "🔄 Loop Principal"
-        L1[Switch currentMode]
-        L2[Log periódico 15s]
-        L3[Delay 100ms]
-        L1 --> L2
-        L2 --> L3
-        L3 --> L1
-    end
-    
-    %% Integração Firebase
-    subgraph "🔥 Estrutura Firebase"
-        FB1[/central_data/timestamp]
-        FB2[/central_data/batch_N_timestamp]
-        FB3[JSON: timestamp, data array]
-        FB4[JSON: timestamp, batch, data array]
-    end
-    
-    %% Fluxo BLE
-    subgraph "📡 Comunicação BLE"
-        BLE1[Bike conecta via BLE]
-        BLE2[Envia dados WiFi scan]
-        BLE3[Central adiciona a pendingData]
-        BLE4[Central envia NTP sync]
-        BLE1 --> BLE2
-        BLE2 --> BLE3
-        BLE3 --> BLE4
-    end
-    
-    %% Configurações
-    subgraph "⚙️ Configurações"
-        CFG1[/config.json - WiFi credentials]
-        CFG2[/config.json - Firebase URL]
-        CFG3[NTP server: pool.ntp.org]
-        CFG4[Timezone: UTC-3]
-        CFG5[Sync interval: 5min]
-        CFG6[WiFi timeout: 30s]
-        CFG7[Batch size: 8KB]
-    end
-
-    %% Conexões dos subgrafos
-    G -.-> BLE2
-    H -.-> BLE3
-    S -.-> BLE4
-    V -.-> FB1
-    X -.-> FB2
-    J -.-> CFG1
-    V -.-> CFG2
-    O -.-> CFG3
-
-    %% Estilos
     classDef modeClass fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef processClass fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef configClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef errorClass fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    
+    class H,P,T modeClass
+    class B,C,G,Q processClass
+    class D,E,F,J,N,O configClass
+    class S errorClass
+```
+
+## 2. 🔄 Sincronização Completa (NTP + Config + Upload)
+
+```mermaid
+graph TD
+    A[WiFi Conectado] --> B{NTP sincronizado?}
+    B -->|Não| C[Sincronizar NTP]
+    C --> D{NTP OK?}
+    D -->|Sim| E[Salvar epoch + millis base]
+    D -->|Não| F[Usar millis como fallback]
+    E --> G[Preparar correção NTP para bikes]
+    F --> H{Tem dados pendentes?}
+    G --> H
+    B -->|Sim| H
+    
+    H -->|Sim| I{"Dados maior que 8KB?"}
+    I -->|Não| J[Upload direto Firebase]
+    I -->|Sim| K[Dividir em batches]
+    K --> L[Upload batch por batch]
+    L --> M{Mais batches?}
+    M -->|Sim| L
+    M -->|Não| N[Limpar pendingData]
+    J --> O{Upload OK?}
+    O -->|Sim| N
+    O -->|Não| P[Manter dados pendentes]
+    N --> Q[Modo SHUTDOWN]
+    P --> Q
+    H -->|Não| Q
+    
     classDef processClass fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef dataClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
     classDef errorClass fill:#ffebee,stroke:#b71c1c,stroke-width:2px
     
-    class D,I,M modeClass
-    class B,C,J,O,V,W,X processClass
-    class S1,S2,S3,S4,S5,S6,FB1,FB2,FB3,FB4 dataClass
-    class L,BB errorClass
+    class C,E,F,G,J,K,L processClass
+    class N dataClass
+    class P errorClass
+```
+
+## 3. 🚲 Gerenciamento de Múltiplas Bikes
+
+```mermaid
+sequenceDiagram
+    participant B1 as Bike 01
+    participant B2 as Bike 07
+    participant C as Central
+    participant F as Firebase
+    
+    Note over C: Central sempre em BLE
+    
+    B1->>C: Conecta BLE (handle: 1)
+    C->>C: Registra bike01 + marca config
+    B1->>C: Envia dados status
+    C->>C: Identifica bike01
+    C->>B1: Envia configuração
+    
+    B2->>C: Conecta BLE (handle: 2)
+    C->>C: Registra bike07 + marca config
+    B2->>C: Envia WiFi scan
+    C->>C: Identifica bike07
+    C->>B2: Envia configuração
+    
+    Note over C: Acumula dados de ambas
+    
+    C->>C: Trigger sync (5min/dados/config)
+    C->>F: Download configs
+    C->>F: Upload dados bike01+bike07
+    F-->>C: Confirmação
+    C->>C: Marca bikes para reconfig
+    
+    B1->>C: Próxima conexão
+    C->>B1: Nova configuração
+```
+
+## 4. ⚙️ Sistema de Configuração Bidirecional
+
+```mermaid
+graph TD
+    A[Central Liga] --> B[Carrega Cache Local]
+    B --> C{"Cache Válido?<br/>(menor que 1h)"}
+    C -->|Sim| D[Usa Config Cached]
+    C -->|Não| E[Marca Download Necessário]
+    
+    E --> F[Próxima Sync WiFi]
+    F --> G[Download /config + /bases/ameciclo]
+    G --> H{Download OK?}
+    H -->|Sim| I[Atualiza Cache]
+    H -->|Não| J[Usa Padrões]
+    I --> K[Marca Todas Bikes Reconfig]
+    J --> K
+    
+    D --> L[Bike Conecta]
+    K --> L
+    L --> M{Bike Precisa Config?}
+    M -->|Sim| N[Envia BPRConfigPacket]
+    M -->|Não| O[Só Recebe Dados]
+    N --> P[Marca Config Enviada]
+    P --> O
+    
+    classDef cacheClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef downloadClass fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef configClass fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    
+    class B,C,D,I cacheClass
+    class F,G,H downloadClass
+    class L,M,N,P configClass
+```
+
+## 5. 🕰️ Correção de Timestamps
+
+```mermaid
+graph TD
+    A[Bike envia timestamp] --> B{Timestamp > 2020?}
+    B -->|Sim| C[Usar timestamp da bike]
+    B -->|Não| D{Central tem NTP?}
+    D -->|Sim| E[Corrigir com NTP central]
+    D -->|Não| F[Usar timestamp original]
+    E --> G[Timestamp corrigido]
+    C --> G
+    F --> G
+    
+    classDef validClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef correctionClass fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef fallbackClass fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    
+    class C,G validClass
+    class E correctionClass
+    class F fallbackClass
+```
+
+## 6. 📊 Estados e Configurações (Atualizados)
+
+### Estados Globais
+```cpp
+// Modos de operação
+currentMode: BLE_ONLY | WIFI_SYNC | SHUTDOWN
+
+// Dados e sincronização
+pendingData: String com JSONs acumulados
+lastSync: timestamp do último sync
+
+// NTP e correção temporal
+ntpSynced: bool se NTP está válido
+ntpEpoch: timestamp NTP de referência
+ntpMillisBase: millis() de referência
+
+// Gerenciamento de bikes
+std::vector<ConnectedBike> connectedBikes
+ConfigCache configCache (global + base)
+```
+
+### Estruturas de Dados
+```cpp
+struct ConnectedBike {
+    char bikeId[8];
+    uint16_t connHandle;
+    bool configSent;
+    bool needsConfig;
+    uint32_t lastSeen;
+    float lastBattery;
+};
+
+struct ConfigCache {
+    GlobalConfig global;
+    BaseConfig base;
+    uint32_t lastUpdate;
+    bool valid; // Válido por 1h
+};
+```
+
+### Configurações Firebase
+```json
+// GET /config.json
+{
+  "version": 3,
+  "wifi_scan_interval_sec": 25,
+  "wifi_scan_interval_low_batt_sec": 60,
+  "deep_sleep_after_sec": 300,
+  "ble_ping_interval_sec": 5,
+  "min_battery_voltage": 3.45,
+  "update_timestamp": 1764782576
+}
+
+// GET /bases/ameciclo.json
+{
+  "name": "Ameciclo",
+  "max_bikes": 10,
+  "wifi_ssid": "BPR_Base",
+  "wifi_password": "bpr123456",
+  "location": {"lat": -8.062, "lng": -34.881},
+  "last_sync": 1764782576
+}
+```
+
+### Estrutura Firebase Upload
+```json
+// PUT /central_data/{timestamp}.json
+{
+  "timestamp": 1764782576,
+  "data": [
+    {"type": "bike", "data": {...}},
+    {"type": "wifi", "data": {...}},
+    {"type": "alert", "data": {...}},
+    {"type": "ntp_sync", "epoch": 1764782576, "millis": 123456}
+  ]
+}
 ```
 
 ## 📋 Resumo do Funcionamento

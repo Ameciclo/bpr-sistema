@@ -1,4 +1,6 @@
 #include "ble_simple.h"
+#include "bike_manager.h"
+#include "config_manager.h"
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -12,7 +14,6 @@ extern unsigned long modeStart;
 
 static bool bleReady = false;
 static NimBLEServer* pServer = nullptr;
-static int connectedClients = 0;
 static String deviceName = "BPR Base Station";
 static String serviceUUID = "BAAD";
 static String bikeIdUUID = "F00D";
@@ -49,14 +50,17 @@ bool loadBLEConfig() {
 }
 
 class ServerCallbacks: public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer* pServer) {
-        connectedClients++;
-        Serial.printf("🔵 ✅ BIKE CONECTADA! Total: %d\n", connectedClients);
+    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
+        uint16_t connHandle = desc->conn_handle;
+        Serial.printf("🔵 Nova conexão BLE (handle: %d)\n", connHandle);
+        
+        // Bike será identificada quando enviar dados
+        NimBLEDevice::startAdvertising();
     }
     
-    void onDisconnect(NimBLEServer* pServer) {
-        connectedClients--;
-        Serial.printf("🔴 ❌ BIKE DESCONECTADA! Total: %d\n", connectedClients);
+    void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
+        uint16_t connHandle = desc->conn_handle;
+        removeConnectedBike(connHandle);
         NimBLEDevice::startAdvertising();
     }
 };
@@ -81,11 +85,18 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
         // Verificar tipo de dados
         if (doc.containsKey("uid")) {
             // Dados da bicicleta
+            String bikeId = doc["uid"].as<String>();
             Serial.println("😲 === DADOS DA BICICLETA ===");
-            Serial.printf("🆔 ID: %s\n", doc["uid"].as<String>().c_str());
+            Serial.printf("🆔 ID: %s\n", bikeId.c_str());
             Serial.printf("🏠 Base: %s\n", doc["base_id"].as<String>().c_str());
             Serial.printf("🔋 Bateria: %.2fV\n", doc["battery_voltage"].as<float>());
             Serial.printf("🟢 Status: %s\n", doc["status"].as<String>().c_str());
+            
+            // Registrar/atualizar bike conectada
+            // TODO: Obter connHandle da conexão atual
+            uint16_t connHandle = 1; // Placeholder - precisa implementar corretamente
+            addConnectedBike(bikeId, connHandle);
+            updateBikeLastSeen(bikeId);
             
             if (doc.containsKey("last_position")) {
                 Serial.printf("📍 Posição: %.6f, %.6f (%s)\n", 
@@ -118,17 +129,31 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
             }
             Serial.println("💾 Dados da bike em cache");
             
-            // Verificar bateria baixa
+            // Verificar bateria baixa e atualizar dados da bike
             float battery = doc["battery_voltage"].as<float>();
+            ConnectedBike* bike = findBikeById(bikeId);
+            if (bike) {
+                bike->lastBattery = battery;
+                
+                // Enviar config se necessário
+                if (bike->needsConfig && !bike->configSent) {
+                    sendConfigToBike(bikeId);
+                }
+            }
+            
             if (battery < 3.45) {
                 Serial.println("⚠️ 🔴 ALERTA: BATERIA BAIXA!");
             }
             
         } else if (doc.containsKey("networks")) {
             // Dados de scan WiFi
+            String bikeId = doc["bike_id"].as<String>();
             Serial.println("📶 === SCAN WIFI ===");
-            Serial.printf("😲 Bike: %s\n", doc["bike_id"].as<String>().c_str());
+            Serial.printf("😲 Bike: %s\n", bikeId.c_str());
             Serial.printf("⏰ Timestamp: %lu\n", doc["timestamp"].as<unsigned long>());
+            
+            // Atualizar última atividade da bike
+            updateBikeLastSeen(bikeId);
             
             JsonArray networks = doc["networks"];
             Serial.printf("📶 Redes encontradas: %d\n", networks.size());
@@ -165,10 +190,18 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
             
         } else if (doc.containsKey("type") && doc["type"] == "battery_alert") {
             // Alerta de bateria
+            String bikeId = doc["bike_id"].as<String>();
             Serial.println("⚠️ === ALERTA DE BATERIA ===");
-            Serial.printf("😲 Bike: %s\n", doc["bike_id"].as<String>().c_str());
+            Serial.printf("😲 Bike: %s\n", bikeId.c_str());
             Serial.printf("🔋 Voltagem: %.2fV\n", doc["battery_voltage"].as<float>());
             Serial.printf("🔴 Crítico: %s\n", doc["critical"].as<bool>() ? "SIM" : "NÃO");
+            
+            // Atualizar dados da bike
+            updateBikeLastSeen(bikeId);
+            ConnectedBike* bike = findBikeById(bikeId);
+            if (bike) {
+                bike->lastBattery = doc["battery_voltage"].as<float>();
+            }
             
             // Adicionar alerta aos dados pendentes
             extern String pendingData;
@@ -299,7 +332,7 @@ bool startBLEServer() {
 }
 
 int getConnectedClients() {
-    return connectedClients;
+    return getConnectedBikeCount();
 }
 
 bool isBLEReady() {
