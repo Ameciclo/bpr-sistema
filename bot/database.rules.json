@@ -1,0 +1,15 @@
+{
+  "rules": {
+    "bikes": {
+      "$bikeId": {
+        ".read": true,
+        ".write": true,
+        "sessions": {
+          "$sessionId": {
+            ".validate": "newData.hasChildren(['start', 'mode'])"
+          }
+        }
+      }
+    }
+  }
+}

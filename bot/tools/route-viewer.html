@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Visualizador de Rotas - Ordem dos Pontos</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #map { height: 100vh; }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            z-index: 1000;
+            max-width: 300px;
+        }
+        .session-item {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #007cba;
+            background: #f0f8ff;
+        }
+        .point-marker {
+            background: #007cba;
+            color: white;
+            border: 2px solid white;
+            border-radius: 50%;
+            width: 25px;
+            height: 25px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 12px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+        .start-marker {
+            background: #28a745;
+        }
+        .end-marker {
+            background: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel">
+        <h3>🚴 Rotas da Bike</h3>
+        <div id="session-list"></div>
+        <p><strong>🟢 Verde:</strong> Início<br>
+           <strong>🔵 Azul:</strong> Pontos (ordem)<br>
+           <strong>🔴 Vermelho:</strong> Fim</p>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Inicializar mapa
+        const map = L.map('map').setView([-8.0323, -34.9089], 13);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Carregar GeoJSON
+        fetch('./testefora-routes.geojson')
+            .then(response => response.json())
+            .then(data => {
+                const sessionList = document.getElementById('session-list');
+                const colors = ['#007cba', '#28a745', '#dc3545', '#ffc107', '#6f42c1', '#fd7e14'];
+                
+                data.features.forEach((feature, sessionIndex) => {
+                    const coords = feature.geometry.coordinates;
+                    const props = feature.properties;
+                    const color = colors[sessionIndex % colors.length];
+                    
+                    // Adicionar linha da rota
+                    const polyline = L.polyline(coords.map(c => [c[1], c[0]]), {
+                        color: color,
+                        weight: 3,
+                        opacity: 0.7
+                    }).addTo(map);
+                    
+                    // Adicionar marcadores numerados
+                    coords.forEach((coord, pointIndex) => {
+                        const lat = coord[1];
+                        const lng = coord[0];
+                        
+                        let markerClass = 'point-marker';
+                        let number = pointIndex + 1;
+                        
+                        if (pointIndex === 0) {
+                            markerClass += ' start-marker';
+                            number = 'S';
+                        } else if (pointIndex === coords.length - 1) {
+                            markerClass += ' end-marker';
+                            number = 'E';
+                        }
+                        
+                        const marker = L.marker([lat, lng], {
+                            icon: L.divIcon({
+                                className: markerClass,
+                                html: number,
+                                iconSize: [25, 25],
+                                iconAnchor: [12, 12]
+                            })
+                        }).addTo(map);
+                        
+                        marker.bindPopup(`
+                            <b>Sessão:</b> ${props.sessionId}<br>
+                            <b>Ponto:</b> ${pointIndex + 1}/${coords.length}<br>
+                            <b>Coordenadas:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}
+                        `);
+                    });
+                    
+                    // Adicionar à lista
+                    const sessionDiv = document.createElement('div');
+                    sessionDiv.className = 'session-item';
+                    sessionDiv.style.borderLeftColor = color;
+                    sessionDiv.innerHTML = `
+                        <strong>${props.sessionId}</strong><br>
+                        📍 ${props.points} pontos | 📏 ${props.totalDistance}km<br>
+                        🕐 ${new Date(props.startTime).toLocaleString('pt-BR')}
+                    `;
+                    sessionDiv.onclick = () => map.fitBounds(polyline.getBounds());
+                    sessionList.appendChild(sessionDiv);
+                });
+                
+                // Ajustar zoom para mostrar todas as rotas
+                const group = new L.featureGroup();
+                data.features.forEach(feature => {
+                    const coords = feature.geometry.coordinates;
+                    coords.forEach(coord => {
+                        L.marker([coord[1], coord[0]]).addTo(group);
+                    });
+                });
+                map.fitBounds(group.getBounds().pad(0.1));
+            })
+            .catch(error => {
+                console.error('Erro ao carregar GeoJSON:', error);
+                document.getElementById('session-list').innerHTML = 
+                    '<p style="color: red;">❌ Erro ao carregar dados</p>';
+            });
+    </script>
+</body>
+</html>

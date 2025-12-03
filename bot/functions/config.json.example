@@ -1,0 +1,11 @@
+{
+  "telegram": {
+    "bot_token": "your_telegram_bot_token_here"
+  },
+  "admin": {
+    "chat_id": "your_admin_chat_id_here"
+  },
+  "google": {
+    "api_key": "your_google_api_key_here"
+  }
+}
