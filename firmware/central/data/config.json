@@ -1,0 +1,19 @@
+{
+  "wifi": {
+    "ssid": "Ameciclo",
+    "password": "carrocraciatemcura"
+  },
+  "firebase": {
+    "api_key": "AIzaSyBOf0iB1PE3byamxPaPnxRdjZHT-Wx5mKs",
+    "database_url": "botaprarodar-routes-default-rtdb.firebaseio.com"
+  },
+  "central": {
+    "id": "ameciclo",
+    "name": "Ameciclo",
+    "max_bikes": 10,
+    "location": {
+      "lat": -8.062,
+      "lng": -34.881
+    }
+  }
+}

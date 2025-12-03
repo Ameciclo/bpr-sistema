@@ -2,6 +2,7 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
+#include "firebase_client.h"
 
 static bool bleReady = false;
 static NimBLEServer* pServer = nullptr;
@@ -87,6 +88,17 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
                              doc["last_position"]["source"].as<String>().c_str());
             }
             
+            // Upload para Firebase
+            if (isFirebaseReady()) {
+                if (uploadBikeData(value.c_str())) {
+                    Serial.println("🔥 ✅ Dados enviados para Firebase!");
+                } else {
+                    Serial.println("🔥 ❌ Falha no upload Firebase");
+                }
+            } else {
+                Serial.println("🔥 ⚠️ Firebase offline - dados em cache");
+            }
+            
             // Verificar bateria baixa
             float battery = doc["battery_voltage"].as<float>();
             if (battery < 3.45) {
@@ -109,12 +121,34 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
                              network["rssi"].as<int>());
             }
             
+            // Upload para Firebase
+            if (isFirebaseReady()) {
+                if (uploadWifiScan(value.c_str())) {
+                    Serial.println("🔥 ✅ WiFi scan enviado para Firebase!");
+                } else {
+                    Serial.println("🔥 ❌ Falha no upload WiFi scan");
+                }
+            } else {
+                Serial.println("🔥 ⚠️ Firebase offline - scan em cache");
+            }
+            
         } else if (doc.containsKey("type") && doc["type"] == "battery_alert") {
             // Alerta de bateria
             Serial.println("⚠️ === ALERTA DE BATERIA ===");
             Serial.printf("😲 Bike: %s\n", doc["bike_id"].as<String>().c_str());
             Serial.printf("🔋 Voltagem: %.2fV\n", doc["battery_voltage"].as<float>());
             Serial.printf("🔴 Crítico: %s\n", doc["critical"].as<bool>() ? "SIM" : "NÃO");
+            
+            // Upload alerta para Firebase
+            if (isFirebaseReady()) {
+                if (uploadBatteryAlert(value.c_str())) {
+                    Serial.println("🔥 ✅ Alerta enviado para Firebase!");
+                } else {
+                    Serial.println("🔥 ❌ Falha no upload alerta");
+                }
+            } else {
+                Serial.println("🔥 ⚠️ Firebase offline - alerta em cache");
+            }
             
             if (doc["critical"].as<bool>()) {
                 Serial.println("😨 🔴 BATERIA CRÍTICA - AÇÃO NECESSÁRIA!");

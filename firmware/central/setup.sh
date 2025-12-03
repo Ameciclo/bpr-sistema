@@ -3,8 +3,11 @@
 echo "🚲 BPR Central Base Setup"
 echo "========================="
 
-# Check if firebase_config.json already exists
-if [ -f "data/firebase_config.json" ]; then
+# Create data directory if it doesn't exist
+mkdir -p data
+
+# Check if config.json already exists
+if [ -f "data/config.json" ]; then
     echo "⚠️  Configuração já existe!"
     read -p "Deseja sobrescrever? (y/N): " overwrite
     if [[ ! $overwrite =~ ^[Yy]$ ]]; then
@@ -24,27 +27,39 @@ echo
 
 echo
 echo "🔥 Configuração Firebase:"
-read -p "Firebase Host (ex: projeto.firebaseio.com): " firebase_host
-read -s -p "Firebase Auth Token: " firebase_auth
+read -p "Firebase API Key: " firebase_api_key
+read -p "Database URL (ex: https://projeto-default-rtdb.firebaseio.com/): " database_url
 echo
 
 # Create config file
-cat > data/firebase_config.json << EOF
+cat > data/config.json << EOF
 {
-  "firebase_host": "$firebase_host",
-  "firebase_auth": "$firebase_auth",
-  "base_id": "$base_id",
-  "base_name": "$base_name",
-  "wifi_ssid": "$wifi_ssid",
-  "wifi_password": "$wifi_password"
+  "wifi": {
+    "ssid": "$wifi_ssid",
+    "password": "$wifi_password"
+  },
+  "firebase": {
+    "api_key": "$firebase_api_key",
+    "database_url": "$database_url"
+  },
+  "central": {
+    "id": "$base_id",
+    "name": "$base_name",
+    "max_bikes": 10,
+    "location": {
+      "lat": -8.062,
+      "lng": -34.881
+    }
+  }
 }
 EOF
 
 echo
-echo "✅ Configuração criada em data/firebase_config.json"
+echo "✅ Configuração criada em data/config.json"
 echo
 echo "🔧 Próximos passos:"
-echo "1. pio run --target upload"
-echo "2. pio device monitor"
+echo "1. pio run --target uploadfs  # Upload config"
+echo "2. pio run --target upload     # Upload firmware"
+echo "3. pio device monitor          # Monitor serial"
 echo
 echo "🚲 Base $base_id configurada com sucesso!"
