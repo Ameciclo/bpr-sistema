@@ -1,0 +1,14 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Configuration files with real credentials
+data/firebase_config.json
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+
+# Logs
+*.log

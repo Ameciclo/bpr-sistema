@@ -1,0 +1,14 @@
+{
+  "device_name": "BPR Base Station",
+  "service_uuid": "1234",
+  "characteristics": {
+    "bike_id": {
+      "uuid": "5678",
+      "properties": ["read", "write"]
+    },
+    "battery": {
+      "uuid": "9ABC", 
+      "properties": ["read", "write", "notify"]
+    }
+  }
+}
