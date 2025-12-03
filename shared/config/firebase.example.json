@@ -1,0 +1,21 @@
+{
+  "firebase": {
+    "url": "https://seu-projeto-default-rtdb.firebaseio.com",
+    "apiKey": "AIzaSyA...SuaChaveAqui",
+    "authDomain": "seu-projeto.firebaseapp.com",
+    "projectId": "seu-projeto",
+    "storageBucket": "seu-projeto.appspot.com",
+    "messagingSenderId": "123456789",
+    "appId": "1:123456789:web:abcdef123456"
+  },
+  "telegram": {
+    "botToken": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+    "chatId": "-1001234567890"
+  },
+  "system": {
+    "defaultScanTimeActive": 5000,
+    "defaultScanTimeInactive": 30000,
+    "batteryLowThreshold": 20,
+    "batteryAlertThreshold": 10
+  }
+}

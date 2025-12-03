@@ -1,0 +1,26 @@
+ESTRATÉGIA NTP INTELIGENTE
+==========================
+
+CENÁRIOS:
+1. Boot inicial → Tenta NTP
+2. Falha NTP → Usa horário salvo + millis()
+3. Conecta base → Tenta NTP (se >6h desde último)
+4. Sucesso NTP → Salva novo horário
+
+ARQUIVO /ntp_sync.txt:
+{
+  "lastSync": 1760367650,
+  "bootTime": 45000,
+  "syncSuccess": true
+}
+
+LÓGICA:
+- Se NTP falhar: currentRealTime = lastSync + (millis() - bootTime)
+- Se >6h sem NTP: força nova sincronização
+- Timestamps sempre crescentes (nunca volta no tempo)
+
+VANTAGENS:
+✅ Horário aproximado mesmo sem internet
+✅ Não spam de tentativas NTP
+✅ Timestamps consistentes entre reboots
+✅ Sincroniza periodicamente para correção

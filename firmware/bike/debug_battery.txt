@@ -1,0 +1,24 @@
+CHECKLIST BATERIA ESP8266:
+
+1. HARDWARE:
+   □ Tensão bateria > 3.0V
+   □ Regulador 3.3V funcionando
+   □ Capacitores de desacoplamento (100nF + 10uF)
+   □ Conexões soldadas firmes
+
+2. SOFTWARE:
+   □ Brownout detector configurado
+   □ Frequência CPU reduzida (80MHz)
+   □ WiFi sleep mode ativo
+   □ Delays maiores entre scans
+
+3. TESTE:
+   □ Funciona com USB desconectado?
+   □ LED pisca normalmente?
+   □ Serial responde no menu?
+   □ Quanto tempo funciona na bateria?
+
+4. MEDIÇÕES:
+   □ Tensão em VCC do ESP
+   □ Corrente durante WiFi scan
+   □ Corrente em standby

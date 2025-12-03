@@ -1,0 +1,28 @@
+VARIÁVEIS QUE FAZEM SENTIDO PERSISTIR
+=====================================
+
+✅ ALTA PRIORIDADE (Implementar):
+- lastSessionUpload: Evita reenvio de dados após reboot ✓ JÁ IMPLEMENTADO
+- lastStatusUpload: Evita spam de status, mas pode aguardar 5min após reboot
+- timeSync + currentRealTime: Evita resincronizar NTP desnecessariamente
+
+🤔 MÉDIA PRIORIDADE (Avaliar):
+- connectionHistory[]: Histórico de conexões para análise
+- batteryHistory[]: Histórico de bateria para análise
+- dataCount: Cache do contador (mas é recalculado rápido)
+
+❌ BAIXA PRIORIDADE (Não implementar):
+- networkCount: Muda a cada scan
+- networks[]: Dados temporários de scan
+- dataBuffer[]: Buffer temporário
+- configMode: Estado temporário
+- ledState/ledStep: Estados visuais
+- lastLedBlink: Timing de LED
+
+ARQUIVOS SUGERIDOS:
+==================
+/last_upload.txt - timestamp último upload sessão ✓
+/last_status.txt - timestamp último upload status
+/ntp_sync.txt - timestamp + hora da última sincronização NTP
+/connection_history.json - histórico conexões (opcional)
+/battery_history.json - histórico bateria (opcional)
