@@ -5,7 +5,7 @@
   },
   "firebase": {
     "api_key": "AIzaSyBOf0iB1PE3byamxPaPnxRdjZHT-Wx5mKs",
-    "database_url": "botaprarodar-routes-default-rtdb.firebaseio.com"
+    "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com/"
   },
   "central": {
     "id": "ameciclo",

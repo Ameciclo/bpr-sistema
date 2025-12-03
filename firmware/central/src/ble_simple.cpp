@@ -1,8 +1,14 @@
 #include "ble_simple.h"
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
 #include <SPIFFS.h>
-#include "firebase_client.h"
+
+// Declarações externas
+enum CentralMode { MODE_BLE_ONLY, MODE_WIFI_SYNC, MODE_SHUTDOWN };
+extern String pendingData;
+extern CentralMode currentMode;
+extern unsigned long modeStart;
 
 static bool bleReady = false;
 static NimBLEServer* pServer = nullptr;
@@ -13,7 +19,7 @@ static String bikeIdUUID = "F00D";
 static String batteryUUID = "BEEF";
 
 bool loadBLEConfig() {
-    if (!SPIFFS.begin(true)) {
+    if (!SPIFFS.begin()) {
         Serial.println("❌ SPIFFS mount failed");
         return false;
     }
@@ -88,16 +94,29 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
                              doc["last_position"]["source"].as<String>().c_str());
             }
             
-            // Upload para Firebase
-            if (isFirebaseReady()) {
-                if (uploadBikeData(value.c_str())) {
-                    Serial.println("🔥 ✅ Dados enviados para Firebase!");
-                } else {
-                    Serial.println("🔥 ❌ Falha no upload Firebase");
-                }
-            } else {
-                Serial.println("🔥 ⚠️ Firebase offline - dados em cache");
+            // Corrigir timestamp se necessário
+            extern unsigned long correctTimestamp(unsigned long, unsigned long);
+            
+            unsigned long originalTimestamp = doc["last_ble_contact"].as<unsigned long>();
+            unsigned long correctedTimestamp = correctTimestamp(originalTimestamp, millis());
+            
+            // Atualizar JSON com timestamp corrigido
+            doc["last_ble_contact"] = correctedTimestamp;
+            doc["last_wifi_scan"] = correctedTimestamp;
+            doc["corrected_timestamp"] = (originalTimestamp != correctedTimestamp);
+            
+            String correctedJson;
+            serializeJson(doc, correctedJson);
+            
+            // Adicionar aos dados pendentes
+            extern String pendingData;
+            if (pendingData.length() > 0) pendingData += ",";
+            pendingData += "{\"type\":\"bike\",\"data\":" + correctedJson + "}";
+            
+            if (originalTimestamp != correctedTimestamp) {
+                Serial.printf("🔧 Timestamp corrigido: %lu -> %lu\n", originalTimestamp, correctedTimestamp);
             }
+            Serial.println("💾 Dados da bike em cache");
             
             // Verificar bateria baixa
             float battery = doc["battery_voltage"].as<float>();
@@ -121,16 +140,28 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
                              network["rssi"].as<int>());
             }
             
-            // Upload para Firebase
-            if (isFirebaseReady()) {
-                if (uploadWifiScan(value.c_str())) {
-                    Serial.println("🔥 ✅ WiFi scan enviado para Firebase!");
-                } else {
-                    Serial.println("🔥 ❌ Falha no upload WiFi scan");
-                }
-            } else {
-                Serial.println("🔥 ⚠️ Firebase offline - scan em cache");
+            // Corrigir timestamp do scan WiFi
+            extern unsigned long correctTimestamp(unsigned long, unsigned long);
+            
+            unsigned long originalTimestamp = doc["timestamp"].as<unsigned long>();
+            unsigned long correctedTimestamp = correctTimestamp(originalTimestamp, millis());
+            
+            // Atualizar JSON com timestamp corrigido
+            doc["timestamp"] = correctedTimestamp;
+            doc["corrected_timestamp"] = (originalTimestamp != correctedTimestamp);
+            
+            String correctedJson;
+            serializeJson(doc, correctedJson);
+            
+            // Adicionar scan WiFi aos dados pendentes
+            extern String pendingData;
+            if (pendingData.length() > 0) pendingData += ",";
+            pendingData += "{\"type\":\"wifi\",\"data\":" + correctedJson + "}";
+            
+            if (originalTimestamp != correctedTimestamp) {
+                Serial.printf("🔧 WiFi timestamp corrigido: %lu -> %lu\n", originalTimestamp, correctedTimestamp);
             }
+            Serial.println("📶 WiFi scan em cache");
             
         } else if (doc.containsKey("type") && doc["type"] == "battery_alert") {
             // Alerta de bateria
@@ -139,15 +170,19 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
             Serial.printf("🔋 Voltagem: %.2fV\n", doc["battery_voltage"].as<float>());
             Serial.printf("🔴 Crítico: %s\n", doc["critical"].as<bool>() ? "SIM" : "NÃO");
             
-            // Upload alerta para Firebase
-            if (isFirebaseReady()) {
-                if (uploadBatteryAlert(value.c_str())) {
-                    Serial.println("🔥 ✅ Alerta enviado para Firebase!");
-                } else {
-                    Serial.println("🔥 ❌ Falha no upload alerta");
-                }
-            } else {
-                Serial.println("🔥 ⚠️ Firebase offline - alerta em cache");
+            // Adicionar alerta aos dados pendentes
+            extern String pendingData;
+            if (pendingData.length() > 0) pendingData += ",";
+            pendingData += "{\"type\":\"alert\",\"data\":" + String(value.c_str()) + "}";
+            Serial.println("⚠️ Alerta em cache");
+            
+            // Forçar sync imediata para alertas críticos
+            if (doc["critical"].as<bool>()) {
+                extern CentralMode currentMode;
+                extern unsigned long modeStart;
+                currentMode = MODE_WIFI_SYNC;
+                modeStart = millis();
+                Serial.println("😨 Alerta crítico - forçando sync!");
             }
             
             if (doc["critical"].as<bool>()) {
