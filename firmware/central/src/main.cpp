@@ -8,6 +8,18 @@
 #include "ble_simple.h"
 #include "config_manager.h"
 #include "bike_manager.h"
+#include "../include/structs.h"
+#include <vector>
+
+// Sistema de descoberta de bikes
+struct PendingBike {
+    String bleName;
+    String macAddress;
+    unsigned long firstSeen;
+    bool registered;
+};
+
+std::vector<PendingBike> pendingBikes;
 
 // Configurações padrão (fallbacks)
 struct CentralConfig {
@@ -677,6 +689,12 @@ void setup() {
     if (initBLESimple()) {
         Serial.println("✅ BLE OK");
         startBLEServer();
+        
+        // Configurar advertising da central
+        String centralName = "BPR_BASE_" + config.base_id;
+        setBLEDeviceName(centralName);
+        Serial.printf("📡 Central anunciando como: %s\n", centralName.c_str());
+        
         setLEDPattern(LED_BLE_READY);
     } else {
         Serial.println("❌ BLE falhou");
@@ -687,9 +705,87 @@ void setup() {
     Serial.println("📶 WiFi será ativado quando necessário");
 }
 
+// Registrar bike nova como pendente de aprovação
+void registerPendingBike(String bleName, String macAddress) {
+    // Verificar se já está registrada
+    for (auto& bike : pendingBikes) {
+        if (bike.bleName == bleName) {
+            return; // Já registrada
+        }
+    }
+    
+    Serial.printf("🆕 Nova bike detectada: %s (%s)\n", bleName.c_str(), macAddress.c_str());
+    
+    // Adicionar à lista local
+    PendingBike newBike;
+    newBike.bleName = bleName;
+    newBike.macAddress = macAddress;
+    newBike.firstSeen = millis() / 1000;
+    newBike.registered = false;
+    pendingBikes.push_back(newBike);
+    
+    // Preparar dados para Firebase
+    String pendingData = "{\"mac_address\":\"" + macAddress + 
+                        "\",\"first_seen\":" + String(newBike.firstSeen) + 
+                        ",\"central_id\":\"" + config.base_id + 
+                        "\",\"status\":\"pending\"}";
+    
+    // Adicionar aos dados pendentes para próxima sync
+    String pendingPath = "/pending_bikes/" + config.base_id + "/" + bleName;
+    if (::pendingData.length() > 0) ::pendingData += ",";
+    ::pendingData += "{\"type\":\"pending_bike\",\"path\":\"" + pendingPath + "\",\"data\":" + pendingData + "}";
+    
+    Serial.println("⏳ Bike registrada - aguardando aprovação humana");
+}
+
+// Processar aprovação de bike
+void processApprovedBike(String bleName, String bikeId) {
+    Serial.printf("✅ Bike aprovada: %s -> %s\n", bleName.c_str(), bikeId.c_str());
+    
+    // Remover da lista de pendentes
+    for (auto it = pendingBikes.begin(); it != pendingBikes.end(); ++it) {
+        if (it->bleName == bleName) {
+            pendingBikes.erase(it);
+            break;
+        }
+    }
+    
+    // Preparar configuração para a bike
+    String configData = "{\"bike_id\":\"" + bikeId + 
+                       "\",\"central_id\":\"" + config.base_id + 
+                       "\",\"firebase\":{\"database_url\":\"https://botaprarodar-routes-default-rtdb.firebaseio.com\"}," +
+                       "\"wifi_scan_interval\":25," +
+                       "\"deep_sleep_sec\":300," +
+                       "\"min_battery\":3.45}";
+    
+    // TODO: Enviar configuração via BLE quando bike conectar novamente
+    Serial.printf("📝 Config preparada para %s\n", bikeId.c_str());
+}
+
+// Verificar aprovações pendentes
+void checkPendingApprovals() {
+    if (pendingBikes.empty()) return;
+    
+    Serial.printf("📋 Bikes pendentes de aprovação: %d\n", pendingBikes.size());
+    
+    // TODO: Baixar aprovações do Firebase
+    // Estrutura esperada: /pending_bikes/{central_id}/{ble_name}/status = "approved"
+    // Por enquanto, apenas mostrar as pendentes
+    
+    for (const auto& bike : pendingBikes) {
+        Serial.printf("  • %s (%s) - aguardando há %lu segundos\n", 
+                     bike.bleName.c_str(), 
+                     bike.macAddress.c_str(),
+                     (millis()/1000) - bike.firstSeen);
+    }
+}
+
 void handleBLEMode() {
     // Processar configurações pendentes
     processPendingConfigs();
+    
+    // Verificar aprovações pendentes
+    checkPendingApprovals();
     
     // Detectar mudanças no número de bikes
     static int lastBikeCount = -1;
@@ -791,6 +887,9 @@ void handleWiFiMode() {
                 // TODO: Implementar marcação de todas as bikes
             }
         }
+        
+        // Verificar aprovações de bikes pendentes
+        checkPendingApprovals();
         
         // Baixar configuração da central
         Serial.println("📥 Verificando config da central...");

@@ -2,7 +2,7 @@
 #define BIKE_MANAGER_H
 
 #include <Arduino.h>
-#include "structs.h"
+#include "../include/structs.h"
 
 // Funções de gerenciamento de bikes
 void initBikeManager();

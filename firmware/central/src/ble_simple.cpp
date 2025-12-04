@@ -54,7 +54,9 @@ class ServerCallbacks: public NimBLEServerCallbacks {
         uint16_t connHandle = desc->conn_handle;
         Serial.printf("🔵 Nova conexão BLE (handle: %d)\n", connHandle);
         
-        // Bike será identificada quando enviar dados
+        // Perguntar identificação da bike
+        onBLEConnect(connHandle);
+        
         NimBLEDevice::startAdvertising();
     }
     
@@ -79,6 +81,23 @@ class CharCallbacks: public NimBLECharacteristicCallbacks {
         if (error) {
             Serial.printf("❌ Erro ao processar JSON: %s\n", error.c_str());
             Serial.printf("Dados brutos: %s\n", value.c_str());
+            return;
+        }
+        
+        // Verificar se é identificação de bike nova
+        if (doc.containsKey("identification")) {
+            String bikeIdentification = doc["identification"].as<String>();
+            String macAddress = doc["mac_address"] | "unknown";
+            
+            Serial.printf("🆔 Identificação recebida: %s\n", bikeIdentification.c_str());
+            
+            // Verificar se é bike nova (prefixo BPR_)
+            if (bikeIdentification.startsWith("BPR_")) {
+                registerPendingBike(bikeIdentification, macAddress);
+            } else if (bikeIdentification.startsWith("bike")) {
+                Serial.printf("✅ Bike conhecida conectada: %s\n", bikeIdentification.c_str());
+                // TODO: Processar bike conhecida
+            }
             return;
         }
         
@@ -337,4 +356,40 @@ int getConnectedClients() {
 
 bool isBLEReady() {
     return bleReady;
+}
+
+void setBLEDeviceName(String name) {
+    deviceName = name;
+    if (bleReady) {
+        // Reinicializar com novo nome
+        NimBLEDevice::deinit();
+        NimBLEDevice::init(name.c_str());
+        Serial.printf("📡 Nome BLE atualizado: %s\n", name.c_str());
+    }
+}
+
+void onBLEConnect(uint16_t connHandle) {
+    Serial.printf("🔗 Nova conexão BLE (handle: %d)\n", connHandle);
+    
+    // Enviar solicitação de identificação
+    sendMessage(connHandle, "WHO_ARE_YOU?");
+}
+
+void onBLEMessage(uint16_t connHandle, String message) {
+    Serial.printf("📨 Mensagem recebida (handle: %d): %s\n", connHandle, message.c_str());
+    
+    if (message.startsWith("BPR_")) {
+        // É uma bike nova!
+        Serial.printf("🆕 Bike nova detectada: %s\n", message.c_str());
+        registerPendingBike(message, "unknown");
+    } else if (message.startsWith("bike")) {
+        // É uma bike conhecida
+        Serial.printf("✅ Bike conhecida: %s\n", message.c_str());
+        // TODO: Processar bike conhecida
+    }
+}
+
+void sendMessage(uint16_t connHandle, String message) {
+    // TODO: Implementar envio de mensagem via BLE
+    Serial.printf("📤 Enviando mensagem (handle: %d): %s\n", connHandle, message.c_str());
 }

@@ -139,7 +139,50 @@ GET /central_configs/{base_id}.json  # Configuração completa da base
 }
 ```
 
-### **Envio para Bicicletas**
+### **Descoberta e Configuração de Bikes**
+
+#### **Protocolo de Descoberta:**
+1. **Central anuncia**: `"BPR_BASE_{base_id}"` (ex: `"BPR_BASE_ameciclo"`)
+2. **Bike nova escaneia**: Procura por `"BPR_BASE_*"`
+3. **Bike conecta**: Na central encontrada
+4. **Bike se identifica**: `"BPR_{MAC_SUFFIX}"` (ex: `"BPR_A1B2C3"`)
+5. **Central registra**: Bike pendente de aprovação
+6. **Aprovação humana**: Via Firebase/Dashboard
+7. **Central configura**: Envia configuração completa
+8. **Bike salva**: Muda nome para `"bike{MAC_SUFFIX}"`
+
+#### **Estrutura de Aprovação (Firebase):**
+```json
+{
+  "/pending_bikes/{base_id}/{ble_name}": {
+    "mac_address": "AA:BB:CC:A1:B2:C3",
+    "first_seen": 1764802387,
+    "central_id": "ameciclo",
+    "status": "pending",  // pending → approved → configured
+    "approved_by": null,
+    "approved_at": null
+  }
+}
+```
+
+#### **Configuração Enviada para Bike:**
+```json
+{
+  "type": "bike_setup",
+  "bike_id": "bikeA1B2C3",
+  "central_id": "ameciclo",
+  "firebase": {
+    "database_url": "https://...",
+    "api_key": "AIzaSyB..."
+  },
+  "wifi_scan_interval_sec": 25,
+  "deep_sleep_after_sec": 300,
+  "min_battery_voltage": 3.45,
+  "ble_ping_interval_sec": 5
+}
+```
+
+### **Envio para Bicicletas (Legado)**
 ```cpp
 struct BPRConfigPacket {
     uint8_t version;
@@ -248,6 +291,129 @@ pio device monitor
 ### Reconfiguração
 - **Via Firebase** → Muda configurações remotamente
 - **Via AP** → Delete `/config.json` e reinicie para voltar ao modo setup
+
+## 🚲 **Implementação nas Bicicletas**
+
+### **Código para Bike (Setup Inicial):**
+```cpp
+// bike/src/main.cpp
+
+bool isFirstBoot() {
+    return !LittleFS.exists("/config.json");
+}
+
+String getMacSuffix() {
+    String mac = WiFi.macAddress();
+    String suffix = mac.substring(9);  // Últimos 6 caracteres
+    suffix.replace(":", "");           // Remove ':'
+    return suffix;                     // "A1B2C3"
+}
+
+void scanForCentrals() {
+    Serial.println("🔍 Procurando centrais BPR...");
+    
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->setActiveScan(true);
+    BLEScanResults foundDevices = pBLEScan->start(10); // 10s scan
+    
+    for (int i = 0; i < foundDevices.getCount(); i++) {
+        BLEAdvertisedDevice device = foundDevices.getDevice(i);
+        String deviceName = device.getName().c_str();
+        
+        if (deviceName.startsWith("BPR_BASE_")) {
+            String centralId = deviceName.substring(9);
+            Serial.printf("🎯 Central encontrada: %s\n", centralId.c_str());
+            
+            connectToCentral(device.getAddress(), centralId);
+            return;
+        }
+    }
+    
+    Serial.println("❌ Nenhuma central encontrada");
+}
+
+void connectToCentral(BLEAddress address, String centralId) {
+    BLEClient* pClient = BLEDevice::createClient();
+    
+    if (pClient->connect(address)) {
+        Serial.printf("✅ Conectado na central: %s\n", centralId.c_str());
+        
+        // Identificar-se como bike nova
+        String bikeIdentity = "BPR_" + getMacSuffix();
+        sendIdentification(pClient, bikeIdentity);
+        
+        // Aguardar configuração
+        waitForConfiguration(pClient);
+    }
+}
+
+void sendIdentification(BLEClient* client, String identity) {
+    // TODO: Implementar envio de identificação via BLE
+    Serial.printf("📝 Enviando identificação: %s\n", identity.c_str());
+}
+
+void waitForConfiguration(BLEClient* client) {
+    // TODO: Implementar recepção de configuração
+    Serial.println("⏳ Aguardando configuração da central...");
+}
+
+void saveConfiguration(String configJson) {
+    File configFile = LittleFS.open("/config.json", "w");
+    if (configFile) {
+        configFile.print(configJson);
+        configFile.close();
+        Serial.println("✅ Configuração salva - reiniciando...");
+        ESP.restart();
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    
+    if (!LittleFS.begin()) {
+        LittleFS.format();
+        LittleFS.begin();
+    }
+    
+    BLEDevice::init("");
+    
+    if (isFirstBoot()) {
+        Serial.println("🆕 Primeira execução - procurando central...");
+        
+        // Configurar nome BLE para identificação
+        String bleName = "BPR_" + getMacSuffix();
+        BLEDevice::setDeviceName(bleName.c_str());
+        
+        scanForCentrals();
+    } else {
+        Serial.println("✅ Bike configurada - modo normal");
+        
+        // Carregar configuração e iniciar modo normal
+        loadConfiguration();
+        startNormalMode();
+    }
+}
+```
+
+### **Fluxo de Setup da Bike:**
+1. **Primeira vez** → Nome BLE: `"BPR_A1B2C3"`
+2. **Escaneia centrais** → Procura `"BPR_BASE_*"`
+3. **Conecta na central** → Envia identificação
+4. **Aguarda aprovação** → Humano aprova via Firebase
+5. **Recebe config** → Central envia configuração completa
+6. **Salva e reinicia** → Próxima vez já configurada
+7. **Modo normal** → Nome BLE: `"bikeA1B2C3"`
+
+### **Aprovação Humana (Dashboard/Bot):**
+```
+🚲 Nova Bike Detectada!
+📍 Central: Ameciclo
+🔗 BLE: BPR_A1B2C3
+📱 MAC: AA:BB:CC:A1:B2:C3
+⏰ Detectada: 14:30
+
+[✅ Aprovar] [❌ Rejeitar]
+```
 
 ## 📋 Logs
 
