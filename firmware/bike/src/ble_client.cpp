@@ -2,35 +2,33 @@
 #include "bike_config.h"
 #include <ArduinoJson.h>
 
-BLEClient::BLEClient() : pClient(nullptr), connected(false), baseFound(false) {}
+BikeClient::BikeClient() : pClient(nullptr), connected(false), baseFound(false), registered(false) {}
 
-void BLEClient::init(const char* bikeId) {
-  strncpy(this->bikeId, bikeId, sizeof(this->bikeId) - 1);
+void BikeClient::init(const String& bikeId) {
+  this->bikeId = bikeId;
   
-  NimBLEDevice::init(String("BPR_Bike_") + bikeId);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P3); // Potência mínima
-  
+  NimBLEDevice::init(("BPR_Bike_" + bikeId).c_str());
   pClient = NimBLEDevice::createClient();
   pClient->setClientCallbacks(this);
-  pClient->setConnectionParams(12, 12, 0, 51); // Intervalo otimizado
   
-  Serial.printf("🔵 BLE inicializado: BPR_Bike_%s\n", bikeId);
+  Serial.printf("🔵 BLE inicializado: BPR_Bike_%s\n", bikeId.c_str());
 }
 
-bool BLEClient::scanForBase(const char* baseName) {
-  Serial.printf("🔍 Procurando base: %s\n", baseName);
+bool BikeClient::scanForBase(const String& baseName) {
+  this->baseBleName = baseName;
+  Serial.printf("🔍 Procurando base: %s\n", baseName.c_str());
   
   NimBLEScan* pScan = NimBLEDevice::getScan();
-  pScan->setActiveScan(false); // Passive scan para economia
+  pScan->setActiveScan(true);
   pScan->setInterval(100);
-  pScan->setWindow(50);
+  pScan->setWindow(99);
   
   NimBLEScanResults results = pScan->start(5, false);
   
   for (int i = 0; i < results.getCount(); i++) {
     NimBLEAdvertisedDevice device = results.getDevice(i);
     
-    if (device.getName() == baseName) {
+    if (device.getName() == baseName.c_str()) {
       Serial.printf("✅ Base encontrada: %s RSSI:%d\n", 
                     device.getAddress().toString().c_str(), device.getRSSI());
       
@@ -45,7 +43,7 @@ bool BLEClient::scanForBase(const char* baseName) {
   return false;
 }
 
-bool BLEClient::connectToBase() {
+bool BikeClient::connectToBase() {
   if (!baseFound || !pClient) return false;
   
   Serial.println("🔗 Conectando à base...");
@@ -61,110 +59,181 @@ bool BLEClient::connectToBase() {
   return false;
 }
 
-bool BLEClient::sendStatus(const BikeStatus& status) {
+bool BikeClient::registerWithBase() {
   if (!connected) return false;
   
-  auto pService = pClient->getService(BLE_SERVICE_UUID);
+  DynamicJsonDocument doc(512);
+  doc["type"] = "bike_registration";
+  doc["bike_id"] = bikeId;
+  doc["timestamp"] = millis() / 1000;
+  doc["version"] = "2.0";
+  
+  String registrationJson;
+  serializeJson(doc, registrationJson);
+  
+  auto pService = pClient->getService("BAAD");
   if (!pService) {
-    Serial.println("❌ Serviço não encontrado");
+    Serial.println("❌ Serviço BAAD não encontrado");
     return false;
   }
   
-  auto pChar = pService->getCharacteristic(BLE_STATUS_CHAR_UUID);
+  auto pChar = pService->getCharacteristic("F00D");
   if (!pChar) {
-    Serial.println("❌ Característica STATUS não encontrada");
+    Serial.println("❌ Característica F00D não encontrada");
     return false;
   }
   
-  bool success = pChar->writeValue((uint8_t*)&status, sizeof(status));
+  bool success = pChar->writeValue(registrationJson.c_str());
   
   if (success) {
-    Serial.printf("📤 Status enviado: Bat:%.2fV Records:%d\n", 
-                  status.battery_voltage, status.records_count);
+    Serial.printf("📝 Registro enviado: %s\n", registrationJson.c_str());
+    registered = true;
   } else {
-    Serial.println("❌ Falha ao enviar status");
+    Serial.println("❌ Falha no registro");
   }
   
   return success;
 }
 
-bool BLEClient::receiveConfig(BikeConfig& config) {
+bool BikeClient::sendBikeInfo() {
   if (!connected) return false;
   
-  auto pService = pClient->getService(BLE_SERVICE_UUID);
+  DynamicJsonDocument doc(1024);
+  doc["uid"] = bikeId;
+  doc["status"] = "active";
+  doc["last_ble_contact"] = millis() / 1000;
+  doc["last_wifi_scan"] = millis() / 1000;
+  
+  String bikeJson;
+  serializeJson(doc, bikeJson);
+  
+  auto pService = pClient->getService("BAAD");
   if (!pService) return false;
   
-  auto pChar = pService->getCharacteristic(BLE_CONFIG_CHAR_UUID);
+  auto pChar = pService->getCharacteristic("F00D");
+  if (!pChar) return false;
+  
+  bool success = pChar->writeValue(bikeJson.c_str());
+  
+  if (success) {
+    Serial.printf("📝 Info da bike enviada: %s\n", bikeJson.c_str());
+  }
+  
+  return success;
+}
+
+bool BikeClient::sendStatus(float batteryVoltage, uint16_t recordsCount) {
+  if (!connected) return false;
+  
+  DynamicJsonDocument doc(512);
+  doc["type"] = "status";
+  doc["bike_id"] = bikeId;
+  doc["battery_voltage"] = batteryVoltage;
+  doc["records_count"] = recordsCount;
+  doc["timestamp"] = millis() / 1000;
+  doc["heap"] = ESP.getFreeHeap();
+  
+  String statusJson;
+  serializeJson(doc, statusJson);
+  
+  auto pService = pClient->getService("BAAD");
+  if (!pService) return false;
+  
+  auto pChar = pService->getCharacteristic("BEEF");
+  if (!pChar) return false;
+  
+  bool success = pChar->writeValue(statusJson.c_str());
+  
+  if (success) {
+    Serial.printf("📤 Status enviado: Bat:%.2fV Records:%d\n", 
+                  batteryVoltage, recordsCount);
+  }
+  
+  return success;
+}
+
+bool BikeClient::receiveConfig(String& configJson) {
+  if (!connected) return false;
+  
+  auto pService = pClient->getService("BAAD");
+  if (!pService) return false;
+  
+  auto pChar = pService->getCharacteristic("F00D");
   if (!pChar) return false;
   
   std::string value = pChar->readValue();
   
-  if (value.length() == sizeof(BikeConfig)) {
-    memcpy(&config, value.data(), sizeof(BikeConfig));
-    Serial.printf("📥 Config recebida: Scan:%ds Sleep:%ds\n", 
-                  config.scan_interval_sec, config.deep_sleep_sec);
+  if (value.length() > 0) {
+    configJson = String(value.c_str());
+    Serial.printf("📥 Config recebida: %s\n", configJson.c_str());
     return true;
   }
   
-  Serial.println("❌ Config inválida");
   return false;
 }
 
-bool BLEClient::sendWifiData(const std::vector<WifiRecord>& records) {
+bool BikeClient::sendWifiData(const std::vector<WifiRecord>& records) {
   if (!connected || records.empty()) return false;
   
-  auto pService = pClient->getService(BLE_SERVICE_UUID);
-  if (!pService) return false;
+  DynamicJsonDocument doc(2048);
+  JsonArray networks = doc.createNestedArray("networks");
   
-  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
-  if (!pChar) return false;
-  
-  // Envia em lotes de 10 registros
-  const size_t batchSize = 10;
-  size_t totalSent = 0;
-  
-  for (size_t i = 0; i < records.size(); i += batchSize) {
-    size_t endIdx = min(i + batchSize, records.size());
-    size_t batchCount = endIdx - i;
-    size_t dataSize = batchCount * sizeof(WifiRecord);
+  for (const auto& record : records) {
+    JsonObject net = networks.createNestedObject();
     
-    bool success = pChar->writeValue((uint8_t*)&records[i], dataSize);
+    char bssidStr[18];
+    sprintf(bssidStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+            record.bssid[0], record.bssid[1], record.bssid[2],
+            record.bssid[3], record.bssid[4], record.bssid[5]);
     
-    if (success) {
-      totalSent += batchCount;
-      Serial.printf("📤 Lote %d/%d enviado (%d registros)\n", 
-                    (int)(i/batchSize + 1), (int)((records.size() + batchSize - 1)/batchSize), 
-                    (int)batchCount);
-      delay(100); // Pequena pausa entre lotes
-    } else {
-      Serial.printf("❌ Falha no lote %d\n", (int)(i/batchSize + 1));
-      return false;
-    }
+    net["bssid"] = bssidStr;
+    net["rssi"] = record.rssi;
+    net["channel"] = record.channel;
+    net["timestamp"] = record.timestamp;
   }
   
-  Serial.printf("✅ %d registros WiFi enviados\n", (int)totalSent);
-  return true;
+  doc["bike_id"] = bikeId;
+  doc["total_records"] = records.size();
+  doc["timestamp"] = millis() / 1000;
+  
+  String wifiJson;
+  serializeJson(doc, wifiJson);
+  
+  auto pService = pClient->getService("BAAD");
+  if (!pService) return false;
+  
+  auto pChar = pService->getCharacteristic("BEEF");
+  if (!pChar) return false;
+  
+  bool success = pChar->writeValue(wifiJson.c_str());
+  
+  if (success) {
+    Serial.printf("📶 Dados WiFi enviados: %d registros\n", records.size());
+  }
+  
+  return success;
 }
 
-void BLEClient::disconnect() {
+void BikeClient::disconnect() {
   if (pClient && connected) {
     pClient->disconnect();
     connected = false;
+    registered = false;
     Serial.println("🔴 Desconectado da base");
   }
 }
 
-bool BLEClient::isConnected() {
+bool BikeClient::isConnected() {
   return connected;
 }
 
-// Callbacks
-void BLEClient::onConnect(NimBLEClient* pClient) {
-  Serial.println("🔵 Callback: Conectado");
+void BikeClient::onConnect(NimBLEClient* pClient) {
+  Serial.println("🔵 Callback: Conectado à Central BPR");
   connected = true;
 }
 
-void BLEClient::onDisconnect(NimBLEClient* pClient) {
-  Serial.println("🔴 Callback: Desconectado");
+void BikeClient::onDisconnect(NimBLEClient* pClient) {
+  Serial.println("🔴 Callback: Desconectado da Central BPR");
   connected = false;
+  registered = false;
 }

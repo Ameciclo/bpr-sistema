@@ -127,5 +127,48 @@
       "count_pause_ms": 1500,
       "error_ms": 50
     }
+  },
+  "base01": {
+    "base_id": "base01",
+    "central": {
+      "id": "base01",
+      "name": "Base Teste",
+      "max_bikes": 5,
+      "location": {
+        "lat": -8.062,
+        "lng": -34.881
+      }
+    },
+    "wifi": {
+      "ssid": "WIFI_TESTE",
+      "password": "teste123"
+    },
+    "firebase": {
+      "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
+    },
+    "sync_interval_sec": 300,
+    "wifi_timeout_sec": 30,
+    "cleanup_interval_sec": 60,
+    "led_count_interval_sec": 30,
+    "log_interval_sec": 15,
+    "firebase_batch_size": 8000,
+    "https_timeout_ms": 10000,
+    "firebase_response_timeout_ms": 5000,
+    "led_pin": 8,
+    "ntp_server": "pool.ntp.org",
+    "timezone_offset": -10800,
+    "ntp_update_interval_ms": 60000,
+    "firebase_port": 443,
+    "min_valid_timestamp": 1600000000,
+    "led": {
+      "boot_ms": 100,
+      "ble_ready_ms": 2000,
+      "bike_arrived_ms": 150,
+      "bike_left_ms": 800,
+      "wifi_sync_ms": 500,
+      "count_ms": 300,
+      "count_pause_ms": 1500,
+      "error_ms": 50
+    }
   }
 }

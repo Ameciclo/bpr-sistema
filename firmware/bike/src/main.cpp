@@ -5,16 +5,16 @@
 #include "wifi_scanner.h"
 #include "ble_client.h"
 #include "power_manager.h"
+#include "config_manager.h"
 
 // Estado global
 BikeState currentState = BOOT;
-BikeConfig config;
-char bikeId[16] = "bike_001";
 
 // Módulos
+ConfigManager config;
 BatteryMonitor battery;
 WiFiScanner wifiScanner;
-BLEClient bleClient;
+BikeClient bleClient;
 PowerManager powerManager;
 
 // Timers
@@ -25,6 +25,16 @@ uint32_t systemTime = 0; // Timestamp sincronizado
 // Flags
 bool lowBatteryMode = false;
 volatile bool buttonPressed = false;
+
+// Declarações de funções
+void handleBootState();
+void handleAtBaseState();
+void handleScanningState();
+void handleLowPowerState();
+void handleDeepSleepState();
+void handleEmergencyMode();
+void changeState(BikeState newState);
+void printStatus();
 
 // ISR do botão
 void IRAM_ATTR buttonISR() {
@@ -58,12 +68,14 @@ void setup() {
   
   battery.init();
   wifiScanner.init();
-  bleClient.init(bikeId);
   
-  // Carregar configuração local
-  loadConfig();
+  // Carregar configuração
+  config.loadFromFile();
+  config.printConfig();
   
-  Serial.printf("🆔 Bike ID: %s\n", bikeId);
+  bleClient.init(config.getBikeId());
+  
+  Serial.printf("🆔 Bike ID: %s\n", config.getBikeId().c_str());
   Serial.printf("🔋 Bateria: %.2fV (%d%%)\n", battery.readVoltage(), battery.getPercentage());
   
   // Estado inicial
@@ -80,7 +92,7 @@ void loop() {
   
   // Ler bateria
   float batteryVoltage = battery.readVoltage();
-  lowBatteryMode = battery.isLowBattery(config.min_battery_voltage);
+  lowBatteryMode = battery.isLowBattery(config.getMinBatteryVoltage());
   
   // Verificar botão de emergência
   if (buttonPressed) {
@@ -127,7 +139,7 @@ void handleBootState() {
   Serial.println("🔄 Estado: BOOT");
   
   // Tentar encontrar base
-  if (bleClient.scanForBase(config.base_ble_name)) {
+  if (bleClient.scanForBase(config.getBaseBleName())) {
     changeState(AT_BASE);
   } else {
     // Não encontrou base, iniciar scanning
@@ -150,22 +162,23 @@ void handleAtBaseState() {
     }
   }
   
-  // Enviar status
-  BikeStatus status;
-  strncpy(status.bike_id, bikeId, sizeof(status.bike_id));
-  status.battery_voltage = battery.readVoltage();
-  status.last_scan_timestamp = lastScanTime;
-  status.flags = lowBatteryMode ? 1 : 0;
-  status.records_count = wifiScanner.getRecordCount();
+  // Registrar com a base se necessário
+  if (!bleClient.isRegistered()) {
+    bleClient.registerWithBase();
+  }
   
-  bleClient.sendStatus(status);
+  // Enviar info da bike
+  bleClient.sendBikeInfo();
+  
+  // Enviar status
+  bleClient.sendStatus(battery.readVoltage(), wifiScanner.getRecordCount());
   
   // Receber configurações
-  BikeConfig newConfig;
-  if (bleClient.receiveConfig(newConfig)) {
-    config = newConfig;
-    saveConfig();
-    systemTime = config.timestamp;
+  String configJson;
+  if (bleClient.receiveConfig(configJson)) {
+    if (config.updateFromBLE(configJson)) {
+      systemTime = config.getConfigTimestamp();
+    }
   }
   
   // Enviar dados WiFi se houver
@@ -192,7 +205,7 @@ void handleScanningState() {
   powerManager.optimizeForScanning();
   
   // Verificar se deve fazer scan
-  uint32_t scanInterval = lowBatteryMode ? config.scan_interval_low_batt_sec : config.scan_interval_sec;
+  uint32_t scanInterval = lowBatteryMode ? config.getScanIntervalLowBatt() : config.getScanInterval();
   
   if (systemTime - lastScanTime >= scanInterval) {
     if (wifiScanner.performScan(systemTime)) {
@@ -201,7 +214,7 @@ void handleScanningState() {
   }
   
   // Verificar se encontrou base novamente
-  if (bleClient.scanForBase(config.base_ble_name)) {
+  if (bleClient.scanForBase(config.getBaseBleName())) {
     Serial.println("🏠 Base encontrada, retornando");
     changeState(AT_BASE);
     return;
@@ -216,7 +229,7 @@ void handleScanningState() {
   }
   
   // Sleep entre scans
-  uint32_t sleepTime = min(scanInterval / 4, 300U); // Max 5 minutos
+  uint32_t sleepTime = (scanInterval / 4 < 300) ? scanInterval / 4 : 300; // Max 5 minutos
   Serial.printf("😴 Sleep por %d segundos\n", sleepTime);
   powerManager.enterLightSleep(sleepTime);
 }
@@ -225,37 +238,37 @@ void handleLowPowerState() {
   Serial.println("🔋 Estado: LOW_POWER");
   
   // Scan menos frequente
-  if (systemTime - lastScanTime >= config.scan_interval_low_batt_sec) {
+  if (systemTime - lastScanTime >= config.getScanIntervalLowBatt()) {
     if (wifiScanner.performScan(systemTime)) {
       lastScanTime = systemTime;
     }
   }
   
   // Verificar se encontrou base
-  if (bleClient.scanForBase(config.base_ble_name)) {
+  if (bleClient.scanForBase(config.getBaseBleName())) {
     changeState(AT_BASE);
     return;
   }
   
   // Verificar se deve entrar em deep sleep
-  if (battery.readVoltage() < (config.min_battery_voltage - 0.1)) {
+  if (battery.readVoltage() < (config.getMinBatteryVoltage() - 0.1)) {
     changeState(DEEP_SLEEP);
     return;
   }
   
   // Sleep longo
   Serial.println("💤 Long sleep em low power");
-  powerManager.enterLightSleep(config.scan_interval_low_batt_sec);
+  powerManager.enterLightSleep(config.getScanIntervalLowBatt());
 }
 
 void handleDeepSleepState() {
   Serial.println("💤 Estado: DEEP_SLEEP");
   
   // Salvar dados críticos
-  saveConfig();
+  config.saveToFile();
   
   // Entrar em deep sleep
-  powerManager.enterDeepSleep(config.deep_sleep_sec);
+  powerManager.enterDeepSleep(config.getDeepSleepSec());
   
   // Não retorna - reinicia após wake-up
 }
@@ -287,24 +300,14 @@ void changeState(BikeState newState) {
 void printStatus() {
   const char* stateNames[] = {"BOOT", "AT_BASE", "SCANNING", "LOW_POWER", "DEEP_SLEEP"};
   
-  Serial.println("\n" + String("=").repeat(50));
+  Serial.println("\n==================================================");
   Serial.printf("🚲 %s | Estado: %s | Uptime: %ds\n", 
-                bikeId, stateNames[currentState], powerManager.getUptimeSeconds());
+                config.getBikeId().c_str(), stateNames[currentState], powerManager.getUptimeSeconds());
   Serial.printf("🔋 %.2fV (%d%%) %s | 📡 %d registros\n", 
                 battery.readVoltage(), battery.getPercentage(),
                 lowBatteryMode ? "⚠️" : "✅", wifiScanner.getRecordCount());
   Serial.printf("🔵 BLE: %s | ⏱️ Último scan: %ds atrás\n",
                 bleClient.isConnected() ? "Conectado" : "Desconectado",
                 systemTime - lastScanTime);
-  Serial.println(String("=").repeat(50) + "\n");
-}
-
-void loadConfig() {
-  // Implementação básica - usar valores padrão
-  Serial.println("📁 Carregando configuração padrão");
-}
-
-void saveConfig() {
-  // Implementação básica
-  Serial.println("💾 Salvando configuração");
+  Serial.println("==================================================\n");
 }

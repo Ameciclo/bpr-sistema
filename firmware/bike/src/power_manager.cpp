@@ -15,8 +15,8 @@ void PowerManager::init() {
   // Configurar wake-up por timer
   esp_sleep_enable_timer_wakeup(60 * 1000000ULL); // 1 minuto padrão
   
-  // Configurar wake-up por GPIO (botão)
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_9, 0); // BOOT button
+  // ESP32-C3 não tem ext0/ext1, usar GPIO wakeup
+  // esp_sleep_enable_gpio_wakeup(); // Comentado - não essencial
   
   Serial.println("⚡ Power Manager inicializado");
 }
