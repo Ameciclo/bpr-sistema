@@ -5,9 +5,20 @@ Firmware para o módulo Central da Base do sistema Bota Pra Rodar (BPR), desenvo
 ## 🎯 Funcionalidades
 
 ### Operação por Modos
+- ✅ **Modo Setup AP**: Configuração inicial via interface web
 - ✅ **Modo BLE**: Operação padrão com baixo consumo
 - ✅ **Modo WiFi**: Ativação automática para sincronização
 - ✅ **Modo Shutdown**: Desligamento controlado do WiFi
+
+### Sistema de LED Inteligente (ESP32C3 SuperMini)
+- ✅ **Inicializando**: Piscar rápido (100ms)
+- ✅ **Modo Setup**: Piscar alternado (1s) - primeira configuração
+- ✅ **BLE Ativo**: Piscar lento (2s) - funcionamento normal
+- ✅ **Bike Chegou**: 3 piscadas rápidas - nova bike conectada
+- ✅ **Bike Saiu**: 1 piscada longa - bike desconectada
+- ✅ **Contagem**: N piscadas = N bikes conectadas (a cada 30s)
+- ✅ **Sincronizando**: Piscar médio (500ms) - upload Firebase
+- ✅ **Erro**: Piscar muito rápido (50ms) - falha crítica
 
 ### Comunicação e Sincronização
 - ✅ Conexão WiFi sob demanda (não permanente)
@@ -72,22 +83,61 @@ O firmware utiliza uma arquitetura modular baseada em máquina de estados:
 
 ## 🔧 Configuração
 
-1. Siga as instruções em `setup.md` para configurar credenciais
-2. Ajuste constantes em `include/config.h` se necessário
-3. Compile e faça upload com PlatformIO
+### Setup Inicial Automático (Primeira Vez)
+1. **Flash firmware** → Central entra em modo AP automaticamente
+2. **LED pisca alternado** → Indica modo de configuração
+3. **Conectar no AP**: `BPR_Setup_XXXXXX` (senha: `bpr12345`)
+4. **Acessar**: `http://192.168.4.1`
+5. **Configurar via web**:
+   - ID da Base (ex: ameciclo, cepas, ctresiste)
+   - Nome da Base (ex: Ameciclo, CEPAS, CTResiste)
+   - WiFi SSID e senha
+   - Firebase Database URL
+   - Firebase API Key
+6. **Central reinicia** → Baixa configurações do Firebase ou cria nova base
+
+### Configuração Dinâmica
+- ✅ **Download automático** de configurações do Firebase
+- ✅ **Criação automática** de nova base se não existir
+- ✅ **Configuração remota** - mudanças via Firebase
+- ✅ **Fallbacks seguros** - valores padrão se falhar
+- ✅ **Cache local** - funciona offline
 
 ## 🔧 **Sistema de Configuração**
 
-### **Download Automático do Firebase**
+### **Configuração Inicial via AP**
 ```
-GET /config.json          # Configurações globais
-GET /bases/ameciclo.json  # Configurações da base
+Primeira vez → Modo AP → Interface Web → Configuração Completa
 ```
 
-### **Cache Local com Validade**
-- **Arquivo**: `/config_cache.json`
-- **Validade**: 1 hora
-- **Fallback**: Valores padrão se download falhar
+### **Download Automático do Firebase**
+```
+GET /central_configs/{base_id}.json  # Configuração completa da base
+```
+
+### **Estrutura de Configuração**
+```json
+{
+  "base_id": "ameciclo",
+  "wifi": {"ssid": "...", "password": "..."},
+  "firebase": {"database_url": "...", "api_key": "..."},
+  "central": {"name": "Ameciclo", "location": {...}},
+  "sync_interval_sec": 300,
+  "led_pin": 8,
+  "led": {"boot_ms": 100, "ble_ready_ms": 2000, ...}
+}
+```
+
+### **Heartbeat Automático**
+```json
+{
+  "type": "central_heartbeat",
+  "timestamp": 1764802387,
+  "bikes_connected": 3,
+  "heap": 144396,
+  "uptime": 15
+}
+```
 
 ### **Envio para Bicicletas**
 ```cpp
@@ -181,12 +231,23 @@ pio lib install
 # Compilar
 pio run
 
-# Upload
+# Upload firmware (primeira vez)
 pio run --target upload
 
 # Monitor serial
 pio device monitor
 ```
+
+### Primeira Configuração
+1. **Flash firmware** → LED pisca alternado
+2. **Conectar WiFi**: `BPR_Setup_XXXXXX` (senha: `bpr12345`)
+3. **Acessar**: `http://192.168.4.1`
+4. **Configurar** → Central reinicia automaticamente
+5. **LED pisca lento** → Funcionamento normal
+
+### Reconfiguração
+- **Via Firebase** → Muda configurações remotamente
+- **Via AP** → Delete `/config.json` e reinicie para voltar ao modo setup
 
 ## 📋 Logs
 

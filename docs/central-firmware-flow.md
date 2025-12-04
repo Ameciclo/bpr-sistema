@@ -7,43 +7,55 @@ Este documento descreve o funcionamento completo do firmware da central BPR como
 ```mermaid
 graph TD
     A[🚀 SETUP] --> B[Inicializar LittleFS]
-    B --> C[Inicializar Bike Manager]
-    C --> D[Carregar Cache Config]
-    D --> E{Config Válida?}
-    E -->|Não| F[Marcar para Download]
-    E -->|Sim| G[Inicializar BLE Server]
-    F --> G
-    G --> H[Modo BLE_ONLY]
+    B --> C{Primeira vez?}
+    C -->|Sim| D[Modo SETUP_AP]
+    D --> E[Criar AP: BPR_Setup_XXXXXX]
+    E --> F[Interface Web: 192.168.4.1]
+    F --> G[Configurar: Base ID, WiFi, Firebase]
+    G --> H[Salvar config.json]
+    H --> I[Reiniciar ESP32]
+    I --> A
     
-    H --> I{"Precisa Sync?<br/>Dados ou 5min ou Config inválida"}
-    I -->|Não| J[Processar Configs Pendentes]
-    J --> K[Limpeza Conexões 1min]
-    K --> L[Aguardar dados BLE]
-    L --> M[Bike conecta/envia dados]
-    M --> N[Registrar/Atualizar bike]
-    N --> O[Enviar config se necessário]
-    O --> I
-    I -->|Sim| P[Ativar modo WIFI_SYNC]
+    C -->|Não| J[Carregar Config]
+    J --> K[Inicializar Bike Manager]
+    K --> L[Carregar Cache Config]
+    L --> M{Config Válida?}
+    M -->|Não| N[Marcar para Download]
+    M -->|Sim| O[Inicializar BLE Server]
+    N --> O
+    O --> P[Modo BLE_ONLY]
     
-    P --> Q[Conectar WiFi]
-    Q --> R{WiFi conectado?}
-    R -->|Não| S{Timeout 30s?}
-    S -->|Não| R
-    S -->|Sim| T[Modo SHUTDOWN]
+    P --> Q{"Precisa Sync?<br/>Dados ou 5min ou Config inválida"}
+    Q -->|Não| R[Processar Configs Pendentes]
+    R --> S[Limpeza Conexões 1min]
+    S --> T[Aguardar dados BLE]
+    T --> U[Bike conecta/envia dados]
+    U --> V[Registrar/Atualizar bike]
+    V --> W[Enviar config se necessário]
+    W --> Q
+    Q -->|Sim| X[Ativar modo WIFI_SYNC]
     
-    T --> U[Desconectar WiFi]
-    U --> V[WiFi.mode OFF]
-    V --> H
+    X --> Y[Conectar WiFi]
+    Y --> Z{WiFi conectado?}
+    Z -->|Não| AA{Timeout 30s?}
+    AA -->|Não| Z
+    AA -->|Sim| BB[Modo SHUTDOWN]
+    
+    BB --> CC[Desconectar WiFi]
+    CC --> DD[WiFi.mode OFF]
+    DD --> P
     
     classDef modeClass fill:#e1f5fe,stroke:#01579b,stroke-width:2px
     classDef processClass fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef configClass fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef setupClass fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef errorClass fill:#ffebee,stroke:#b71c1c,stroke-width:2px
     
-    class H,P,T modeClass
-    class B,C,G,Q processClass
-    class D,E,F,J,N,O configClass
-    class S errorClass
+    class P,X,BB modeClass
+    class B,K,Y processClass
+    class J,L,M,R,V,W configClass
+    class D,E,F,G,H setupClass
+    class AA errorClass
 ```
 
 ## 2. 🔄 Sincronização Completa (NTP + Config + Upload)
@@ -174,12 +186,59 @@ graph TD
     class F fallbackClass
 ```
 
-## 6. 📊 Estados e Configurações (Atualizados)
+## 6. 🔧 Modo Setup AP (Novo)
+
+```mermaid
+sequenceDiagram
+    participant U as Usuário
+    participant C as Central
+    participant W as WebServer
+    participant F as Firebase
+    
+    Note over C: Primeira execução detectada
+    
+    C->>C: Criar AP: BPR_Setup_XXXXXX
+    C->>W: Iniciar servidor web
+    C->>C: LED pisca alternado
+    
+    U->>C: Conecta WiFi no AP
+    U->>W: Acessa http://192.168.4.1
+    W->>U: Interface de configuração
+    
+    U->>W: Preenche formulário
+    Note over U,W: Base ID, WiFi, Firebase, API Key
+    
+    W->>C: Salva config.json
+    W->>C: Salva firebase_config.json
+    C->>U: Confirmação de sucesso
+    C->>C: Reinicia ESP32
+    
+    Note over C: Próxima inicialização
+    
+    C->>C: Carrega config.json
+    C->>F: Tenta baixar config completa
+    F-->>C: Config existente OU 404
+    
+    alt Config existe
+        C->>C: Aplica config baixada
+    else Config não existe
+        C->>F: Cria nova base
+        F-->>C: Base criada
+    end
+    
+    C->>C: Modo BLE normal
+```
+
+## 7. 📊 Estados e Configurações (Atualizados)
 
 ### Estados Globais
 ```cpp
 // Modos de operação
-currentMode: BLE_ONLY | WIFI_SYNC | SHUTDOWN
+currentMode: SETUP_AP | BLE_ONLY | WIFI_SYNC | SHUTDOWN
+
+// Variáveis do modo setup
+WebServer setupServer(80);
+bool setupComplete = false;
 
 // Dados e sincronização
 pendingData: String com JSONs acumulados
@@ -255,9 +314,16 @@ struct ConfigCache {
 ## 📋 Resumo do Funcionamento
 
 ### 🔄 Ciclo Principal
-1. **Modo BLE_ONLY** (padrão): Recebe dados das bicicletas via BLE
-2. **Modo WIFI_SYNC** (temporário): Conecta WiFi e sincroniza com Firebase
-3. **Modo SHUTDOWN**: Desliga WiFi e volta ao BLE
+1. **Modo SETUP_AP** (primeira vez): Interface web para configuração inicial
+2. **Modo BLE_ONLY** (padrão): Recebe dados das bicicletas via BLE
+3. **Modo WIFI_SYNC** (temporário): Conecta WiFi e sincroniza com Firebase
+4. **Modo SHUTDOWN**: Desliga WiFi e volta ao BLE
+
+### 🔧 Setup Inicial
+- Detecta primeira execução (sem config.json)
+- Cria AP com interface web para configuração
+- Baixa ou cria configuração completa no Firebase
+- LED indica visualmente cada estado
 
 ### 🕰️ Sincronização Temporal
 - Central sincroniza NTP quando conecta WiFi
