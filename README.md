@@ -28,6 +28,72 @@ bpr-sistema/
 - Ponto de acesso WiFi
 - Coleta de dados das bicicletas
 - Sincronização com servidor
+- LED inteligente de status
+- Sistema de configuração dinâmica
+- Heartbeat automático para Firebase
+
+#### 🚨 Sistema de LED (ESP32C3 SuperMini)
+- **Inicializando**: Piscar rápido (100ms)
+- **BLE Ativo**: Piscar lento (2s)
+- **Bike Chegou**: 3 piscadas rápidas
+- **Bike Saiu**: 1 piscada longa
+- **Contagem**: N piscadas = N bikes (a cada 30s)
+- **Sincronizando**: Piscar médio (500ms)
+- **Erro**: Piscar muito rápido (50ms)
+
+#### ⚙️ Sistema de Configuração da Central
+
+##### **Configuração Inicial:**
+```bash
+cd firmware/central
+./setup.sh  # Configura WiFi, Firebase e ID da base
+pio run --target uploadfs  # Upload configuração
+pio run --target upload     # Upload firmware
+```
+
+##### **Fluxo de Configuração:**
+1. **Setup Script** → Cria `config.json` básico com WiFi e `central.id`
+2. **Primeira Execução** → Central lê `central.id` e baixa config completa do Firebase
+3. **Auto-Update** → Substitui config básica pela completa automaticamente
+4. **Funcionamento** → Usa configurações dinâmicas para todos os parâmetros
+
+##### **Configurações Disponíveis:**
+- **base_id** - Identificador único da central (ameciclo, cepas, ctresiste)
+- **sync_interval_sec** - Intervalo de sincronização (padrão: 300s)
+- **wifi_timeout_sec** - Timeout de conexão WiFi (padrão: 30s)
+- **led_pin** - Pino do LED de status (padrão: 8)
+- **firebase_batch_size** - Tamanho máximo do batch (padrão: 8000 bytes)
+- **ntp_server** - Servidor NTP (padrão: pool.ntp.org)
+- **timezone_offset** - Fuso horário em segundos (padrão: -10800 = GMT-3)
+- **led.*** - Configurações específicas de cada padrão de LED
+
+##### **Estrutura no Firebase:**
+```
+/central_configs/
+├── ameciclo.json    # Config completa da Ameciclo
+├── cepas.json       # Config completa da CEPAS
+└── ctresiste.json   # Config completa da CTResiste
+```
+
+##### **Upload das Configurações:**
+```bash
+cd scripts
+node upload_central_configs.js  # Sobe configs para Firebase
+```
+
+##### **Heartbeat Automático:**
+Cada central envia heartbeat para `/bases/{base_id}/last_heartbeat` contendo:
+- **timestamp** - Quando foi enviado
+- **bikes_connected** - Quantas bikes estão conectadas
+- **heap** - Memória livre (para debug)
+- **uptime** - Tempo ligada em segundos
+
+##### **Vantagens:**
+- ✅ **Configuração remota** - Muda parâmetros sem acesso físico
+- ✅ **Específica por base** - Cada central tem suas configurações
+- ✅ **Fallbacks seguros** - Valores padrão se não conseguir baixar
+- ✅ **Auto-sincronização** - Download automático de atualizações
+- ✅ **Monitoramento** - Heartbeat para verificar status
 
 ### 🤖 Bot Telegram
 - Notificações automáticas
@@ -100,6 +166,26 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
     "ble_ping_interval_sec": 5,
     "min_battery_voltage": 3.45,
     "update_timestamp": 1733459200
+  }
+}
+```
+
+#### `/central_configs` - Configurações por Central
+```json
+{
+  "base01": {
+    "base_id": "base01",
+    "sync_interval_sec": 300,
+    "wifi_timeout_sec": 30,
+    "led_pin": 8,
+    "ntp_server": "pool.ntp.org",
+    "timezone_offset": -10800,
+    "firebase_batch_size": 8000,
+    "led": {
+      "boot_ms": 100,
+      "ble_ready_ms": 2000,
+      "wifi_sync_ms": 500
+    }
   }
 }
 ```

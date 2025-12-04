@@ -1,0 +1,131 @@
+{
+  "ameciclo": {
+    "base_id": "ameciclo",
+    "central": {
+      "id": "ameciclo",
+      "name": "Ameciclo",
+      "max_bikes": 10,
+      "location": {
+        "lat": -8.062,
+        "lng": -34.881
+      }
+    },
+    "wifi": {
+      "ssid": "WIFI_AMECICLO",
+      "password": "ameciclo2024"
+    },
+    "firebase": {
+      "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
+    },
+    "sync_interval_sec": 300,
+    "wifi_timeout_sec": 30,
+    "cleanup_interval_sec": 60,
+    "led_count_interval_sec": 30,
+    "log_interval_sec": 15,
+    "firebase_batch_size": 8000,
+    "https_timeout_ms": 10000,
+    "firebase_response_timeout_ms": 5000,
+    "led_pin": 8,
+    "ntp_server": "pool.ntp.org",
+    "timezone_offset": -10800,
+    "ntp_update_interval_ms": 60000,
+    "firebase_port": 443,
+    "min_valid_timestamp": 1600000000,
+    "led": {
+      "boot_ms": 100,
+      "ble_ready_ms": 2000,
+      "bike_arrived_ms": 150,
+      "bike_left_ms": 800,
+      "wifi_sync_ms": 500,
+      "count_ms": 300,
+      "count_pause_ms": 1500,
+      "error_ms": 50
+    }
+  },
+  "cepas": {
+    "base_id": "cepas",
+    "central": {
+      "id": "cepas",
+      "name": "CEPAS",
+      "max_bikes": 8,
+      "location": {
+        "lat": -8.065,
+        "lng": -34.885
+      }
+    },
+    "wifi": {
+      "ssid": "WIFI_CEPAS",
+      "password": "cepas2024"
+    },
+    "firebase": {
+      "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
+    },
+    "sync_interval_sec": 300,
+    "wifi_timeout_sec": 30,
+    "cleanup_interval_sec": 60,
+    "led_count_interval_sec": 30,
+    "log_interval_sec": 15,
+    "firebase_batch_size": 8000,
+    "https_timeout_ms": 10000,
+    "firebase_response_timeout_ms": 5000,
+    "led_pin": 8,
+    "ntp_server": "pool.ntp.org",
+    "timezone_offset": -10800,
+    "ntp_update_interval_ms": 60000,
+    "firebase_port": 443,
+    "min_valid_timestamp": 1600000000,
+    "led": {
+      "boot_ms": 100,
+      "ble_ready_ms": 2000,
+      "bike_arrived_ms": 150,
+      "bike_left_ms": 800,
+      "wifi_sync_ms": 500,
+      "count_ms": 300,
+      "count_pause_ms": 1500,
+      "error_ms": 50
+    }
+  },
+  "ctresiste": {
+    "base_id": "ctresiste",
+    "central": {
+      "id": "ctresiste",
+      "name": "CTResiste",
+      "max_bikes": 12,
+      "location": {
+        "lat": -8.068,
+        "lng": -34.888
+      }
+    },
+    "wifi": {
+      "ssid": "WIFI_CTRESISTE",
+      "password": "ctresiste2024"
+    },
+    "firebase": {
+      "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
+    },
+    "sync_interval_sec": 300,
+    "wifi_timeout_sec": 30,
+    "cleanup_interval_sec": 60,
+    "led_count_interval_sec": 30,
+    "log_interval_sec": 15,
+    "firebase_batch_size": 8000,
+    "https_timeout_ms": 10000,
+    "firebase_response_timeout_ms": 5000,
+    "led_pin": 8,
+    "ntp_server": "pool.ntp.org",
+    "timezone_offset": -10800,
+    "ntp_update_interval_ms": 60000,
+    "firebase_port": 443,
+    "min_valid_timestamp": 1600000000,
+    "led": {
+      "boot_ms": 100,
+      "ble_ready_ms": 2000,
+      "bike_arrived_ms": 150,
+      "bike_left_ms": 800,
+      "wifi_sync_ms": 500,
+      "count_ms": 300,
+      "count_pause_ms": 1500,
+      "error_ms": 50
+    }
+  }
+}
