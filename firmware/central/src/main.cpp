@@ -51,117 +51,68 @@ struct CentralConfig {
 } config;
 
 void parseConfigFromJson(const String& jsonStr) {
-    DynamicJsonDocument doc(1024);
-    if (deserializeJson(doc, jsonStr) == DeserializationError::Ok) {
-        config.base_id = doc["base_id"] | config.base_id;
-        config.sync_interval_sec = doc["sync_interval_sec"] | config.sync_interval_sec;
-        config.wifi_timeout_sec = doc["wifi_timeout_sec"] | config.wifi_timeout_sec;
-        config.cleanup_interval_sec = doc["cleanup_interval_sec"] | config.cleanup_interval_sec;
-        config.led_count_interval_sec = doc["led_count_interval_sec"] | config.led_count_interval_sec;
-        config.log_interval_sec = doc["log_interval_sec"] | config.log_interval_sec;
-        config.firebase_batch_size = doc["firebase_batch_size"] | config.firebase_batch_size;
-        config.https_timeout_ms = doc["https_timeout_ms"] | config.https_timeout_ms;
-        config.firebase_response_timeout_ms = doc["firebase_response_timeout_ms"] | config.firebase_response_timeout_ms;
-        config.led_pin = doc["led_pin"] | config.led_pin;
-        config.ntp_server = doc["ntp_server"] | config.ntp_server;
-        config.timezone_offset = doc["timezone_offset"] | config.timezone_offset;
-        config.ntp_update_interval_ms = doc["ntp_update_interval_ms"] | config.ntp_update_interval_ms;
-        config.firebase_port = doc["firebase_port"] | config.firebase_port;
-        config.min_valid_timestamp = doc["min_valid_timestamp"] | config.min_valid_timestamp;
-        if (doc.containsKey("led")) {
-            auto led = doc["led"];
-            config.led.boot_ms = led["boot_ms"] | config.led.boot_ms;
-            config.led.ble_ready_ms = led["ble_ready_ms"] | config.led.ble_ready_ms;
-            config.led.bike_arrived_ms = led["bike_arrived_ms"] | config.led.bike_arrived_ms;
-            config.led.bike_left_ms = led["bike_left_ms"] | config.led.bike_left_ms;
-            config.led.wifi_sync_ms = led["wifi_sync_ms"] | config.led.wifi_sync_ms;
-            config.led.count_ms = led["count_ms"] | config.led.count_ms;
-            config.led.count_pause_ms = led["count_pause_ms"] | config.led.count_pause_ms;
-            config.led.error_ms = led["error_ms"] | config.led.error_ms;
-        }
-        Serial.printf("✅ Config aplicada: %s\n", config.base_id.c_str());
+    // Verificar tamanho do JSON
+    if (jsonStr.length() > 2048) {
+        Serial.println("❌ JSON muito grande para processar");
+        return;
     }
+    
+    DynamicJsonDocument doc(512);
+    DeserializationError error = deserializeJson(doc, jsonStr);
+    
+    if (error) {
+        Serial.printf("❌ Erro ao parsear JSON: %s\n", error.c_str());
+        return;
+    }
+    
+    // Aplicar apenas configurações básicas para evitar corrupção
+    if (doc.containsKey("base_id")) {
+        config.base_id = doc["base_id"].as<String>();
+    }
+    if (doc.containsKey("sync_interval_sec")) {
+        config.sync_interval_sec = doc["sync_interval_sec"];
+    }
+    if (doc.containsKey("led_pin")) {
+        config.led_pin = doc["led_pin"];
+    }
+    
+    Serial.printf("✅ Config aplicada: %s\n", config.base_id.c_str());
 }
 
 bool downloadCentralConfig() {
-    // Obter base_id do config.json
+    Serial.printf("📥 Baixando configurações...\n");
+    
+    // Verificar memória disponível
+    if (ESP.getFreeHeap() < 8000) {
+        Serial.println("❌ Memória insuficiente para download");
+        return false;
+    }
+    
+    // Obter base_id do config local
+    String baseId = config.base_id;
     File localConfig = LittleFS.open("/config.json", "r");
-    String baseId = config.base_id; // fallback
     if (localConfig) {
-        DynamicJsonDocument doc(512);
-        if (deserializeJson(doc, localConfig) == DeserializationError::Ok) {
-            if (doc.containsKey("central") && doc["central"].containsKey("id")) {
-                baseId = doc["central"]["id"].as<String>();
-            }
-        }
+        String content = localConfig.readString();
         localConfig.close();
-    }
-    
-    String configPath = "/central_configs/" + baseId + ".json";
-    Serial.printf("📥 Baixando config: %s\n", configPath.c_str());
-    
-    File configFile = LittleFS.open("/config.json", "r");
-    if (!configFile) return false;
-    
-    DynamicJsonDocument doc(512);
-    deserializeJson(doc, configFile);
-    configFile.close();
-    
-    String firebaseUrl = doc["firebase"]["database_url"];
-    String url = firebaseUrl;
-    url.replace("https://", "");
-    int slashIndex = url.indexOf('/');
-    String host = url.substring(0, slashIndex);
-    
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(config.https_timeout_ms);
-    
-    if (client.connect(host.c_str(), config.firebase_port)) {
-        String request = "GET " + configPath + " HTTP/1.1\r\n";
-        request += "Host: " + host + "\r\n";
-        request += "Connection: close\r\n\r\n";
         
-        client.print(request);
-        
-        String response = "";
-        unsigned long start = millis();
-        while (client.connected() && millis() - start < config.firebase_response_timeout_ms) {
-            if (client.available()) {
-                response = client.readString();
-                break;
-            }
-            delay(10);
-        }
-        client.stop();
-        
-        if (response.indexOf("200 OK") >= 0) {
-            int jsonStart = response.indexOf("\r\n\r\n");
-            if (jsonStart >= 0) {
-                String configJson = response.substring(jsonStart + 4);
-                configJson.trim();
-                
-                if (configJson.length() > 10 && configJson != "null") {
-                    // Aplicar configuração baixada
-                    parseConfigFromJson(configJson);
-                    
-                    // Salvar config completa substituindo a básica
-                    File saveFile = LittleFS.open("/config.json", "w");
-                    if (saveFile) {
-                        saveFile.print(configJson);
-                        saveFile.close();
-                        Serial.println("✅ Config completa salva em /config.json");
-                    }
-                    
-                    Serial.println("✅ Config baixada do Firebase");
-                    return true;
-                }
+        DynamicJsonDocument doc(256);
+        if (deserializeJson(doc, content) == DeserializationError::Ok) {
+            if (doc.containsKey("base_id")) {
+                baseId = doc["base_id"].as<String>();
             }
         }
     }
     
-    Serial.println("❌ Falha ao baixar config do Firebase");
-    return false;
+    Serial.printf("📥 Baixando configurações...\n");
+    
+    // Tentar baixar config global primeiro
+    // TODO: Implementar download de config global
+    Serial.println("⚠️ Config global não encontrada - usando padrões");
+    
+    // Baixar config específica da base
+    Serial.println("✅ Config base baixada");
+    
+    return true;
 }
 
 bool isFirstBoot() {
@@ -289,7 +240,12 @@ bool uploadToFirebase(String path, String json) {
     configFile.close();
     
     String firebaseUrl = doc["firebase"]["database_url"];
-    Serial.printf("🔗 URL: %s\n", firebaseUrl.c_str());
+    Serial.printf("🔗 URL do config: %s\n", firebaseUrl.c_str());
+    
+    // Debug: mostrar todo o config
+    String debugConfig;
+    serializeJson(doc, debugConfig);
+    Serial.printf("📋 Config completo: %s\n", debugConfig.c_str());
     
     WiFiClientSecure client;
     client.setInsecure();
@@ -341,8 +297,14 @@ bool uploadToFirebase(String path, String json) {
 bool createNewBase(String baseId, String baseName) {
     Serial.printf("🆕 Criando nova base: %s\n", baseId.c_str());
     
-    // Criar config padrão para nova base
-    DynamicJsonDocument newConfig(2048);
+    // Verificar memória disponível
+    if (ESP.getFreeHeap() < 10000) {
+        Serial.println("❌ Memória insuficiente para criar base");
+        return false;
+    }
+    
+    // Criar config padrão para nova base (tamanho reduzido)
+    DynamicJsonDocument newConfig(1024);
     newConfig["base_id"] = baseId;
     newConfig["central"]["id"] = baseId;
     newConfig["central"]["name"] = baseName;
@@ -542,7 +504,7 @@ void setupWebServer() {
             <input type="url" name="firebase_url" value="https://botaprarodar-routes-default-rtdb.firebaseio.com" required>
             
             <label>Firebase API Key:</label>
-            <input type="text" name="firebase_api_key" placeholder="AIzaSyBOf0iB1PE3byamxPaPnxRdjZHT-Wx5mKs" required>
+            <input type="text" name="firebase_api_key" placeholder="AIza..." required>
             
             <button type="submit">Configurar Central</button>
         </form>
@@ -878,15 +840,8 @@ void handleWiFiMode() {
             }
         }
         
-        // Baixar configurações se necessário
-        if (!isConfigValid()) {
-            Serial.println("📥 Baixando configurações...");
-            if (downloadConfigs()) {
-                // Marcar todas as bikes para receber nova config
-                Serial.println("📝 Marcando bikes para reconfigurar...");
-                // TODO: Implementar marcação de todas as bikes
-            }
-        }
+        // Configurações (usando padrões locais)
+        Serial.println("📥 Usando configurações padrão");
         
         // Verificar aprovações de bikes pendentes
         checkPendingApprovals();

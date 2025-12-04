@@ -1,8 +1,0 @@
-{
-  "firebase_host": "botaprarodar-routes-default-rtdb.firebaseio.com",
-  "firebase_auth": "your_firebase_auth_token_here",
-  "base_id": "base01",
-  "base_name": "Base Centro",
-  "wifi_ssid": "BPR_Base01",
-  "wifi_password": "senha_base01"
-}
