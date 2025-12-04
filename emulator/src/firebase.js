@@ -1,7 +1,22 @@
 const chalk = require('chalk');
+const fs = require('fs');
+const path = require('path');
 
 class MockFirebase {
   constructor() {
+    // Carrega configurações reais
+    const configPath = path.join(__dirname, '../../scripts/central_configs.json');
+    let realConfigs = {};
+    
+    try {
+      if (fs.existsSync(configPath)) {
+        realConfigs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        this.log('✅ Configurações reais carregadas');
+      }
+    } catch (error) {
+      this.log('⚠️  Usando configurações padrão');
+    }
+
     this.data = {
       config: {
         version: 3,
@@ -12,25 +27,7 @@ class MockFirebase {
         min_battery_voltage: 3.45,
         update_timestamp: Date.now()
       },
-      central_configs: {
-        base01: {
-          base_id: 'base01',
-          sync_interval_sec: 300,
-          wifi_timeout_sec: 30,
-          led_pin: 8,
-          ntp_server: 'pool.ntp.org',
-          timezone_offset: -10800,
-          firebase_batch_size: 8000,
-          led: {
-            boot_ms: 100,
-            ble_ready_ms: 2000,
-            wifi_sync_ms: 500,
-            bike_arrived_ms: 200,
-            bike_left_ms: 1000,
-            error_ms: 50
-          }
-        }
-      },
+      central_configs: realConfigs,
       bases: {},
       bikes: {},
       wifi_scans: {},
