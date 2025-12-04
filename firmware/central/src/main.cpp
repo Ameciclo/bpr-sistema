@@ -592,10 +592,10 @@ void startSetupAP() {
     apName.replace(":", "");
     
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(apName.c_str(), "bpr12345");
+    WiFi.softAP(apName.c_str(), "botaprarodar");
     
     Serial.printf("📶 AP criado: %s\n", apName.c_str());
-    Serial.println("🔑 Senha: bpr12345");
+    Serial.println("🔑 Senha: botaprarodar");
     Serial.println("🌐 Acesse: http://192.168.4.1");
     
     // LED modo setup

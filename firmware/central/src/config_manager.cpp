@@ -112,7 +112,7 @@ bool downloadConfigs() {
         strncpy(configCache.base.name, "Ameciclo", 31);
         configCache.base.max_bikes = 10;
         strncpy(configCache.base.wifi_ssid, "BPR_Base", 31);
-        strncpy(configCache.base.wifi_password, "bpr123456", 63);
+        strncpy(configCache.base.wifi_password, "botaprarodar6", 63);
         configCache.base.lat = -8.062;
         configCache.base.lng = -34.881;
         configCache.base.last_sync = millis() / 1000;

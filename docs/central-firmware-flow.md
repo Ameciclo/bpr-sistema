@@ -291,7 +291,7 @@ struct ConfigCache {
   "name": "Ameciclo",
   "max_bikes": 10,
   "wifi_ssid": "BPR_Base",
-  "wifi_password": "bpr123456",
+  "wifi_password": "botaprarodar6",
   "location": {"lat": -8.062, "lng": -34.881},
   "last_sync": 1764782576
 }

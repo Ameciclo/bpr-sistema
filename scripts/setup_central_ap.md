@@ -11,7 +11,7 @@
 1. **Primeira vez** (sem config):
    - Central entra em **Modo AP** automático
    - Cria rede: `BPR_Setup_XXXXXX` (XXXXXX = MAC)
-   - Senha: `bpr12345`
+   - Senha: `botaprarodar`
    - LED: Piscar alternado (azul/off a cada 1s)
 
 2. **Interface Web** (192.168.4.1):
@@ -48,7 +48,7 @@ bool needsInitialSetup() {
 void startConfigAP() {
     WiFi.mode(WIFI_AP);
     String apName = "BPR_Setup_" + WiFi.macAddress().substring(9);
-    WiFi.softAP(apName.c_str(), "bpr12345");
+    WiFi.softAP(apName.c_str(), "botaprarodar");
     
     // Web server para configuração
     setupConfigWebServer();

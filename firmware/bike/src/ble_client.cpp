@@ -32,7 +32,6 @@ bool BikeClient::scanForBase(const String& baseName) {
       Serial.printf("✅ Base encontrada: %s RSSI:%d\n", 
                     device.getAddress().toString().c_str(), device.getRSSI());
       
-      baseAddress = device.getAddress();
       baseFound = true;
       return true;
     }
@@ -48,10 +47,30 @@ bool BikeClient::connectToBase() {
   
   Serial.println("🔗 Conectando à base...");
   
-  if (pClient->connect(baseAddress)) {
-    Serial.println("✅ Conectado à base");
-    connected = true;
-    return true;
+  // Usar o mesmo padrão do simulator que funcionava
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setActiveScan(true);
+  pScan->setInterval(100);
+  pScan->setWindow(99);
+  
+  NimBLEScanResults results = pScan->start(5, false);
+  
+  for (int i = 0; i < results.getCount(); i++) {
+    NimBLEAdvertisedDevice device = results.getDevice(i);
+    
+    if (device.getName() == baseBleName.c_str()) {
+      Serial.printf("✅ Conectando: %s RSSI:%d\n", 
+                    device.getAddress().toString().c_str(), device.getRSSI());
+      
+      if (pClient->connect(&device)) {
+        Serial.println("✅ Conectado à base");
+        connected = true;
+        
+        // Enviar dados imediatamente como no simulator
+        sendBikeInfo();
+        return true;
+      }
+    }
   }
   
   Serial.println("❌ Falha na conexão");
