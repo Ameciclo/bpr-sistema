@@ -256,8 +256,8 @@ bool initBLESimple() {
     Serial.println("🔵 Initializing BLE (simple)...");
     
     try {
-        // Minimal NimBLE init
-        NimBLEDevice::init("BPR Base Station");
+        // Minimal NimBLE init com nome configurado
+        NimBLEDevice::init(deviceName.c_str());
         
         // Set low power
         NimBLEDevice::setPower(ESP_PWR_LVL_P3); // 3dBm
@@ -360,12 +360,8 @@ bool isBLEReady() {
 
 void setBLEDeviceName(String name) {
     deviceName = name;
-    if (bleReady) {
-        // Reinicializar com novo nome
-        NimBLEDevice::deinit();
-        NimBLEDevice::init(name.c_str());
-        Serial.printf("📡 Nome BLE atualizado: %s\n", name.c_str());
-    }
+    Serial.printf("📡 Nome BLE configurado: %s\n", name.c_str());
+    // Nota: O nome será aplicado na próxima inicialização do BLE
 }
 
 void onBLEConnect(uint16_t connHandle) {

@@ -1,0 +1,14 @@
+{
+  "name": "bpr-emulator",
+  "version": "1.0.0",
+  "description": "Emulador completo do sistema BPR - Central e Bikes",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "inquirer": "^8.2.6"
+  }
+}

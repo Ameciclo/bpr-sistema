@@ -183,8 +183,11 @@ void handleAtBaseState() {
   
   // Enviar dados WiFi se houver
   if (wifiScanner.hasRecords()) {
-    if (bleClient.sendWifiData(wifiScanner.getRecords())) {
-      wifiScanner.clearRecords();
+    String wifiData;
+    if (wifiScanner.exportAllData(wifiData)) {
+      if (bleClient.sendWifiDataJson(wifiData)) {
+        wifiScanner.clearAllData();
+      }
     }
   }
   
@@ -305,7 +308,7 @@ void printStatus() {
                 config.getBikeId().c_str(), stateNames[currentState], powerManager.getUptimeSeconds());
   Serial.printf("🔋 %.2fV (%d%%) %s | 📡 %d registros\n", 
                 battery.readVoltage(), battery.getPercentage(),
-                lowBatteryMode ? "⚠️" : "✅", wifiScanner.getRecordCount());
+                lowBatteryMode ? "⚠️" : "✅", wifiScanner.getTotalStoredCount());
   Serial.printf("🔵 BLE: %s | ⏱️ Último scan: %ds atrás\n",
                 bleClient.isConnected() ? "Conectado" : "Desconectado",
                 systemTime - lastScanTime);

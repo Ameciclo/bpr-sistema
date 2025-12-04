@@ -8,15 +8,16 @@ Sistema de firmware para bicicletas compartilhadas do ecossistema Bota Pra Rodar
 - **Comunicação BLE** - Cliente para conectar com a Base
 - **WiFi Scanning** - Coleta de dados de localização
 - **Máquina de Estados** - 5 estados bem definidos
-- **Buffer local** - Armazenamento offline em LittleFS
+- **Armazenamento persistente** - Sistema LittleFS para até 20.000 registros WiFi
 - **Monitoramento de bateria** - ADC calibrado com média móvel
 
 ## 🔧 Hardware
 
-- **MCU**: Seeed Studio XIAO ESP32-C3
+- **MCU**: Seeed Studio XIAO ESP32-C3 (4MB flash interno)
 - **Bateria**: Leitura via ADC no pino A0
 - **LED**: Pino 8 (indicador de status)
 - **Botão**: Pino 9 (modo emergência)
+- **Storage**: 1MB LittleFS (~20.000 registros WiFi)
 
 ## 📊 Estados de Operação
 
@@ -161,10 +162,39 @@ O sistema imprime status a cada 30 segundos:
 - **LED**: Indica estado atual
 - **Botão**: Modo emergência
 
+## 💾 Sistema de Armazenamento
+
+### Capacidade:
+- **Flash interno**: 4MB total
+- **LittleFS**: ~1MB disponível
+- **Registros WiFi**: ~20.000 (50 bytes cada)
+- **Autonomia**: ~14 dias de coleta contínua
+
+### Funcionamento:
+```
+Scan WiFi → Buffer RAM (50 registros)
+    ↓ (buffer cheio)
+Flush → /wifi_X.json (1000 registros/arquivo)
+    ↓ (na base)
+Export → JSON completo via BLE
+    ↓ (upload OK)
+Limpeza → Remove todos os arquivos
+```
+
+### Estrutura de Arquivos:
+```
+/wifi_index.txt     # Índice do arquivo atual
+/wifi_0.json        # Primeiros 1000 registros
+/wifi_1.json        # Próximos 1000 registros
+/wifi_N.json        # Até esgotar espaço
+/config.json        # Configurações da bike
+```
+
 ## 📝 TODO
 
-- [ ] Implementar persistência LittleFS completa
-- [ ] Adicionar compressão de dados WiFi
+- [x] ~~Implementar persistência LittleFS completa~~
+- [ ] Adicionar compressão binária (13 bytes vs 50 bytes JSON)
 - [ ] Otimizar consumo BLE
 - [ ] Implementar watchdog
 - [ ] Adicionar OTA updates
+- [ ] Wear leveling para flash

@@ -1,40 +1,32 @@
-# Scripts de Automação
+# Scripts de Configuração
 
-Scripts para facilitar o desenvolvimento e deploy do sistema BPR.
+## Setup das Configurações das Centrais
 
-## 📋 Scripts Disponíveis
-
-### 🔧 Desenvolvimento
-- `setup.sh` - Setup inicial completo
-- `dev-firmware.sh` - Desenvolvimento do firmware
-- `dev-bot.sh` - Desenvolvimento do bot
-- `dev-web.sh` - Desenvolvimento do web
-
-### 🚀 Deploy
-- `deploy-firmware.sh` - Deploy do firmware
-- `deploy-bot.sh` - Deploy do bot
-- `deploy-web.sh` - Deploy do web
-- `deploy-all.sh` - Deploy completo
-
-### 🧪 Testes
-- `test-firmware.sh` - Testes do firmware
-- `test-integration.sh` - Testes de integração
-
-## 🎯 Uso
-
+### 1. Copiar arquivo de exemplo
 ```bash
-# Setup inicial
-./scripts/setup.sh
-
-# Desenvolvimento
-./scripts/dev-firmware.sh
-./scripts/dev-bot.sh
-./scripts/dev-web.sh
-
-# Deploy
-./scripts/deploy-all.sh
+cp central_configs.json.example central_configs.json
 ```
 
-## ⚙️ Configuração
+### 2. Editar senhas WiFi
+Abra `central_configs.json` e substitua `YOUR_WIFI_PASSWORD_HERE` pelas senhas reais:
 
-Os scripts usam variáveis de ambiente definidas em `.env` na raiz do projeto.
+```json
+{
+  "ameciclo": {
+    "wifi": {
+      "ssid": "WIFI_AMECICLO",
+      "password": "senha_real_aqui"
+    }
+  }
+}
+```
+
+### 3. Upload para Firebase
+```bash
+node upload_central_configs.js
+```
+
+## ⚠️ Importante
+- O arquivo `central_configs.json` está no `.gitignore` e não deve ser commitado
+- Apenas o arquivo `.example` deve ir para o repositório
+- Mantenha as senhas seguras e não as compartilhe

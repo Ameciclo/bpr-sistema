@@ -51,8 +51,16 @@ async function main() {
     try {
         console.log('🚀 Iniciando upload das configurações das centrais...');
         
-        // Carregar configurações
+        // Verificar se arquivo de config existe
         const configPath = path.join(__dirname, 'central_configs.json');
+        if (!fs.existsSync(configPath)) {
+            console.error('❌ Arquivo central_configs.json não encontrado!');
+            console.log('💡 Execute: cp central_configs.json.example central_configs.json');
+            console.log('💡 E edite as senhas WiFi antes de executar novamente.');
+            process.exit(1);
+        }
+        
+        // Carregar configurações
         const configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         
         // Upload individual de cada central

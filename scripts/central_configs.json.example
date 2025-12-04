@@ -1,7 +1,6 @@
 {
   "ameciclo": {
     "base_id": "ameciclo",
-    "central_name": "BPR_ameciclo",
     "central": {
       "id": "ameciclo",
       "name": "Ameciclo",
@@ -13,7 +12,7 @@
     },
     "wifi": {
       "ssid": "WIFI_AMECICLO",
-      "password": "ameciclo2024"
+      "password": "YOUR_WIFI_PASSWORD_HERE"
     },
     "firebase": {
       "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
@@ -45,7 +44,6 @@
   },
   "cepas": {
     "base_id": "cepas",
-    "central_name": "BPR_cepas",
     "central": {
       "id": "cepas",
       "name": "CEPAS",
@@ -57,7 +55,7 @@
     },
     "wifi": {
       "ssid": "WIFI_CEPAS",
-      "password": "cepas2024"
+      "password": "YOUR_WIFI_PASSWORD_HERE"
     },
     "firebase": {
       "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
@@ -89,7 +87,6 @@
   },
   "ctresiste": {
     "base_id": "ctresiste",
-    "central_name": "BPR_ctresiste",
     "central": {
       "id": "ctresiste",
       "name": "CTResiste",
@@ -101,7 +98,7 @@
     },
     "wifi": {
       "ssid": "WIFI_CTRESISTE",
-      "password": "ctresiste2024"
+      "password": "YOUR_WIFI_PASSWORD_HERE"
     },
     "firebase": {
       "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"
@@ -133,7 +130,6 @@
   },
   "base01": {
     "base_id": "base01",
-    "central_name": "BPR_base01",
     "central": {
       "id": "base01",
       "name": "Base Teste",
@@ -145,7 +141,7 @@
     },
     "wifi": {
       "ssid": "WIFI_TESTE",
-      "password": "teste123"
+      "password": "YOUR_WIFI_PASSWORD_HERE"
     },
     "firebase": {
       "database_url": "https://botaprarodar-routes-default-rtdb.firebaseio.com"

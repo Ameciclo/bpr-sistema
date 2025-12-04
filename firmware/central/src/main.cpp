@@ -24,6 +24,7 @@ std::vector<PendingBike> pendingBikes;
 // Configurações padrão (fallbacks)
 struct CentralConfig {
     String base_id = "base01";
+    String central_name = "BPR Base Station";
     int sync_interval_sec = 300;
     int wifi_timeout_sec = 30;
     int cleanup_interval_sec = 60;
@@ -68,6 +69,9 @@ void parseConfigFromJson(const String& jsonStr) {
     // Aplicar apenas configurações básicas para evitar corrupção
     if (doc.containsKey("base_id")) {
         config.base_id = doc["base_id"].as<String>();
+    }
+    if (doc.containsKey("central_name")) {
+        config.central_name = doc["central_name"].as<String>();
     }
     if (doc.containsKey("sync_interval_sec")) {
         config.sync_interval_sec = doc["sync_interval_sec"];
@@ -137,8 +141,11 @@ void loadCentralConfig() {
                 // É config básica - extrair base_id
                 if (testDoc.containsKey("base_id")) {
                     config.base_id = testDoc["base_id"].as<String>();
-                    Serial.printf("✅ Config básica carregada - Base: %s\n", config.base_id.c_str());
                 }
+                if (testDoc.containsKey("central_name")) {
+                    config.central_name = testDoc["central_name"].as<String>();
+                }
+                Serial.printf("✅ Config básica carregada - Base: %s (%s)\n", config.base_id.c_str(), config.central_name.c_str());
             }
         }
     } else {
@@ -306,6 +313,7 @@ bool createNewBase(String baseId, String baseName) {
     // Criar config padrão para nova base (tamanho reduzido)
     DynamicJsonDocument newConfig(1024);
     newConfig["base_id"] = baseId;
+    newConfig["central_name"] = "BPR_" + baseId;
     newConfig["central"]["id"] = baseId;
     newConfig["central"]["name"] = baseName;
     newConfig["central"]["max_bikes"] = 10;
@@ -493,6 +501,7 @@ void setupWebServer() {
             
             <label>Nome da Base:</label>
             <input type="text" name="base_name" placeholder="ex: Ameciclo, CEPAS, CTResiste" required>
+            <small>O nome BLE será automaticamente: BPR_[id_da_base]</small>
             
             <label>WiFi SSID:</label>
             <input type="text" name="wifi_ssid" required>
@@ -526,6 +535,7 @@ void setupWebServer() {
         // Criar config básica para conectar
         DynamicJsonDocument basicConfig(512);
         basicConfig["base_id"] = baseId;
+        basicConfig["central_name"] = "BPR_" + baseId;  // Padrão para descoberta
         basicConfig["wifi"]["ssid"] = wifiSSID;
         basicConfig["wifi"]["password"] = wifiPassword;
         basicConfig["firebase"]["database_url"] = firebaseUrl;
@@ -559,6 +569,7 @@ void setupWebServer() {
             }
             
             config.base_id = baseId;
+            config.central_name = "BPR_" + baseId;
             
             String response = R"(
 <!DOCTYPE html>
@@ -647,14 +658,20 @@ void setup() {
         invalidateConfig();
     }
     
+    // Configurar nome BLE antes da inicialização
+    String centralName = config.central_name;
+    if (centralName == "BPR Base Station") {
+        // Se não foi configurado, usar padrão BPR_ + base_id
+        centralName = "BPR_" + config.base_id;
+        config.central_name = centralName;
+    }
+    setBLEDeviceName(centralName);
+    
     // BLE sempre ativo
     if (initBLESimple()) {
         Serial.println("✅ BLE OK");
         startBLEServer();
         
-        // Configurar advertising da central
-        String centralName = "BPR_BASE_" + config.base_id;
-        setBLEDeviceName(centralName);
         Serial.printf("📡 Central anunciando como: %s\n", centralName.c_str());
         
         setLEDPattern(LED_BLE_READY);
