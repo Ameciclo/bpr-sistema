@@ -53,6 +53,33 @@ class FirebaseService {
     sessionRef.on('child_added', callback);
   }
 
+  // Escutar conexões BLE (chegadas/saídas da base)
+  listenToBikeConnections(callback) {
+    if (!this.db) return;
+    
+    const bikesRef = this.db.ref('bikes');
+    bikesRef.on('child_changed', (snapshot) => {
+      const bikeId = snapshot.key;
+      const bikeData = snapshot.val();
+      
+      // Verificar se há novas conexões
+      if (bikeData.sessions) {
+        const sessions = Object.values(bikeData.sessions);
+        const latestSession = sessions[sessions.length - 1];
+        
+        if (latestSession.connections) {
+          const connections = latestSession.connections;
+          const latestConnection = connections[connections.length - 1];
+          
+          if (latestConnection) {
+            const [time, event, base, ip] = latestConnection;
+            callback(bikeId, { time, event, base, ip });
+          }
+        }
+      }
+    });
+  }
+
   // Buscar dados completos de uma bike
   async getBikeData(bikeId) {
     if (!this.db) return null;
@@ -101,6 +128,57 @@ class FirebaseService {
       console.error('Erro ao buscar redes:', error);
       return {};
     }
+  }
+
+  // Buscar todas as bases
+  async getAllBases() {
+    if (!this.db) return {};
+    
+    try {
+      const snapshot = await this.db.ref('bases').once('value');
+      return snapshot.val() || {};
+    } catch (error) {
+      console.error('Erro ao buscar bases:', error);
+      return {};
+    }
+  }
+
+  // Buscar estatísticas públicas
+  async getPublicStats() {
+    if (!this.db) return {};
+    
+    try {
+      const snapshot = await this.db.ref('public_stats').once('value');
+      return snapshot.val() || {};
+    } catch (error) {
+      console.error('Erro ao buscar estatísticas:', error);
+      return {};
+    }
+  }
+  // Escutar mudanças de bateria
+  listenToBatteryChanges(callback) {
+    if (!this.db) return;
+    
+    const bikesRef = this.db.ref('bikes');
+    bikesRef.on('child_changed', (snapshot) => {
+      const bikeId = snapshot.key;
+      const bikeData = snapshot.val();
+      
+      if (bikeData.sessions) {
+        const sessions = Object.values(bikeData.sessions);
+        const activeSession = sessions.find(s => !s.end);
+        
+        if (activeSession && activeSession.battery) {
+          const batteryReadings = activeSession.battery;
+          const latestReading = batteryReadings[batteryReadings.length - 1];
+          
+          if (latestReading) {
+            const [timestamp, voltage, charging] = latestReading;
+            callback(bikeId, { voltage, charging: !!charging, timestamp });
+          }
+        }
+      }
+    });
   }
 }
 

@@ -1,6 +1,9 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const BikeMonitorService = require('./services/bikeMonitor');
+const subscriptionManager = require('./services/subscriptionManager');
+const StationMonitor = require('./services/stationMonitor');
+const firebaseService = require('./config/firebase');
 
 // Verificar variáveis de ambiente obrigatórias
 const requiredEnvVars = [
@@ -21,23 +24,29 @@ if (missingVars.length > 0) {
 // Inicializar bot
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const bikeMonitor = new BikeMonitorService(bot);
+const stationMonitor = new StationMonitor(bot);
 
 // Comandos do bot
 bot.start((ctx) => {
   const welcomeMessage = `
-🚴*Bot de Monitoramento de Bicicletas*
+🚴 *Bot Pra Rodar*
 
-Bem-vindo! Este bot monitora bicicletas compartilhadas em tempo real.
+Bem-vindo ao sistema de monitoramento de bicicletas compartilhadas!
 
-*Comandos disponíveis:*
-/status [bike] - Status de uma bike específica
-/rota [bike] - Última rota calculada
-/bikes - Listar todas as bikes
-/help - Mostrar esta ajuda
+🎯 *O que posso fazer:*
+• 📊 Mostrar bikes disponíveis
+• 📍 Acompanhar viagens em tempo real
+• 📱 Enviar notificações personalizadas
+• 🌱 Calcular CO₂ economizado
+• 🗺️ Gerar mapas de rotas
 
-*Exemplo:*
-\`/status intenso\`
-\`/rota intenso\`
+🚀 *Começar:*
+1. Use /bikes para ver bikes disponíveis
+2. Use /seguir [bike] para receber notificações
+3. Acompanhe suas viagens automaticamente!
+
+📡 *Canal público:* @prarodar_updates
+🆘 *Ajuda:* /help
   `;
   
   ctx.replyWithMarkdown(welcomeMessage);
@@ -47,22 +56,28 @@ bot.help((ctx) => {
   const helpMessage = `
 🤖 *Comandos do Bot*
 
-/start - Mensagem de boas-vindas
-/status [bike] - Mostra status atual da bike
-/rota [bike] - Calcula última rota percorrida
-/bikes - Lista todas as bikes monitoradas
-/ping - Testa se o bot está funcionando
+*📊 Consultas:*
+/bikes - Lista bikes disponíveis
+/status [bike] - Status de uma bike
+/rota [bike] - Última rota percorrida
+/estacao [id] - Status de uma estação
 
-*Monitoramento Automático:*
-• ✅ Notifica quando bike chega na base
-• 🚀 Notifica quando bike sai da base  
-• 📡 Mostra redes WiFi coletadas
-• 📍 Calcula localização estimada
-• 📏 Calcula distância percorrida
+*📱 Notificações:*
+/seguir [bike/estacao/sistema] - Receber alertas
+/parar [bike/estacao/sistema] - Parar alertas
+/minhas - Ver suas assinaturas
 
-*Exemplo de uso:*
-\`/status intenso\`
-\`/rota intenso\`
+*🔧 Utilitários:*
+/ping - Testar funcionamento
+/help - Mostrar esta ajuda
+
+*📡 Canal Público:*
+Siga @prarodar_updates para acompanhar todas as atividades!
+
+*Exemplos:*
+\`/seguir intenso\` - Seguir bike específica
+\`/seguir estacao_base01\` - Seguir estação
+\`/seguir sistema\` - Seguir tudo
   `;
   
   ctx.replyWithMarkdown(helpMessage);
@@ -107,20 +122,40 @@ bot.command('rota', async (ctx) => {
   }
 });
 
-bot.command('bikes', (ctx) => {
-  // Por enquanto, lista as bikes conhecidas
-  // Futuramente pode ser dinâmico baseado no Firebase
-  const message = `
-🚴*Bikes Monitoradas*
-
-• intenso - Bike de teste/desenvolvimento
-
-*Para mais informações:*
-\`/status intenso\` - Ver status atual
-\`/rota intenso\` - Ver última rota
-  `;
-  
-  ctx.replyWithMarkdown(message);
+bot.command('bikes', async (ctx) => {
+  try {
+    const stations = await stationMonitor.getAllStations();
+    
+    let message = `🚴 *Bikes Disponíveis*\n\n`;
+    
+    for (const station of stations) {
+      message += `🏢 *${station.name}*\n`;
+      message += `🔄 Status: ${station.isOnline ? '✅ Online' : '❌ Offline'}\n`;
+      message += `🚲 Bikes: ${station.availableBikes}/${station.maxBikes}\n`;
+      
+      if (station.bikes.length > 0) {
+        message += `\n🔋 *Bikes disponíveis:*\n`;
+        station.bikes.forEach(bike => {
+          const batteryIcon = bike.battery > 3.7 ? '🔋' : bike.battery > 3.5 ? '🔋' : '🪫';
+          message += `• ${bike.id.toUpperCase()} ${batteryIcon} ${bike.battery.toFixed(1)}V\n`;
+        });
+      } else {
+        message += `\n⚠️ Nenhuma bike disponível\n`;
+      }
+      
+      message += `\n`;
+    }
+    
+    message += `\n*Comandos:*\n`;
+    message += `\`/status [bike]\` - Status de uma bike\n`;
+    message += `\`/estacao [id]\` - Status de uma estação\n`;
+    message += `\`/seguir [bike/estacao]\` - Receber notificações`;
+    
+    ctx.replyWithMarkdown(message);
+  } catch (error) {
+    console.error('Erro ao listar bikes:', error);
+    ctx.reply('❌ Erro ao buscar informações das bikes.');
+  }
 });
 
 // Middleware para log de mensagens
@@ -140,13 +175,149 @@ bot.catch((err, ctx) => {
 // Iniciar bot
 bot.launch()
   .then(() => {
-    console.log('🤖 Bot iniciado com sucesso!');
+    console.log('🤖 Bot Pra Rodar iniciado com sucesso!');
     console.log('📱 Aguardando mensagens...');
+    console.log('📡 Canal público:', process.env.PUBLIC_CHANNEL_ID || 'Não configurado');
+    console.log('👨‍💼 Admin chat:', process.env.ADMIN_CHAT_ID || 'Não configurado');
   })
   .catch((error) => {
     console.error('❌ Erro ao iniciar bot:', error);
     process.exit(1);
   });
+
+// Novos comandos de assinatura
+bot.command('seguir', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  const target = args[1];
+  const userId = ctx.from.id.toString();
+  
+  if (!target) {
+    return ctx.reply('❌ Especifique o que seguir:\n/seguir [bike_id] - Seguir bike específica\n/seguir estacao_[id] - Seguir estação\n/seguir sistema - Seguir sistema inteiro');
+  }
+  
+  try {
+    let success = false;
+    let message = '';
+    
+    if (target === 'sistema') {
+      success = await subscriptionManager.subscribeToSystem(userId);
+      message = success ? '✅ Você agora segue o sistema inteiro!' : '⚠️ Você já segue o sistema.';
+    } else if (target.startsWith('estacao_')) {
+      const stationId = target.replace('estacao_', '');
+      success = await subscriptionManager.subscribeToStation(userId, stationId);
+      message = success ? `✅ Você agora segue a estação ${stationId}!` : `⚠️ Você já segue esta estação.`;
+    } else {
+      success = await subscriptionManager.subscribeToBike(userId, target.toLowerCase());
+      message = success ? `✅ Você agora segue a bike ${target.toUpperCase()}!` : `⚠️ Você já segue esta bike.`;
+    }
+    
+    ctx.reply(message);
+  } catch (error) {
+    console.error('Erro ao criar assinatura:', error);
+    ctx.reply('❌ Erro ao processar assinatura.');
+  }
+});
+
+bot.command('parar', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  const target = args[1];
+  const userId = ctx.from.id.toString();
+  
+  if (!target) {
+    return ctx.reply('❌ Especifique o que parar de seguir:\n/parar [bike_id]\n/parar estacao_[id]\n/parar sistema');
+  }
+  
+  try {
+    let success = false;
+    
+    if (target === 'sistema') {
+      success = await subscriptionManager.unsubscribe(userId, 'system');
+    } else if (target.startsWith('estacao_')) {
+      const stationId = target.replace('estacao_', '');
+      success = await subscriptionManager.unsubscribe(userId, 'station', stationId);
+    } else {
+      success = await subscriptionManager.unsubscribe(userId, 'bike', target.toLowerCase());
+    }
+    
+    const message = success ? '✅ Assinatura removida!' : '⚠️ Você não seguia isso.';
+    ctx.reply(message);
+  } catch (error) {
+    console.error('Erro ao remover assinatura:', error);
+    ctx.reply('❌ Erro ao processar solicitação.');
+  }
+});
+
+bot.command('minhas', (ctx) => {
+  const userId = ctx.from.id.toString();
+  const subs = subscriptionManager.getUserSubscriptions(userId);
+  
+  let message = `📱 *Suas Assinaturas*\n\n`;
+  
+  if (subs.system) {
+    message += `✅ Sistema completo\n`;
+  }
+  
+  if (subs.bikes.length > 0) {
+    message += `\n🚲 *Bikes:*\n`;
+    subs.bikes.forEach(bike => {
+      message += `• ${bike.toUpperCase()}\n`;
+    });
+  }
+  
+  if (subs.stations.length > 0) {
+    message += `\n🏢 *Estações:*\n`;
+    subs.stations.forEach(station => {
+      message += `• ${station}\n`;
+    });
+  }
+  
+  if (!subs.system && subs.bikes.length === 0 && subs.stations.length === 0) {
+    message += `⚠️ Você não segue nada ainda.\n\n`;
+    message += `Use /seguir para começar!`;
+  }
+  
+  ctx.replyWithMarkdown(message);
+});
+
+bot.command('estacao', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  const stationId = args[1];
+  
+  if (!stationId) {
+    return ctx.reply('❌ Especifique o ID da estação.\nExemplo: /estacao base01');
+  }
+  
+  try {
+    const station = await stationMonitor.getStationStatus(stationId);
+    
+    if (!station) {
+      return ctx.reply('❌ Estação não encontrada.');
+    }
+    
+    let message = `🏢 *${station.name}*\n\n`;
+    message += `🔄 Status: ${station.isOnline ? '✅ Online' : '❌ Offline'}\n`;
+    message += `🚲 Bikes disponíveis: ${station.availableBikes}/${station.maxBikes}\n`;
+    
+    if (station.location) {
+      message += `📍 Localização: ${station.location.lat}, ${station.location.lng}\n`;
+    }
+    
+    if (station.bikes.length > 0) {
+      message += `\n🔋 *Bikes:*\n`;
+      station.bikes.forEach(bike => {
+        const batteryIcon = bike.battery > 3.7 ? '🔋' : bike.battery > 3.5 ? '🔋' : '🪫';
+        const lastContact = new Date(bike.lastContact).toLocaleString('pt-BR');
+        message += `• ${bike.id.toUpperCase()} ${batteryIcon} ${bike.battery.toFixed(1)}V\n`;
+        message += `  Último contato: ${lastContact}\n`;
+      });
+    }
+    
+    ctx.replyWithMarkdown(message);
+  } catch (error) {
+    console.error('Erro ao buscar estação:', error);
+    ctx.reply('❌ Erro ao buscar informações da estação.');
+  }
+});
 
 // Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
