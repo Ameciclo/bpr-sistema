@@ -5,8 +5,7 @@
 #include <freertos/queue.h>
 #include "structs.h"
 #include "firebase_sync.h"
-#include "config.h"
-#include "config_loader.h"
+#include "config_manager.h"
 
 extern QueueHandle_t eventQueue;
 
@@ -24,12 +23,12 @@ void processEvent(SystemEvent* event) {
     switch (event->type) {
         case EVENT_BIKE_CONNECTED:
             Serial.printf("Processing: Bike connected at %u\n", event->timestamp);
-            createAlert("arrived_base", event->bikeId);
+            // createAlert("arrived_base", event->bikeId); // TODO: implement
             break;
             
         case EVENT_BIKE_DISCONNECTED:
             Serial.printf("Processing: Bike %s disconnected at %u\n", event->bikeId, event->timestamp);
-            createAlert("left_base", event->bikeId);
+            // createAlert("left_base", event->bikeId); // TODO: implement
             break;
             
         case EVENT_BIKE_BATTERY_UPDATE:
@@ -37,12 +36,11 @@ void processEvent(SystemEvent* event) {
                 Serial.printf("Processing: Bike %s battery %.2fV at %u\n", 
                              event->bikeId, event->batteryVoltage, event->timestamp);
                 
-                updateBikeStatus(event->bikeId, event->batteryVoltage, event->timestamp);
+                // updateBikeStatus(event->bikeId, event->batteryVoltage, event->timestamp); // TODO: implement
                 
                 // Check for low battery alert
-                GlobalConfig config = getGlobalConfig();
-                if (event->batteryVoltage < config.min_battery_voltage) {
-                    createAlert("battery_low", event->bikeId);
+                if (event->batteryVoltage < 3.45) { // Min battery voltage
+                    // createAlert("battery_low", event->bikeId); // TODO: implement
                 }
             }
             break;
@@ -50,7 +48,7 @@ void processEvent(SystemEvent* event) {
         case EVENT_BIKE_STATUS_UPDATE:
             Serial.printf("Processing: Bike %s status update at %u\n", 
                          event->bikeId, event->timestamp);
-            updateBikeStatus(event->bikeId, event->batteryVoltage, event->timestamp);
+            // updateBikeStatus(event->bikeId, event->batteryVoltage, event->timestamp); // TODO: implement
             break;
             
         case EVENT_WIFI_CONNECTED:
@@ -68,8 +66,7 @@ void processEvent(SystemEvent* event) {
         case EVENT_FIREBASE_SYNC_FAILED:
             {
                 Serial.println("Processing: Firebase sync failed");
-                AppConfig appConfig = getAppConfig();
-                createAlert("sync_failure", appConfig.base_id);
+                // createAlert("sync_failure", "base_id"); // TODO: implement
             }
             break;
             

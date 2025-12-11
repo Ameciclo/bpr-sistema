@@ -16,7 +16,6 @@ Sistema de firmware para bicicletas compartilhadas do ecossistema Bota Pra Rodar
 - **MCU**: Seeed Studio XIAO ESP32-C3 (4MB flash interno)
 - **Bateria**: Leitura via ADC no pino A0
 - **LED**: Pino 8 (indicador de status)
-- **Botão**: Pino 9 (modo emergência)
 - **Storage**: 1MB LittleFS (~20.000 registros WiFi)
 
 ## 📊 Estados de Operação
@@ -79,7 +78,6 @@ DEEP_SLEEP → Hibernação profunda
 ### Características:
 - **F00D** (Config): Base → Bike (configurações)
 - **BEEF** (Status): Bike → Base (status da bike)
-- **CAFE** (Data): Bike → Base (dados WiFi)
 
 ### Estruturas de Dados:
 
@@ -137,11 +135,9 @@ pio device monitor
 - **Scan low battery**: 900s (15min)  
 - **Deep sleep**: 3600s (1h)
 - **Min battery**: 3.45V
-- **Base name**: "BPR Base Station"
+- **Base name**: "BPR_" (prefixo para qualquer base)
 
-### Modo Emergência:
-- Pressionar botão BOOT durante operação
-- Opções: 'r' (restart) ou 'c' (continuar)
+
 
 ## 📈 Monitoramento
 
@@ -160,7 +156,6 @@ O sistema imprime status a cada 30 segundos:
 - **Serial**: 115200 baud
 - **Logs**: Detalhados por módulo
 - **LED**: Indica estado atual
-- **Botão**: Modo emergência
 
 ## 💾 Sistema de Armazenamento
 

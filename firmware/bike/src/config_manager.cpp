@@ -6,7 +6,7 @@ ConfigManager::ConfigManager() {
 
 void ConfigManager::setDefaults() {
   bikeId = "bike_001";
-  baseBleName = "BPR Base Station";
+  baseBleName = "BPR_"; // Prefixo para procurar qualquer base BPR
   scanIntervalSec = 300;
   scanIntervalLowBattSec = 900;
   deepSleepSec = 3600;

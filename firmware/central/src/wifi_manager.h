@@ -6,8 +6,6 @@
 
 void wifiManagerTask(void *parameter);
 void connectToWiFi();
-void syncNTP();
 bool isWiFiConnected();
-uint32_t getCurrentTimestamp();
 
 #endif

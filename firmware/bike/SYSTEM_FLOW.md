@@ -4,6 +4,19 @@
 
 Sistema de bicicleta compartilhada com comunicação BLE e coleta de dados WiFi para geolocalização offline.
 
+## 🗂️ Arquitetura de Arquivos
+
+### 📁 Estrutura Modular
+```
+firmware/bike/src/
+├── main.cpp              # 🚀 Loop principal e máquina de estados
+├── wifi_scanner.cpp/.h   # 📡 Scanner WiFi com cache local
+├── ble_client.cpp/.h     # 🔵 Cliente BLE para comunicação
+├── battery_monitor.cpp/.h # 🔋 Monitor de bateria e alertas
+├── power_manager.cpp/.h  # ⚡ Gerenciamento de energia/sleep
+└── config_manager.cpp/.h # ⚙️ Configurações dinâmicas
+```
+
 ## 📊 Diagrama de Estados
 
 ```mermaid
@@ -51,111 +64,119 @@ flowchart TD
 
 ## 🔄 Fluxo Detalhado por Estado
 
-### 1️⃣ BOOT (Inicialização)
+### 1️⃣ BOOT (main.cpp)
 ```mermaid
 flowchart LR
-    A[Power ON] --> B[Init Hardware]
-    B --> C[Load Config]
-    C --> D[Check Battery]
-    D --> E{Scan for Base}
+    A[Power ON] --> B[main.cpp setup]
+    B --> C[config_manager loadConfig]
+    C --> D[battery_monitor checkBattery]
+    D --> E[ble_client scanForBase]
     E -->|Found| F[AT_BASE]
     E -->|Not Found| G[SCANNING]
 ```
 
-**Ações:**
-- Inicializar hardware (LED, botão, ADC)
-- Carregar configuração local
-- Verificar nível de bateria
-- Scan BLE por "BPR Base Station"
+**Arquivos Envolvidos:**
+- **main.cpp**: Inicialização geral e setup do hardware
+- **config_manager.cpp**: Carrega configuração local ou padrão
+- **battery_monitor.cpp**: Verifica nível de bateria inicial
+- **ble_client.cpp**: Scan BLE por "BPR Base Station"
 
-### 2️⃣ AT_BASE (Na Base)
+### 2️⃣ AT_BASE (ble_client.cpp)
 ```mermaid
 flowchart LR
-    A[Connect BLE] --> B[Send Status]
-    B --> C[Receive Config]
-    C --> D[Send WiFi Data]
-    D --> E[Clear Buffer]
-    E --> F[Light Sleep 1min]
+    A[Connect BLE] --> B[ble_client sendStatus]
+    B --> C[config_manager receiveConfig]
+    C --> D[wifi_scanner sendBufferedData]
+    D --> E[wifi_scanner clearBuffer]
+    E --> F[power_manager lightSleep]
     F --> G{Still Connected?}
     G -->|Yes| F
     G -->|No| H[SCANNING]
 ```
 
-**Ações:**
-- Conectar BLE à base
-- Enviar status (bateria, registros)
-- Receber configurações atualizadas
-- Transmitir dados WiFi coletados
-- Light sleep periódico (1 minuto)
+**Arquivos Envolvidos:**
+- **ble_client.cpp**: Gerencia conexão e comunicação BLE
+- **battery_monitor.cpp**: Coleta dados de bateria para envio
+- **config_manager.cpp**: Recebe e aplica configurações da base
+- **wifi_scanner.cpp**: Envia dados coletados e limpa buffer
+- **power_manager.cpp**: Light sleep entre operações
 
-### 3️⃣ SCANNING (Coletando Dados)
+### 3️⃣ SCANNING (wifi_scanner.cpp)
 ```mermaid
 flowchart LR
-    A[WiFi Scan] --> B[Save Records]
-    B --> C[Check for Base]
-    C --> D{Base Found?}
-    D -->|Yes| E[AT_BASE]
-    D -->|No| F{Battery/Time Check}
-    F -->|OK| G[Sleep & Repeat]
-    F -->|Low/Long| H[LOW_POWER]
-    G --> A
+    A[wifi_scanner performScan] --> B[wifi_scanner saveRecords]
+    B --> C[power_manager radioDelay 300ms]
+    C --> D[ble_client checkForBase]
+    D --> E{Base Found?}
+    E -->|Yes| F[AT_BASE]
+    E -->|No| G[battery_monitor checkStatus]
+    G -->|OK| H[power_manager sleepBetweenScans]
+    G -->|Low/Long| I[LOW_POWER]
+    H --> A
 ```
 
-**Ações:**
-- Scan WiFi periódico (5min padrão)
-- Salvar registros (BSSID, RSSI, timestamp)
-- Procurar base a cada ciclo
-- Light sleep entre scans
+**Arquivos Envolvidos:**
+- **wifi_scanner.cpp**: Executa scans WiFi e gerencia buffer local
+- **power_manager.cpp**: Delay 200-300ms entre WiFi/BLE para evitar conflito de rádio
+- **ble_client.cpp**: Verifica disponibilidade da base após delay
+- **battery_monitor.cpp**: Monitora bateria para decidir modo de operação
 
-### 4️⃣ LOW_POWER (Economia)
+### 4️⃣ LOW_POWER (power_manager.cpp)
 ```mermaid
 flowchart LR
-    A[Reduce Scan Freq] --> B[WiFi Scan 15min]
-    B --> C[Check for Base]
+    A[power_manager enterLowPower] --> B[wifi_scanner reducedFreqScan]
+    B --> C[ble_client checkForBase]
     C --> D{Base Found?}
     D -->|Yes| E[AT_BASE]
-    D -->|No| F{Battery Critical?}
+    D -->|No| F[battery_monitor isCritical]
     F -->|Yes| G[DEEP_SLEEP]
-    F -->|No| H[Long Sleep]
+    F -->|No| H[power_manager longSleep]
     H --> B
 ```
 
-**Ações:**
-- Scans menos frequentes (15min)
-- Procurar base continuamente
-- Long light sleep entre operações
+**Arquivos Envolvidos:**
+- **power_manager.cpp**: Controla modo de baixo consumo
+- **wifi_scanner.cpp**: Scans com frequência reduzida (15min)
+- **ble_client.cpp**: Continua procurando base
+- **battery_monitor.cpp**: Monitora nível crítico de bateria
 
-### 5️⃣ DEEP_SLEEP (Hibernação)
+### 5️⃣ DEEP_SLEEP (power_manager.cpp)
 ```mermaid
 flowchart LR
-    A[Save Critical Data] --> B[Disable All]
-    B --> C[Set Wake Timer]
-    C --> D[Deep Sleep]
-    D --> E[Wake Up]
-    E --> F[BOOT]
+    A[power_manager prepareDeepSleep] --> B[wifi_scanner saveBuffer]
+    B --> C[config_manager saveState]
+    C --> D[power_manager disablePeripherals]
+    D --> E[power_manager enterDeepSleep]
+    E --> F[Wake Up]
+    F --> G[main.cpp BOOT]
 ```
 
-**Ações:**
-- Salvar dados críticos
-- Desabilitar WiFi/BLE
-- Configurar wake-up timer (1h padrão)
-- Entrar em deep sleep (<10µA)
+**Arquivos Envolvidos:**
+- **power_manager.cpp**: Gerencia entrada e saída do deep sleep
+- **wifi_scanner.cpp**: Salva buffer de dados antes de hibernar
+- **config_manager.cpp**: Salva estado atual do sistema
+- **main.cpp**: Reinicialização após wake-up
 
-## 📡 Comunicação BLE
+## 📡 Comunicação BLE (ble_client.cpp)
 
 ### Fluxo de Sincronização
 ```mermaid
 sequenceDiagram
-    participant B as Bike
+    participant BLE as ble_client.cpp
+    participant BAT as battery_monitor.cpp
+    participant WIFI as wifi_scanner.cpp
+    participant CFG as config_manager.cpp
     participant Base as Base Station
     
-    B->>Base: Scan & Connect
-    B->>Base: Send BikeStatus
-    Base->>B: Send BikeConfig
-    B->>Base: Send WiFi Records (batches)
-    Base->>B: ACK
-    B->>B: Clear local buffer
-    B->>Base: Disconnect or Stay Connected
+    BLE->>Base: Scan & Connect
+    BAT->>BLE: Get battery status
+    BLE->>Base: Send BikeStatus
+    Base->>CFG: Send BikeConfig
+    WIFI->>BLE: Get buffered records
+    BLE->>Base: Send WiFi Records (batches)
+    Base->>BLE: ACK
+    WIFI->>WIFI: Clear local buffer
+    BLE->>Base: Disconnect or Stay Connected
 ```
 
 ### Estruturas de Dados
@@ -185,28 +206,44 @@ classDiagram
         +int8_t rssi
         +uint8_t channel
     }
+    
+    class PowerState {
+        +uint8_t current_state
+        +uint32_t state_start_time
+        +float avg_current_ma
+        +uint32_t sleep_duration_ms
+    }
+    
+    class BatteryData {
+        +float voltage
+        +uint8_t percentage
+        +bool is_charging
+        +uint32_t last_reading
+    }
 ```
 
-## ⚡ Gerenciamento de Energia
+## ⚡ Gerenciamento de Energia (power_manager.cpp)
 
 ### Consumo por Estado
 ```mermaid
 graph LR
-    A[AT_BASE<br/>~5mA] --> B[SCANNING<br/>~50mA]
-    B --> C[LOW_POWER<br/>~2mA]
-    C --> D[DEEP_SLEEP<br/>~10µA]
+    A[AT_BASE ~5mA power_manager] --> B[SCANNING ~50mA wifi_scanner]
+    B --> C[LOW_POWER ~2mA power_manager]
+    C --> D[DEEP_SLEEP ~10µA power_manager]
     D --> A
 ```
 
-### Otimizações
+### Otimizações (power_manager.cpp)
 - **CPU Frequency**: 80MHz (BLE) / 160MHz (WiFi)
 - **WiFi TX Power**: Reduzida para -1dBm
 - **BLE Parameters**: Intervalo otimizado (12ms)
+- **Radio Coordination**: Delay 200-300ms entre WiFi scan e BLE scan
 - **Sleep Modes**: Light sleep entre operações, deep sleep para hibernação
+- **Dynamic Scaling**: Ajuste automático baseado na bateria
 
-## 🔧 Configurações Dinâmicas
+## 🔧 Configurações Dinâmicas (config_manager.cpp)
 
-Todas as configurações são recebidas da Base via BLE:
+Todas as configurações são recebidas da Base via BLE e gerenciadas pelo config_manager.cpp:
 
 | Parâmetro | Padrão | Descrição |
 |-----------|--------|-----------|
@@ -218,18 +255,18 @@ Todas as configurações são recebidas da Base via BLE:
 
 ## 🚨 Tratamento de Erros
 
-### Modo Emergência
+### Modo Emergência (main.cpp)
 - **Trigger**: Botão BOOT pressionado
 - **Ações**: Pausa operação, menu serial
 - **Opções**: Restart ('r') ou Continue ('c')
 
 ### Recuperação Automática
-- **BLE Fail**: Volta para SCANNING
-- **WiFi Fail**: Retry com delay
-- **Battery Critical**: DEEP_SLEEP forçado
-- **Memory Full**: Sobrescreve registros antigos
+- **BLE Fail** (ble_client.cpp): Volta para SCANNING
+- **WiFi Fail** (wifi_scanner.cpp): Retry com delay
+- **Battery Critical** (battery_monitor.cpp): DEEP_SLEEP forçado
+- **Memory Full** (wifi_scanner.cpp): Sobrescreve registros antigos
 
-## 📊 Monitoramento
+## 📊 Monitoramento (main.cpp)
 
 ### Status Periódico (30s)
 ```
@@ -240,9 +277,53 @@ Todas as configurações são recebidas da Base via BLE:
 ==================================================
 ```
 
-### Indicadores LED
+### Dados Coletados por Módulo
+- **battery_monitor.cpp**: Tensão, percentual, status de carregamento
+- **wifi_scanner.cpp**: Redes detectadas, RSSI, timestamps
+- **ble_client.cpp**: Status de conexão, última sincronização
+- **power_manager.cpp**: Estado atual, tempo em cada modo
+- **config_manager.cpp**: Versão da configuração, última atualização
+
+### Indicadores LED (main.cpp)
 - **Boot**: 3 piscadas rápidas
 - **AT_BASE**: LED fixo
 - **SCANNING**: Piscada a cada scan
 - **LOW_POWER**: Piscada lenta
 - **DEEP_SLEEP**: LED off
+
+## 🔄 Integração entre Módulos
+
+### Fluxo de Dados entre Arquivos
+```mermaid
+graph TD
+    A[main.cpp Loop Principal] --> B[wifi_scanner.cpp Coleta WiFi]
+    A --> C[ble_client.cpp Comunicação]
+    A --> D[battery_monitor.cpp Monitor Bateria]
+    A --> E[power_manager.cpp Gerência Energia]
+    A --> F[config_manager.cpp Configurações]
+    
+    B --> E
+    E --> C
+    D --> E
+    F --> B
+    F --> C
+    F --> E
+    
+    C --> G[Base Station]
+    G --> C
+```
+
+### ⚡ Coordenação de Rádio (ESP32-C3)
+**Consideração Técnica Importante:**
+- **WiFi + BLE simultâneo**: Pode causar interferência no ESP32-C3
+- **Solução implementada**: Delay de 200-300ms entre WiFi scan e BLE scan
+- **Gerenciado por**: power_manager.cpp coordena o uso sequencial dos rádios
+- **Benefício**: Evita conflitos de RF mantendo ambas funcionalidades ativas
+
+### Dependências entre Módulos
+- **main.cpp**: Orquestra todos os outros módulos
+- **config_manager.cpp**: Fornece configurações para todos
+- **battery_monitor.cpp**: Informa power_manager.cpp sobre estado da bateria
+- **wifi_scanner.cpp**: Usa configurações e coordena com power_manager para timing
+- **ble_client.cpp**: Aguarda sinal do power_manager após WiFi scan
+- **power_manager.cpp**: Controla energia E coordenação de rádio entre WiFi/BLE

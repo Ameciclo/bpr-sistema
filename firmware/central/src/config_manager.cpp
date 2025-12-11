@@ -1,59 +1,32 @@
 #include "config_manager.h"
+#include "firebase_manager.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <WiFiClientSecure.h>
+#include <WiFi.h>
 
-static ConfigCache configCache = {0};
+static CentralConfigCache configCache = {0};
 
-bool downloadFromFirebase(String path, String& result) {
-    File config = LittleFS.open("/config.json", "r");
-    if (!config) return false;
-    
-    DynamicJsonDocument doc(512);
-    deserializeJson(doc, config);
-    config.close();
-    
-    String firebaseUrl = doc["firebase"]["database_url"];
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(10000);
-    
-    String url = firebaseUrl;
-    url.replace("https://", "");
-    int slashIndex = url.indexOf('/');
-    String host = url.substring(0, slashIndex);
-    
-    String fullPath = path + ".json";
-    
-    if (client.connect(host.c_str(), 443)) {
-        String request = "GET " + fullPath + " HTTP/1.1\r\n";
-        request += "Host: " + host + "\r\n";
-        request += "Connection: close\r\n\r\n";
-        
-        client.print(request);
-        
-        String response = "";
-        unsigned long start = millis();
-        bool headersPassed = false;
-        
-        while (client.connected() && millis() - start < 10000) {
-            if (client.available()) {
-                String line = client.readStringUntil('\n');
-                
-                if (!headersPassed) {
-                    if (line == "\r") {
-                        headersPassed = true;
-                    }
-                } else {
-                    result += line;
-                }
-            }
-            delay(1);
-        }
-        client.stop();
-        
-        return result.length() > 0 && result != "null";
+bool checkConfigUpdates() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
     }
+    
+    CentralConfigCache config = getCentralConfig();
+    String timestampPath = "/central_configs/" + String(config.base_id) + "/last_modified";
+    String timestampJson = "";
+    
+    if (downloadFromFirebase(timestampPath, timestampJson)) {
+        unsigned long remoteTimestamp = timestampJson.toInt();
+        
+        if (remoteTimestamp > configCache.configTimestamp) {
+            Serial.printf("🔄 Config mudou: %lu > %lu\n", remoteTimestamp, configCache.configTimestamp);
+            return true;
+        }
+        
+        Serial.println("✅ Config atualizada - sem mudanças");
+        return false;
+    }
+    
     return false;
 }
 
@@ -63,60 +36,49 @@ bool downloadConfigs() {
         return false;
     }
     
-    Serial.println("📥 Baixando configurações...");
+    Serial.println("📥 Baixando configurações do Firebase...");
     
-    // Download config global
-    String globalJson = "";
-    if (downloadFromFirebase("/config", globalJson)) {
-        Serial.println("✅ Config global baixada");
+    CentralConfigCache config = getCentralConfig();
+    String configPath = "/central_configs/" + String(config.base_id);
+    String configJson = "";
+    
+    DynamicJsonDocument doc(2048);
+    if (downloadFromFirebase(configPath, configJson)) {
+        Serial.println("✅ Config baixada do Firebase");
         
-        DynamicJsonDocument doc(1024);
-        if (deserializeJson(doc, globalJson) == DeserializationError::Ok) {
-            configCache.global.version = doc["version"];
-            configCache.global.wifi_scan_interval_sec = doc["wifi_scan_interval_sec"];
-            configCache.global.wifi_scan_interval_low_batt_sec = doc["wifi_scan_interval_low_batt_sec"];
-            configCache.global.deep_sleep_after_sec = doc["deep_sleep_after_sec"];
-            configCache.global.ble_ping_interval_sec = doc["ble_ping_interval_sec"];
-            configCache.global.min_battery_voltage = doc["min_battery_voltage"];
-            configCache.global.update_timestamp = doc["update_timestamp"];
+        if (deserializeJson(doc, configJson) != DeserializationError::Ok) {
+            Serial.println("❌ ERRO: JSON inválido");
+            return false;
         }
     } else {
-        Serial.println("⚠️ Config global não encontrada - usando padrões");
-        // Valores padrão
-        configCache.global.version = 1;
-        configCache.global.wifi_scan_interval_sec = 25;
-        configCache.global.wifi_scan_interval_low_batt_sec = 60;
-        configCache.global.deep_sleep_after_sec = 300;
-        configCache.global.ble_ping_interval_sec = 5;
-        configCache.global.min_battery_voltage = 3.45;
-        configCache.global.update_timestamp = millis() / 1000;
+        Serial.println("❌ ERRO: Config não encontrada no Firebase");
+        return false;
     }
     
-    // Download config da base
-    String baseJson = "";
-    if (downloadFromFirebase("/bases/ameciclo", baseJson)) {
-        Serial.println("✅ Config base baixada");
-        
-        DynamicJsonDocument doc(1024);
-        if (deserializeJson(doc, baseJson) == DeserializationError::Ok) {
-            strncpy(configCache.base.name, doc["name"], 31);
-            configCache.base.max_bikes = doc["max_bikes"];
-            strncpy(configCache.base.wifi_ssid, doc["wifi_ssid"], 31);
-            strncpy(configCache.base.wifi_password, doc["wifi_password"], 63);
-            configCache.base.lat = doc["location"]["lat"];
-            configCache.base.lng = doc["location"]["lng"];
-            configCache.base.last_sync = doc["last_sync"];
-        }
-    } else {
-        Serial.println("⚠️ Config base não encontrada - usando padrões");
-        strncpy(configCache.base.name, "Ameciclo", 31);
-        configCache.base.max_bikes = 10;
-        strncpy(configCache.base.wifi_ssid, "BPR_Base", 31);
-        strncpy(configCache.base.wifi_password, "botaprarodar6", 63);
-        configCache.base.lat = -8.062;
-        configCache.base.lng = -34.881;
-        configCache.base.last_sync = millis() / 1000;
-    }
+    // Mapear TODOS os campos (sem fallbacks)
+    strncpy(configCache.base_id, doc["base_id"], 31);
+    configCache.sync_interval_sec = doc["sync_interval_sec"];
+    configCache.wifi_timeout_sec = doc["wifi_timeout_sec"];
+    configCache.led_pin = doc["led_pin"];
+    configCache.firebase_batch_size = doc["firebase_batch_size"];
+    
+    // Central info
+    strncpy(configCache.central_name, doc["central"]["name"], 31);
+    configCache.central_max_bikes = doc["central"]["max_bikes"];
+    configCache.central_lat = doc["central"]["location"]["lat"];
+    configCache.central_lng = doc["central"]["location"]["lng"];
+    
+    // WiFi
+    strncpy(configCache.wifi_ssid, doc["wifi"]["ssid"], 31);
+    strncpy(configCache.wifi_password, doc["wifi"]["password"], 63);
+    
+    // LED timings
+    configCache.led_boot_ms = doc["led"]["boot_ms"];
+    configCache.led_ble_ready_ms = doc["led"]["ble_ready_ms"];
+    configCache.led_wifi_sync_ms = doc["led"]["wifi_sync_ms"];
+    
+    // Timestamp da configuração
+    configCache.configTimestamp = doc["last_modified"];
     
     configCache.lastUpdate = millis() / 1000;
     configCache.valid = true;
@@ -124,8 +86,8 @@ bool downloadConfigs() {
     // Salvar cache local
     saveConfigCache();
     
-    Serial.printf("✅ Configs atualizadas - Global v%d, Base: %s\n", 
-                  configCache.global.version, configCache.base.name);
+    Serial.printf("✅ Config atualizada - %s (timestamp: %lu)\n", 
+                  configCache.central_name, configCache.configTimestamp);
     return true;
 }
 
@@ -143,25 +105,22 @@ bool loadConfigCache() {
     }
     file.close();
     
-    // Carregar config global
-    JsonObject global = doc["global"];
-    configCache.global.version = global["version"];
-    configCache.global.wifi_scan_interval_sec = global["wifi_scan_interval_sec"];
-    configCache.global.wifi_scan_interval_low_batt_sec = global["wifi_scan_interval_low_batt_sec"];
-    configCache.global.deep_sleep_after_sec = global["deep_sleep_after_sec"];
-    configCache.global.ble_ping_interval_sec = global["ble_ping_interval_sec"];
-    configCache.global.min_battery_voltage = global["min_battery_voltage"];
-    configCache.global.update_timestamp = global["update_timestamp"];
-    
-    // Carregar config base
-    JsonObject base = doc["base"];
-    strncpy(configCache.base.name, base["name"], 31);
-    configCache.base.max_bikes = base["max_bikes"];
-    strncpy(configCache.base.wifi_ssid, base["wifi_ssid"], 31);
-    strncpy(configCache.base.wifi_password, base["wifi_password"], 63);
-    configCache.base.lat = base["location"]["lat"];
-    configCache.base.lng = base["location"]["lng"];
-    configCache.base.last_sync = base["last_sync"];
+    // Carregar todas as configurações
+    strncpy(configCache.base_id, doc["base_id"], 31);
+    configCache.sync_interval_sec = doc["sync_interval_sec"];
+    configCache.wifi_timeout_sec = doc["wifi_timeout_sec"];
+    configCache.led_pin = doc["led_pin"];
+    configCache.firebase_batch_size = doc["firebase_batch_size"];
+    strncpy(configCache.central_name, doc["central_name"], 31);
+    configCache.central_max_bikes = doc["central_max_bikes"];
+    strncpy(configCache.wifi_ssid, doc["wifi_ssid"], 31);
+    strncpy(configCache.wifi_password, doc["wifi_password"], 63);
+    configCache.central_lat = doc["central_lat"];
+    configCache.central_lng = doc["central_lng"];
+    configCache.led_boot_ms = doc["led_boot_ms"];
+    configCache.led_ble_ready_ms = doc["led_ble_ready_ms"];
+    configCache.led_wifi_sync_ms = doc["led_wifi_sync_ms"];
+    configCache.configTimestamp = doc["configTimestamp"];
     
     configCache.lastUpdate = doc["lastUpdate"];
     configCache.valid = true;
@@ -176,27 +135,22 @@ bool saveConfigCache() {
     
     DynamicJsonDocument doc(2048);
     
-    // Salvar config global
-    JsonObject global = doc.createNestedObject("global");
-    global["version"] = configCache.global.version;
-    global["wifi_scan_interval_sec"] = configCache.global.wifi_scan_interval_sec;
-    global["wifi_scan_interval_low_batt_sec"] = configCache.global.wifi_scan_interval_low_batt_sec;
-    global["deep_sleep_after_sec"] = configCache.global.deep_sleep_after_sec;
-    global["ble_ping_interval_sec"] = configCache.global.ble_ping_interval_sec;
-    global["min_battery_voltage"] = configCache.global.min_battery_voltage;
-    global["update_timestamp"] = configCache.global.update_timestamp;
-    
-    // Salvar config base
-    JsonObject base = doc.createNestedObject("base");
-    base["name"] = configCache.base.name;
-    base["max_bikes"] = configCache.base.max_bikes;
-    base["wifi_ssid"] = configCache.base.wifi_ssid;
-    base["wifi_password"] = configCache.base.wifi_password;
-    JsonObject location = base.createNestedObject("location");
-    location["lat"] = configCache.base.lat;
-    location["lng"] = configCache.base.lng;
-    base["last_sync"] = configCache.base.last_sync;
-    
+    // Salvar todas as configurações
+    doc["base_id"] = configCache.base_id;
+    doc["sync_interval_sec"] = configCache.sync_interval_sec;
+    doc["wifi_timeout_sec"] = configCache.wifi_timeout_sec;
+    doc["led_pin"] = configCache.led_pin;
+    doc["firebase_batch_size"] = configCache.firebase_batch_size;
+    doc["central_name"] = configCache.central_name;
+    doc["central_max_bikes"] = configCache.central_max_bikes;
+    doc["wifi_ssid"] = configCache.wifi_ssid;
+    doc["wifi_password"] = configCache.wifi_password;
+    doc["central_lat"] = configCache.central_lat;
+    doc["central_lng"] = configCache.central_lng;
+    doc["led_boot_ms"] = configCache.led_boot_ms;
+    doc["led_ble_ready_ms"] = configCache.led_ble_ready_ms;
+    doc["led_wifi_sync_ms"] = configCache.led_wifi_sync_ms;
+    doc["configTimestamp"] = configCache.configTimestamp;
     doc["lastUpdate"] = configCache.lastUpdate;
     
     serializeJson(doc, file);
@@ -205,12 +159,24 @@ bool saveConfigCache() {
     return true;
 }
 
-GlobalConfig getGlobalConfig() {
-    return configCache.global;
+CentralConfigCache getCentralConfig() {
+    return configCache;
 }
 
-BaseConfig getBaseConfig() {
-    return configCache.base;
+int getSyncInterval() {
+    return configCache.sync_interval_sec;
+}
+
+int getLedPin() {
+    return configCache.led_pin;
+}
+
+const char* getWifiSSID() {
+    return configCache.wifi_ssid;
+}
+
+const char* getWifiPassword() {
+    return configCache.wifi_password;
 }
 
 bool isConfigValid() {

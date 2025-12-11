@@ -1,5 +1,5 @@
 #include "buffer_manager.h"
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "config.h"
 #include "wifi_manager.h"
@@ -8,8 +8,8 @@
 static QueueHandle_t bufferQueue;
 
 void initBufferManager() {
-    if (!SPIFFS.begin()) {
-        Serial.println("SPIFFS mount failed");
+    if (!LittleFS.begin()) {
+        Serial.println("LittleFS mount failed");
         return;
     }
     
@@ -52,7 +52,7 @@ void addToBuffer(const char* path, const char* data, BufferEntryType type) {
 }
 
 void saveToBuffer(BufferEntry* entry) {
-    File file = SPIFFS.open(BUFFER_FILE_PATH, "a");
+    File file = LittleFS.open(BUFFER_FILE_PATH, "a");
     if (!file) {
         Serial.println("Failed to open buffer file for writing");
         return;
@@ -73,13 +73,13 @@ void saveToBuffer(BufferEntry* entry) {
 }
 
 void processBufferedEntries() {
-    File file = SPIFFS.open(BUFFER_FILE_PATH, "r");
+    File file = LittleFS.open(BUFFER_FILE_PATH, "r");
     if (!file) {
         return; // No buffer file exists
     }
     
     String tempPath = BUFFER_FILE_PATH + String(".tmp");
-    File tempFile = SPIFFS.open(tempPath, "w");
+    File tempFile = LittleFS.open(tempPath, "w");
     
     while (file.available()) {
         String line = file.readStringUntil('\n');
@@ -106,8 +106,8 @@ void processBufferedEntries() {
     tempFile.close();
     
     // Replace original with temp file
-    SPIFFS.remove(BUFFER_FILE_PATH);
-    SPIFFS.rename(tempPath, BUFFER_FILE_PATH);
+    LittleFS.remove(BUFFER_FILE_PATH);
+    LittleFS.rename(tempPath, BUFFER_FILE_PATH);
     
     Serial.println("Processed buffered entries");
 }

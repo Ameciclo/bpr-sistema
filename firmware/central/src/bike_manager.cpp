@@ -112,16 +112,16 @@ bool sendConfigToBike(String bikeId) {
         return false;
     }
     
-    GlobalConfig config = getGlobalConfig();
+    CentralConfigCache centralConfig = getCentralConfig();
     
-    // Criar pacote de configuração
+    // Criar pacote de configuração com valores padrão
     BPRConfigPacket packet = {0};
-    packet.version = config.version;
-    packet.deepSleepSec = config.deep_sleep_after_sec;
-    packet.wifiScanInterval = config.wifi_scan_interval_sec;
-    packet.wifiScanLowBatt = config.wifi_scan_interval_low_batt_sec;
-    packet.minBatteryVoltage = config.min_battery_voltage;
-    packet.timestamp = config.update_timestamp;
+    packet.version = 1;
+    packet.deepSleepSec = 300;
+    packet.wifiScanInterval = 25;
+    packet.wifiScanLowBatt = 60;
+    packet.minBatteryVoltage = 3.45;
+    packet.timestamp = millis() / 1000;
     
     // TODO: Implementar envio via BLE characteristic
     // Por enquanto, simular envio

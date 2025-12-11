@@ -4,7 +4,7 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 
 // Declarações externas
 enum CentralMode { MODE_BLE_ONLY, MODE_WIFI_SYNC, MODE_SHUTDOWN };
@@ -20,12 +20,12 @@ static String bikeIdUUID = "F00D";
 static String batteryUUID = "BEEF";
 
 bool loadBLEConfig() {
-    if (!SPIFFS.begin()) {
-        Serial.println("❌ SPIFFS mount failed");
+    if (!LittleFS.begin()) {
+        Serial.println("❌ LittleFS mount failed");
         return false;
     }
     
-    File file = SPIFFS.open("/ble_config.json", "r");
+    File file = LittleFS.open("/ble_config.json", "r");
     if (!file) {
         Serial.println("⚠️ BLE config not found, using defaults");
         return true;

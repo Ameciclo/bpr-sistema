@@ -2,7 +2,7 @@
 #include "bike_config.h"
 #include <ArduinoJson.h>
 
-BikeClient::BikeClient() : pClient(nullptr), connected(false), baseFound(false), registered(false) {}
+BikeClient::BikeClient() : pClient(nullptr), connected(false), baseFound(false), registered(false), foundBaseName("") {}
 
 void BikeClient::init(const String& bikeId) {
   this->bikeId = bikeId;
@@ -28,11 +28,13 @@ bool BikeClient::scanForBase(const String& baseName) {
   for (int i = 0; i < results.getCount(); i++) {
     NimBLEAdvertisedDevice device = results.getDevice(i);
     
-    if (device.getName() == baseName.c_str()) {
+    String deviceName = device.getName().c_str();
+    if (deviceName.startsWith(baseName.c_str())) {
       Serial.printf("✅ Base encontrada: %s RSSI:%d\n", 
                     device.getAddress().toString().c_str(), device.getRSSI());
       
       baseFound = true;
+      foundBaseName = deviceName; // Salvar nome completo da base encontrada
       return true;
     }
   }
@@ -58,7 +60,8 @@ bool BikeClient::connectToBase() {
   for (int i = 0; i < results.getCount(); i++) {
     NimBLEAdvertisedDevice device = results.getDevice(i);
     
-    if (device.getName() == baseBleName.c_str()) {
+    String deviceName = device.getName().c_str();
+    if (deviceName == foundBaseName) {
       Serial.printf("✅ Conectando: %s RSSI:%d\n", 
                     device.getAddress().toString().c_str(), device.getRSSI());
       

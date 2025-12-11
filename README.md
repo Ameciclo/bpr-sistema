@@ -19,18 +19,48 @@ bpr-sistema/
 ## 🚀 Componentes
 
 ### 🚲 Firmware Bicicleta
-- Scanner WiFi automático
-- Upload para Firebase
-- Interface web de configuração
-- Monitoramento de bateria
+- **Scanner WiFi automático** com intervalos configuráveis
+- **Cliente BLE** para comunicação com central
+- **Gerenciamento de energia** com deep sleep inteligente
+- **Monitor de bateria** com alertas automáticos
+- **Upload via BLE** quando detecta base
+- **Configuração dinâmica** recebida da central
+
+#### 📁 Estrutura Firmware Bike
+```
+firmware/bike/src/
+├── main.cpp              # 🚀 Loop principal e máquina de estados
+├── wifi_scanner.cpp      # 📡 Scanner WiFi com cache local
+├── ble_client.cpp        # 🔵 Cliente BLE para comunicação
+├── battery_monitor.cpp   # 🔋 Monitor de bateria e alertas
+├── power_manager.cpp     # ⚡ Gerenciamento de energia/sleep
+└── config_manager.cpp    # ⚙️ Configurações dinâmicas
+```
 
 ### 🏢 Firmware Central
-- Ponto de acesso WiFi
-- Coleta de dados das bicicletas
-- Sincronização com servidor
-- LED inteligente de status
-- Sistema de configuração dinâmica
-- Heartbeat automático para Firebase
+- **Servidor BLE** para descoberta e comunicação com bikes
+- **Descoberta automática** de bikes novas (prefixo BPR_*)
+- **Sistema de aprovação** via dashboard/bot
+- **Configuração dinâmica** por base via Firebase
+- **LED inteligente** com padrões de status
+- **Heartbeat automático** para monitoramento
+- **Cache local** com sync WiFi sob demanda
+- **Máquina de estados** (BLE Only → WiFi Sync → Shutdown)
+
+#### 📁 Estrutura Firmware Central
+```
+firmware/central/src/
+├── main.cpp              # 🚀 Ponto de entrada e máquina de estados
+├── ble_simple.cpp        # 🔵 Servidor BLE simplificado
+├── bike_manager.cpp      # 🚲 Gerenciamento de bikes conectadas
+├── bike_discovery.cpp    # 🔍 Descoberta de bikes novas
+├── firebase_manager.cpp  # 🔥 Sync com Firebase
+├── led_controller.cpp    # 💡 Controle de LED com padrões
+├── state_machine.cpp     # 🔄 Máquina de estados do sistema
+├── config_manager.cpp    # ⚙️ Configurações dinâmicas
+├── ntp_manager.cpp       # ⏰ Sincronização de horário
+└── setup_server.cpp      # 🌐 AP para configuração inicial
+```
 
 #### 🚨 Sistema de LED (ESP32C3 SuperMini)
 - **Inicializando**: Piscar rápido (100ms)
@@ -101,6 +131,8 @@ Cada central envia heartbeat para `/bases/{base_id}/last_heartbeat` contendo:
 - **Geolocalização WiFi** usando Google Geolocation API
 - **Comandos interativos** para consulta de status e rotas
 - **Cálculo de distâncias** percorridas baseado em pontos WiFi
+- **Sistema de assinaturas** para notificações personalizadas
+- **Canal público** para acompanhamento das atividades
 - **Interface conversacional** para usuários e administradores
 
 #### 🎯 Funcionalidades Principais
@@ -111,14 +143,78 @@ Cada central envia heartbeat para `/bases/{base_id}/last_heartbeat` contendo:
 - 📏 **Cálculo de rota**: Calcula distância percorrida baseada nos pontos coletados
 - 🔋 **Status de bateria**: Monitora nível de bateria das bicicletas
 - 📊 **Estatísticas**: Resumos de sessões, scans coletados e conexões
+- 🏢 **Monitor de estações**: Verifica heartbeat e status das centrais
+- 📱 **Assinaturas**: Sistema de notificações personalizadas por usuário
+- 📺 **Canal público**: Publicação automática de atividades
 
 #### 🤖 Comandos Disponíveis
 - `/start` - Mensagem de boas-vindas e instruções
 - `/status [bike]` - Status atual de uma bicicleta específica
 - `/rota [bike]` - Última rota calculada com distância percorrida
 - `/bikes` - Lista todas as bicicletas monitoradas
+- `/estacao [id]` - Status de uma estação específica
+- `/seguir [bike/estacao/sistema]` - Receber notificações personalizadas
+- `/parar [bike/estacao/sistema]` - Parar notificações
+- `/minhas` - Ver suas assinaturas ativas
 - `/help` - Ajuda completa com todos os comandos
 - `/ping` - Teste de funcionamento do bot
+
+#### 📁 Estrutura do Código Bot
+```
+bot/src/
+├── index.js                    # 🚀 Ponto de entrada e comandos principais
+├── config/
+│   └── firebase.js            # 🔥 Configuração e listeners Firebase
+├── services/
+│   ├── bikeMonitor.js         # 🚲 Monitor principal de bicicletas
+│   ├── stationMonitor.js      # 🏢 Monitor de estações/centrais
+│   ├── geolocation.js         # 📍 Conversão WiFi → Coordenadas
+│   ├── rideCalculator.js      # 📏 Cálculo de rotas e distâncias
+│   ├── channelPublisher.js    # 📺 Publicação no canal público
+│   └── subscriptionManager.js # 📱 Gerenciamento de assinaturas
+└── utils/
+    └── dataConverter.js       # 🔄 Conversão entre formatos de dados
+```
+
+#### 🔧 Principais Serviços
+
+**🚲 BikeMonitor** (`bikeMonitor.js`)
+- Escuta novas sessões e scans WiFi em tempo real
+- Processa geolocalização via Google API
+- Calcula rotas e distâncias percorridas
+- Monitora bateria e envia alertas
+- Gerencia notificações para usuários assinantes
+
+**🏢 StationMonitor** (`stationMonitor.js`)
+- Verifica heartbeat das centrais (timeout 30min)
+- Monitora bikes disponíveis por estação
+- Detecta estações online/offline
+- Fornece status consolidado das estações
+
+**📍 Geolocation** (`geolocation.js`)
+- Converte dados WiFi para coordenadas via Google API
+- Calcula distâncias usando fórmula de Haversine
+- Processa rotas completas baseadas em múltiplos scans
+- Filtra pontos inválidos e otimiza precisão
+
+**📏 RideCalculator** (`rideCalculator.js`)
+- Gerencia viagens ativas em cache local
+- Calcula CO₂ economizado (0.145kg/km)
+- Atualiza métricas das bikes e estatísticas públicas
+- Filtra viagens muito curtas (< 80m)
+- Salva histórico completo no Firebase
+
+**📺 ChannelPublisher** (`channelPublisher.js`)
+- Publica atividades no canal público @prarodar_updates
+- Controla frequência de publicações (throttling)
+- Formata mensagens para diferentes tipos de eventos
+- Gera links para visualização de rotas
+
+**📱 SubscriptionManager** (`subscriptionManager.js`)
+- Gerencia assinaturas por usuário (bikes, estações, sistema)
+- Cache local sincronizado com Firebase
+- Notificações personalizadas por tipo de evento
+- Sistema de opt-in/opt-out flexível
 
 #### 🔧 Tecnologias Utilizadas
 - **Telegraf.js** - Framework para bots Telegram
@@ -135,10 +231,28 @@ Cada central envia heartbeat para `/bases/{base_id}/last_heartbeat` contendo:
   "end": null,
   "mode": "normal",
   "scans": [
-    [timestamp, [ssid, bssid, rssi, channel]]
+    [timestamp, [[ssid, bssid, rssi, channel]]]
   ],
-  "battery": [[time, level]],
+  "battery": [[time, level, charging]],
   "connections": [[time, event, base, ip]]
+}
+
+// Firebase: /subscriptions/{userId}
+{
+  "bikes": ["intenso", "rapida"],
+  "stations": ["base01"],
+  "system": false
+}
+
+// Firebase: /rides/{bikeId}/{rideId}
+{
+  "start_ts": 1733459200,
+  "end_ts": 1733460500,
+  "km": 2.8,
+  "co2_saved_g": 406,
+  "route": [{"lat": -8.064, "lng": -34.882}],
+  "points_count": 12,
+  "duration_min": 22
 }
 ```
 
@@ -513,14 +627,16 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
 bpr-sistema/
 ├── 🚲 firmware/           # Códigos ESP8266/ESP32
 │   ├── bike/              # Scanner WiFi da bicicleta
-│   └── central/           # Base/central de coleta
+│   ├── central/           # Base/central de coleta
+│   └── simulator/         # Simulador para testes
 ├── 🤖 bot/                # Bot Telegram (@prarodarbot)
-│   ├── src/               # Código principal
-│   ├── functions/         # Firebase Functions (opcional)
+│   ├── src/               # Código principal organizado
+│   ├── functions/         # Firebase Functions (deploy)
 │   ├── scripts/           # Utilitários e testes
-│   └── docs/              # Documentação específica
+│   └── tools/             # Ferramentas auxiliares
 ├── 🌐 web/                # Dashboard web (Remix)
 ├── 📊 shared/             # Configurações compartilhadas
+├── 🧪 emulator/           # Emulador completo do sistema
 ├── 📚 docs/               # Documentação geral
 └── 🔧 scripts/            # Scripts de deploy/build
 ```

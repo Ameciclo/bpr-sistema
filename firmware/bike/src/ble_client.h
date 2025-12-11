@@ -10,6 +10,7 @@ private:
   NimBLEAddress baseAddress;
   String bikeId;
   String baseBleName;
+  String foundBaseName; // Nome completo da base encontrada
   bool connected;
   bool baseFound;
   bool registered;

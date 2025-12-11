@@ -4,7 +4,8 @@
 #include "config.h"
 #include "structs.h"
 #include "event_handler.h"
-#include "config_loader.h"
+#include "config_manager.h"
+#include "ntp_manager.h"
 
 extern QueueHandle_t eventQueue;
 
@@ -38,10 +39,9 @@ void wifiManagerTask(void *parameter) {
 }
 
 void connectToWiFi() {
-    AppConfig config = getAppConfig();
-    Serial.printf("📶 Connecting to WiFi: %s\n", config.wifi_ssid);
+    Serial.printf("📶 Connecting to WiFi: %s\n", getWifiSSID());
     
-    WiFi.begin(config.wifi_ssid, config.wifi_password);
+    WiFi.begin(getWifiSSID(), getWifiPassword());
     
     unsigned long startTime = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startTime < WIFI_TIMEOUT_MS) {
@@ -67,26 +67,9 @@ void connectToWiFi() {
     }
 }
 
-void syncNTP() {
-    Serial.println("🕰️ Syncing NTP...");
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-        Serial.printf("✅ NTP synced: %04d-%02d-%02d %02d:%02d:%02d\n",
-                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    } else {
-        Serial.println("❌ NTP sync failed");
-    }
-}
+
 
 bool isWiFiConnected() {
     return wifiConnected && WiFi.status() == WL_CONNECTED;
 }
 
-uint32_t getCurrentTimestamp() {
-    time_t now;
-    time(&now);
-    return (uint32_t)now;
-}

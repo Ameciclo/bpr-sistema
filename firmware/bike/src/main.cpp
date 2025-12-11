@@ -24,22 +24,17 @@ uint32_t systemTime = 0; // Timestamp sincronizado
 
 // Flags
 bool lowBatteryMode = false;
-volatile bool buttonPressed = false;
-
 // Declarações de funções
 void handleBootState();
 void handleAtBaseState();
 void handleScanningState();
 void handleLowPowerState();
 void handleDeepSleepState();
-void handleEmergencyMode();
+
 void changeState(BikeState newState);
 void printStatus();
 
-// ISR do botão
-void IRAM_ATTR buttonISR() {
-  buttonPressed = true;
-}
+
 
 void setup() {
   Serial.begin(115200);
@@ -52,9 +47,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);
   
-  // Inicializar botão
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
+
   
   // Inicializar LittleFS
   if (!LittleFS.begin(true)) {
@@ -94,13 +87,7 @@ void loop() {
   float batteryVoltage = battery.readVoltage();
   lowBatteryMode = battery.isLowBattery(config.getMinBatteryVoltage());
   
-  // Verificar botão de emergência
-  if (buttonPressed) {
-    buttonPressed = false;
-    Serial.println("🔘 Botão pressionado - Modo emergência");
-    handleEmergencyMode();
-    return;
-  }
+
   
   // Máquina de estados
   switch (currentState) {
@@ -183,11 +170,8 @@ void handleAtBaseState() {
   
   // Enviar dados WiFi se houver
   if (wifiScanner.hasRecords()) {
-    String wifiData;
-    if (wifiScanner.exportAllData(wifiData)) {
-      if (bleClient.sendWifiDataJson(wifiData)) {
-        wifiScanner.clearAllData();
-      }
+    if (bleClient.sendWifiData(wifiScanner.getRecords())) {
+      wifiScanner.clearAllData();
     }
   }
   
@@ -276,23 +260,7 @@ void handleDeepSleepState() {
   // Não retorna - reinicia após wake-up
 }
 
-void handleEmergencyMode() {
-  Serial.println("🚨 MODO EMERGÊNCIA");
-  Serial.println("Pressione 'r' para reiniciar ou 'c' para continuar");
-  
-  unsigned long start = millis();
-  while (millis() - start < 10000) { // 10 segundos
-    if (Serial.available()) {
-      char cmd = Serial.read();
-      if (cmd == 'r' || cmd == 'R') {
-        ESP.restart();
-      } else if (cmd == 'c' || cmd == 'C') {
-        return;
-      }
-    }
-    delay(100);
-  }
-}
+
 
 void changeState(BikeState newState) {
   Serial.printf("🔄 %d -> %d\n", currentState, newState);
