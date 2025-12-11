@@ -1,13 +1,9 @@
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <WiFi.h>
 #include "config_manager.h"
 #include "ble_simple.h"
 #include "led_controller.h"
 #include "state_machine.h"
-#include "wifi_manager.h"
-#include "firebase_manager.h"
-#include "ntp_manager.h"
 
 void setup() {
     Serial.begin(115200);
@@ -23,41 +19,41 @@ void setup() {
     }
     
     // Carregar configurações
-    if (!loadConfigCache()) {
-        Serial.println("⚠️ Config cache não encontrado, usando padrões");
-    }
+    loadConfigCache();
     
     // Inicializar LED
     initLED();
     setLEDPattern(LED_BOOT);
     
     // Inicializar BLE
-    if (!loadBLEConfig()) {
-        Serial.println("⚠️ BLE config não encontrado, usando padrões");
-    }
+    initBLESimple();
+    startBLEServer();
     
-    if (!initBLE()) {
-        Serial.println("❌ Falha na inicialização BLE");
-        setLEDPattern(LED_ERROR);
-        ESP.restart();
-    }
+    // Inicializar modo
+    currentMode = MODE_BLE_ONLY;
+    modeStart = millis();
     
-    // Inicializar NTP
-    initNTP();
-    
-    // Inicializar máquina de estados
-    initStateMachine();
-    
-    Serial.println("✅ Central inicializada");
     setLEDPattern(LED_BLE_READY);
+    Serial.println("✅ Central inicializada");
 }
 
 void loop() {
-    // Atualizar LED
     updateLED();
     
-    // Executar máquina de estados
-    updateStateMachine();
+    switch (currentMode) {
+        case MODE_BLE_ONLY:
+            handleBLEMode();
+            break;
+        case MODE_WIFI_SYNC:
+            handleWiFiMode();
+            break;
+        case MODE_SHUTDOWN:
+            handleShutdownMode();
+            break;
+        default:
+            currentMode = MODE_BLE_ONLY;
+            break;
+    }
     
     delay(100);
 }
