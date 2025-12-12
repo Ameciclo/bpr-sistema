@@ -17,6 +17,24 @@ void WiFiScanner::init() {
   if (indexFile) {
     fileIndex = indexFile.parseInt();
     indexFile.close();
+  } else {
+    fileIndex = 0;
+    // Criar arquivo de índice
+    indexFile = LittleFS.open("/wifi_index.txt", "w");
+    if (indexFile) {
+      indexFile.println(0);
+      indexFile.close();
+    }
+  }
+  
+  // Criar primeiro arquivo WiFi se não existir
+  String firstFile = getDataFileName(0);
+  if (!LittleFS.exists(firstFile)) {
+    File file = LittleFS.open(firstFile, "w");
+    if (file) {
+      file.println("{\"records\":[]}");
+      file.close();
+    }
   }
   
   Serial.printf("📁 WiFi storage iniciado - arquivo atual: %d\n", fileIndex);

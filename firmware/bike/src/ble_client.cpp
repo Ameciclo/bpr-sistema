@@ -34,7 +34,7 @@ bool BikeClient::scanForBase(const String& baseName) {
                     device.getAddress().toString().c_str(), device.getRSSI());
       
       baseFound = true;
-      foundBaseName = deviceName; // Salvar nome completo da base encontrada
+      foundBaseName = deviceName;
       return true;
     }
   }
@@ -49,7 +49,6 @@ bool BikeClient::connectToBase() {
   
   Serial.println("🔗 Conectando à base...");
   
-  // Usar o mesmo padrão do simulator que funcionava
   NimBLEScan* pScan = NimBLEDevice::getScan();
   pScan->setActiveScan(true);
   pScan->setInterval(100);
@@ -68,8 +67,6 @@ bool BikeClient::connectToBase() {
       if (pClient->connect(&device)) {
         Serial.println("✅ Conectado à base");
         connected = true;
-        
-        // Enviar dados imediatamente como no simulator
         sendBikeInfo();
         return true;
       }
@@ -93,15 +90,15 @@ bool BikeClient::registerWithBase() {
   String registrationJson;
   serializeJson(doc, registrationJson);
   
-  auto pService = pClient->getService("BAAD");
+  auto pService = pClient->getService(BLE_SERVICE_UUID);
   if (!pService) {
-    Serial.println("❌ Serviço BAAD não encontrado");
+    Serial.println("❌ Serviço BLE não encontrado");
     return false;
   }
   
-  auto pChar = pService->getCharacteristic("F00D");
+  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
   if (!pChar) {
-    Serial.println("❌ Característica F00D não encontrada");
+    Serial.println("❌ Característica não encontrada");
     return false;
   }
   
@@ -129,10 +126,10 @@ bool BikeClient::sendBikeInfo() {
   String bikeJson;
   serializeJson(doc, bikeJson);
   
-  auto pService = pClient->getService("BAAD");
+  auto pService = pClient->getService(BLE_SERVICE_UUID);
   if (!pService) return false;
   
-  auto pChar = pService->getCharacteristic("F00D");
+  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
   if (!pChar) return false;
   
   bool success = pChar->writeValue(bikeJson.c_str());
@@ -158,10 +155,10 @@ bool BikeClient::sendStatus(float batteryVoltage, uint16_t recordsCount) {
   String statusJson;
   serializeJson(doc, statusJson);
   
-  auto pService = pClient->getService("BAAD");
+  auto pService = pClient->getService(BLE_SERVICE_UUID);
   if (!pService) return false;
   
-  auto pChar = pService->getCharacteristic("BEEF");
+  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
   if (!pChar) return false;
   
   bool success = pChar->writeValue(statusJson.c_str());
@@ -177,10 +174,10 @@ bool BikeClient::sendStatus(float batteryVoltage, uint16_t recordsCount) {
 bool BikeClient::receiveConfig(String& configJson) {
   if (!connected) return false;
   
-  auto pService = pClient->getService("BAAD");
+  auto pService = pClient->getService(BLE_SERVICE_UUID);
   if (!pService) return false;
   
-  auto pChar = pService->getCharacteristic("F00D");
+  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
   if (!pChar) return false;
   
   std::string value = pChar->readValue();
@@ -221,10 +218,10 @@ bool BikeClient::sendWifiData(const std::vector<WifiRecord>& records) {
   String wifiJson;
   serializeJson(doc, wifiJson);
   
-  auto pService = pClient->getService("BAAD");
+  auto pService = pClient->getService(BLE_SERVICE_UUID);
   if (!pService) return false;
   
-  auto pChar = pService->getCharacteristic("BEEF");
+  auto pChar = pService->getCharacteristic(BLE_DATA_CHAR_UUID);
   if (!pChar) return false;
   
   bool success = pChar->writeValue(wifiJson.c_str());

@@ -44,13 +44,13 @@ struct BikeStatus {
 #define BUTTON_PIN 9
 
 // BLE UUIDs
-#define BLE_SERVICE_UUID "BAAD"
+#define BLE_SERVICE_UUID "12345678-1234-1234-1234-123456789abc"
 #define BLE_CONFIG_CHAR_UUID "F00D"  // Base -> Bike (configs)
 #define BLE_STATUS_CHAR_UUID "BEEF"  // Bike -> Base (status)
-#define BLE_DATA_CHAR_UUID "CAFE"    // Bike -> Base (dados WiFi)
+#define BLE_DATA_CHAR_UUID "87654321-4321-4321-4321-cba987654321"    // Bike -> Base (dados WiFi)
 
 // Configurações de energia
-#define VOLTAGE_DIVIDER_RATIO 2.0
+#define VOLTAGE_DIVIDER_RATIO 1.0  // Ajustado para leitura direta
 #define ADC_SAMPLES 10
 #define MAX_WIFI_RECORDS 200
 
