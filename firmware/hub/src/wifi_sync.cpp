@@ -21,24 +21,41 @@ void WiFiSync::enter() {
     syncStartTime = millis();
     ledController.syncPattern();
     
+    bool syncSuccess = false;
+    
     if (!connectWiFi()) {
         Serial.println("❌ WiFi connection failed");
-        stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
-        return;
+    } else {
+        syncTime();
+        if (downloadConfig() && uploadData()) {
+            syncSuccess = true;
+        }
     }
     
-    syncTime();
-    downloadConfig();
-    uploadData();
-    
     WiFi.disconnect(true);
-    Serial.println("✅ Sync complete");
-    stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+    
+    if (syncSuccess) {
+        Serial.println("✅ Sync complete");
+        stateMachine.recordSyncSuccess();
+        stateMachine.setFirstSync(false);
+        stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+    } else {
+        Serial.println("❌ Sync failed");
+        stateMachine.recordSyncFailure();
+        
+        if (stateMachine.isFirstSync()) {
+            Serial.println("⚠️ Primeiro sync falhou - retornando ao modo AP");
+            stateMachine.setFirstSync(false);
+            stateMachine.setState(STATE_CONFIG_AP);
+        } else {
+            stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+        }
+    }
 }
 
 void WiFiSync::update() {
     // Timeout check
-    if (millis() - syncStartTime > configManager.getConfig().wifi.timeout_ms * 3) {
+    if (millis() - syncStartTime > configManager.getConfig().timeouts.wifi_sec * 3000) {
         Serial.println("⏰ Sync timeout");
         WiFi.disconnect(true);
         stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
@@ -58,7 +75,7 @@ bool WiFiSync::connectWiFi() {
     
     uint32_t startTime = millis();
     while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - startTime > config.wifi.timeout_ms) {
+        if (millis() - startTime > config.timeouts.wifi_sec * 1000) {
             return false;
         }
         delay(500);
@@ -70,16 +87,31 @@ bool WiFiSync::connectWiFi() {
 }
 
 void WiFiSync::syncTime() {
-    configTime(configManager.getConfig().timezone_offset, 0, configManager.getConfig().ntp_server);
+    Serial.printf("⏰ Sincronizando horário com %s (UTC%+d)...\n", 
+                 NTP_SERVER, TIMEZONE_OFFSET / 3600);
     
+    configTime(TIMEZONE_OFFSET, 0, NTP_SERVER);
+    
+    // Aguardar sincronização
+    int attempts = 0;
     struct tm timeinfo;
+    while (!getLocalTime(&timeinfo) && attempts < 10) {
+        delay(1000);
+        attempts++;
+        Serial.print(".");
+    }
+    
     if (getLocalTime(&timeinfo)) {
-        Serial.printf("⏰ Time synced: %02d:%02d:%02d\n", 
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        char dateStr[64];
+        strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+        Serial.printf("\n✅ Horário sincronizado: %s\n", dateStr);
+        Serial.printf("   Timestamp: %ld\n", time(nullptr));
+    } else {
+        Serial.println("\n❌ Falha na sincronização do horário");
     }
 }
 
-void WiFiSync::downloadConfig() {
+bool WiFiSync::downloadConfig() {
     HTTPClient http;
     const HubConfig& config = configManager.getConfig();
     
@@ -92,20 +124,82 @@ void WiFiSync::downloadConfig() {
     
     if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
+        
+        Serial.printf("⚙️ JSON baixado do Firebase (%d bytes):\n", payload.length());
+        Serial.println(payload);
+        Serial.println("---");
+        
+        // Verificar se não é muito pequeno (provavelmente erro)
+        if (payload.length() < 100) {
+            Serial.println("❌ JSON muito pequeno - possível erro");
+            http.end();
+            return false;
+        }
+        
         DynamicJsonDocument doc(2048);
         
         if (deserializeJson(doc, payload) == DeserializationError::Ok) {
-            configManager.updateFromFirebase(doc);
-            Serial.println("Config updated from Firebase");
+            // Validar se JSON tem campos obrigatórios
+            if (validateFirebaseConfig(doc)) {
+                configManager.updateFromFirebase(doc);
+                Serial.printf("✅ Config processada com sucesso\n");
+                Serial.printf("   URL: /central_configs/%s\n", config.base_id);
+                http.end();
+                return true;
+            } else {
+                Serial.println("❌ JSON incompleto - campos obrigatórios ausentes");
+            }
+        } else {
+            Serial.println("❌ Erro ao parsear config do Firebase");
         }
     } else {
-        Serial.printf("Config download failed: %d\n", httpCode);
+        Serial.printf("❌ Download da config falhou: HTTP %d\n", httpCode);
+        Serial.printf("   URL: %s\n", url.c_str());
     }
     
     http.end();
+    return false;
 }
 
-void WiFiSync::uploadData() {
+bool WiFiSync::validateFirebaseConfig(const DynamicJsonDocument& doc) {
+    // Verificar campos obrigatórios
+    bool valid = true;
+    
+    if (!doc["intervals"]["sync_sec"]) {
+        Serial.println("❌ Campo ausente: intervals.sync_sec");
+        valid = false;
+    }
+    
+    if (!doc["timeouts"]["wifi_sec"]) {
+        Serial.println("❌ Campo ausente: timeouts.wifi_sec");
+        valid = false;
+    }
+    
+    if (!doc["led"]["ble_ready_ms"]) {
+        Serial.println("❌ Campo ausente: led.ble_ready_ms");
+        valid = false;
+    }
+    
+    if (!doc["limits"]["max_bikes"]) {
+        Serial.println("❌ Campo ausente: limits.max_bikes");
+        valid = false;
+    }
+    
+    if (!doc["fallback"]["max_failures"]) {
+        Serial.println("❌ Campo ausente: fallback.max_failures");
+        valid = false;
+    }
+    
+    if (valid) {
+        Serial.println("✅ JSON validado - todos os campos obrigatórios presentes");
+    } else {
+        Serial.println("❌ JSON inválido - usando configuração local");
+    }
+    
+    return valid;
+}
+
+bool WiFiSync::uploadData() {
     HTTPClient http;
     const HubConfig& config = configManager.getConfig();
     
@@ -126,19 +220,21 @@ void WiFiSync::uploadData() {
         
         if (httpCode == HTTP_CODE_OK) {
             bufferManager.markAsSent();
-            Serial.printf("📤 Data uploaded: %d bytes\n", jsonString.length());
+            Serial.printf("📤 Dados enviados: %d bytes\n", jsonString.length());
+            Serial.printf("   URL: /hubs/%s/data\n", config.base_id);
         } else {
-            Serial.printf("❌ Upload failed: %d\n", httpCode);
+            Serial.printf("❌ Upload falhou: HTTP %d\n", httpCode);
+            Serial.printf("   URL: %s\n", url.c_str());
         }
         
         http.end();
     }
     
     // Upload heartbeat
-    uploadHeartbeat();
+    return uploadHeartbeat();
 }
 
-void WiFiSync::uploadHeartbeat() {
+bool WiFiSync::uploadHeartbeat() {
     HTTPClient http;
     const HubConfig& config = configManager.getConfig();
     
@@ -146,11 +242,21 @@ void WiFiSync::uploadHeartbeat() {
                 "/bases/" + config.base_id + "/last_heartbeat.json?auth=" + 
                 config.firebase.api_key;
     
+    // Obter timestamp e formato legível
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+    
+    char dateStr[64];
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+    
     DynamicJsonDocument doc(512);
-    doc["timestamp"] = time(nullptr);
+    doc["timestamp"] = now;
+    doc["timestamp_human"] = dateStr;
     doc["bikes_connected"] = bufferManager.getConnectedBikes();
     doc["heap"] = ESP.getFreeHeap();
     doc["uptime"] = millis() / 1000;
+    // Removidas redundâncias: base_id (já no path), wifi_ssid e sync_interval_sec (não mudam)
     
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -160,11 +266,17 @@ void WiFiSync::uploadHeartbeat() {
     
     int httpCode = http.PUT(jsonString);
     
-    if (httpCode == HTTP_CODE_OK) {
-        Serial.println("💓 Heartbeat sent");
+    bool success = (httpCode == HTTP_CODE_OK);
+    
+    if (success) {
+        Serial.printf("💓 Heartbeat: %s | Bikes: %d | Heap: %d\n", 
+                     dateStr, bufferManager.getConnectedBikes(), ESP.getFreeHeap());
     } else {
-        Serial.printf("❌ Heartbeat failed: %d\n", httpCode);
+        Serial.printf("❌ Heartbeat falhou: HTTP %d\n", httpCode);
+        Serial.printf("   URL: %s\n", url.c_str());
+        Serial.printf("   Payload: %s\n", jsonString.c_str());
     }
     
     http.end();
+    return success;
 }

@@ -25,9 +25,7 @@ public:
     void loadState();
 
 private:
-    BufferEntry* buffer;
-    size_t bufferSize;
-    size_t maxSize;
+    BufferEntry buffer[50];  // Buffer estático para evitar alocação dinâmica
     uint16_t dataCount;
     uint32_t lastSync;
     uint8_t connectedBikes;

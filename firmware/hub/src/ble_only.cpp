@@ -78,7 +78,7 @@ void BLEOnly::update() {
     uint32_t now = millis();
     
     // Check sync trigger
-    if (now - lastSyncCheck > configManager.getConfig().sync_interval_ms) {
+    if (now - lastSyncCheck > configManager.getConfig().sync_interval_ms()) {
         lastSyncCheck = now;
         
         if (bufferManager.needsSync()) {
@@ -96,7 +96,8 @@ void BLEOnly::update() {
     
     // Update LED status
     static uint32_t lastLedUpdate = 0;
-    if (now - lastLedUpdate > 30000) { // Every 30s
+    uint32_t ledInterval = configManager.getConfig().intervals.led_count_sec * 1000;
+    if (now - lastLedUpdate > ledInterval) {
         lastLedUpdate = now;
         ledController.countPattern(connectedBikes);
     }

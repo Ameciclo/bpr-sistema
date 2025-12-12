@@ -10,7 +10,7 @@ void BufferManager::begin() {
 }
 
 bool BufferManager::addData(const uint8_t* data, size_t length) {
-    if (dataCount >= MAX_BUFFER_SIZE || length > 1024) {
+    if (dataCount >= 50 || length > 256) {
         return false;
     }
     
@@ -31,7 +31,7 @@ bool BufferManager::addData(const uint8_t* data, size_t length) {
 }
 
 bool BufferManager::needsSync() {
-    return dataCount > (MAX_BUFFER_SIZE * 0.8) || // 80% full
+    return dataCount > 40 || // 80% de 50
            (dataCount > 0 && (millis() - lastSync) > SYNC_INTERVAL_DEFAULT);
 }
 
@@ -136,7 +136,7 @@ void BufferManager::loadState() {
     int loadedCount = 0;
     
     for (JsonObject item : dataArray) {
-        if (loadedCount >= MAX_BUFFER_SIZE) break;
+        if (loadedCount >= 50) break;
         
         buffer[loadedCount].timestamp = item["ts"];
         buffer[loadedCount].size = item["size"];
@@ -144,7 +144,7 @@ void BufferManager::loadState() {
         String hexData = item["data"];
         size_t dataSize = hexData.length() / 2;
         
-        for (size_t i = 0; i < dataSize && i < 1024; i++) {
+        for (size_t i = 0; i < dataSize && i < 256; i++) {
             String byteString = hexData.substring(i * 2, i * 2 + 2);
             buffer[loadedCount].data[i] = strtol(byteString.c_str(), NULL, 16);
         }

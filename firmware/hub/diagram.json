@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "author": "BPR Sistema",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-c3",
+      "id": "esp32c3",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led",
+      "id": "status_led",
+      "top": -20,
+      "left": 200,
+      "attrs": {
+        "color": "red"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "resistor1",
+      "top": 20,
+      "left": 150,
+      "attrs": {
+        "value": "220"
+      }
+    }
+  ],
+  "connections": [
+    [ "esp32c3:8", "resistor1:1", "green", [ "h0" ] ],
+    [ "resistor1:2", "status_led:A", "green", [ "h0" ] ],
+    [ "status_led:C", "esp32c3:GND.1", "black", [ "h0" ] ]
+  ],
+  "dependencies": {}
+}

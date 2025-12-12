@@ -22,22 +22,51 @@ struct LEDConfig {
     uint16_t error_ms;
     uint16_t count_ms;
     uint16_t count_pause_ms;
+    uint16_t bike_arrived_ms;
+    uint16_t bike_left_ms;
+};
+
+struct LocationConfig {
+    float lat;
+    float lng;
+};
+
+struct IntervalsConfig {
+    uint32_t sync_sec;
+    uint32_t cleanup_sec;
+    uint32_t log_sec;
+    uint32_t led_count_sec;
+};
+
+struct TimeoutsConfig {
+    uint32_t wifi_sec;
+    uint32_t firebase_ms;
+};
+
+struct LimitsConfig {
+    uint8_t max_bikes;
+    uint16_t batch_size;
+};
+
+struct FallbackConfig {
+    uint8_t max_failures;
+    uint16_t timeout_min;
 };
 
 struct HubConfig {
     char base_id[32];
+    LocationConfig location;
     WiFiConfig wifi;
     FirebaseConfig firebase;
+    IntervalsConfig intervals;
+    TimeoutsConfig timeouts;
     LEDConfig led;
-    uint32_t sync_interval_ms;
-    uint16_t max_buffer_size;
-    char ntp_server[64];
-    int32_t timezone_offset;
-    bool auto_approve_bikes;
-    uint8_t max_bikes;
+    LimitsConfig limits;
+    FallbackConfig fallback;
     
-    // Compatibility with main.cpp
-    int sync_interval_sec() const { return sync_interval_ms / 1000; }
+    // Compatibility methods
+    uint32_t sync_interval_ms() const { return intervals.sync_sec * 1000; }
+    int sync_interval_sec() const { return intervals.sync_sec; }
 };
 
 class ConfigManager {

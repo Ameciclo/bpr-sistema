@@ -31,11 +31,19 @@
 
 // Config AP
 #define AP_SSID "BPR_Hub_Config"
-#define AP_PASSWORD "bpr123456"
-#define CONFIG_TIMEOUT_MS 300000
+#define AP_PASSWORD "botaprarodar"
+#define CONFIG_TIMEOUT_MS 900000  // 15 minutos
 
 // Timeouts
 #define SHUTDOWN_TIMEOUT 3600000
+
+// NTP Configuration (constants)
+#define NTP_SERVER "pool.ntp.org"
+#define TIMEZONE_OFFSET -10800  // UTC-3
+
+// Fallback to AP thresholds
+#define MAX_SYNC_FAILURES 5
+#define SYNC_FAILURE_TIMEOUT_MS 1800000  // 30 minutos
 
 // Events
 enum SystemEvent {

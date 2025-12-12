@@ -1,0 +1,12 @@
+[wokwi]
+version = 1
+elf = ".pio/build/esp32-c3-supermini/firmware.elf"
+firmware = ".pio/build/esp32-c3-supermini/firmware.bin"
+
+[[wokwi.files]]
+src = "data"
+dst = "/"
+
+[env]
+WIFI_SSID = "Wokwi-GUEST"
+WIFI_PASSWORD = ""

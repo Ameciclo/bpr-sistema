@@ -19,6 +19,22 @@ void ConfigAP::enter() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+    
+    // Configurar callback para conexões
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
+            Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                         info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
+                         info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
+                         info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]);
+        } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+            Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                         info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
+                         info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
+                         info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]);
+        }
+    });
+    
     setupWebServer();
     server.begin();
     apStartTime = millis();
@@ -27,7 +43,19 @@ void ConfigAP::enter() {
 
 void ConfigAP::update() {
     server.handleClient();
-    if (millis() - apStartTime > CONFIG_TIMEOUT_MS) {
+    
+    // Mostrar tempo restante a cada minuto
+    static uint32_t lastTimeoutWarning = 0;
+    uint32_t elapsed = millis() - apStartTime;
+    uint32_t remaining = CONFIG_TIMEOUT_MS - elapsed;
+    
+    if (millis() - lastTimeoutWarning > 60000) { // A cada minuto
+        Serial.printf("⏰ Modo CONFIG_AP - Tempo restante: %lu min\n", remaining / 60000);
+        lastTimeoutWarning = millis();
+    }
+    
+    if (elapsed > CONFIG_TIMEOUT_MS) {
+        Serial.println("⏰ Timeout do modo CONFIG_AP - Reiniciando...");
         ESP.restart();
     }
 }
@@ -39,33 +67,202 @@ void ConfigAP::exit() {
 
 void ConfigAP::setupWebServer() {
     server.on("/", HTTP_GET, []() {
-        String html = "<html><body><h1>BPR Config</h1><form action='/save' method='post'>";
-        html += "Base ID: <input name='base_id' required><br>";
-        html += "WiFi SSID: <input name='ssid' required><br>";
-        html += "WiFi Pass: <input name='pass' required><br>";
-        html += "Firebase Project: <input name='project' required><br>";
-        html += "Firebase URL: <input name='url' required><br>";
-        html += "Firebase Key: <input name='key' required><br>";
-        html += "<button type='submit'>Save</button></form></body></html>";
+        String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>BPR Hub Config</title>";
+        html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
+        html += ".container{background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);max-width:500px}";
+        html += "h1{color:#2c3e50;margin-bottom:20px}input{width:100%;padding:10px;margin:8px 0;border:1px solid #ddd;border-radius:4px;box-sizing:border-box}";
+        html += "button{background:#3498db;color:white;padding:12px 20px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}";
+        html += "button:hover{background:#2980b9}.info{background:#e8f4fd;padding:15px;border-radius:4px;margin-bottom:20px;border-left:4px solid #3498db}";
+        html += ".warning{background:#fff3cd;padding:10px;border-radius:4px;margin-top:15px;border-left:4px solid #ffc107}</style></head><body>";
+        html += "<div class='container'><h1>🏢 BPR Hub - Configuração</h1>";
+        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR_Hub_Config<br>Senha: botaprarodar<br>Acesse: 192.168.4.1</div>";
+        
+        // Tabs para alternar entre formulário e JSON
+        html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
+        html += "<button onclick='showJson()' id='jsonBtn' style='background:#95a5a6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>JSON</button></div>";
+        
+        // Formulário tradicional
+        html += "<div id='formDiv'><form action='/save' method='post'>";
+        html += "<label>ID da Base:</label><input name='base_id' placeholder='Ex: base01, ameciclo, cepas' required><br>";
+        html += "<label>WiFi SSID:</label><input name='ssid' placeholder='Nome da rede WiFi' required><br>";
+        html += "<label>WiFi Senha:</label><input name='pass' type='password' placeholder='Senha do WiFi' required><br>";
+        html += "<label>Firebase Database URL:</label><input name='url' placeholder='https://projeto.firebaseio.com' required><br>";
+        html += "<label>Firebase API Key:</label><input name='key' placeholder='AIza...' required><br>";
+        html += "<button type='submit'>💾 Salvar Configuração</button></form></div>";
+        
+        // Configuração via JSON
+        html += "<div id='jsonDiv' style='display:none'><form action='/save-json' method='post'>";
+        html += "<label>Cole o JSON de configuração:</label><br>";
+        html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' placeholder='{\n  \"base_id\": \"minha_base\",\n  \"wifi\": {\n    \"ssid\": \"MinhaRede\",\n    \"password\": \"minha_senha\"\n  },\n  \"firebase\": {\n    \"database_url\": \"https://projeto.firebaseio.com\",\n    \"api_key\": \"AIza...\"\n  }\n}' required></textarea><br>";
+        html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
+        
+        html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: 15 minutos.</div>";
+        
+        // JavaScript para alternar tabs
+        html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
+        html += "function showJson(){document.getElementById('formDiv').style.display='none';document.getElementById('jsonDiv').style.display='block';document.getElementById('formBtn').style.background='#95a5a6';document.getElementById('jsonBtn').style.background='#3498db';}</script>";
+        html += "</div></body></html>";
         server.send(200, "text/html", html);
     });
     
     server.on("/save", HTTP_POST, []() {
         HubConfig& config = configManager.getConfig();
         
-        if (server.hasArg("base_id")) strcpy(config.base_id, server.arg("base_id").c_str());
-        if (server.hasArg("ssid")) strcpy(config.wifi.ssid, server.arg("ssid").c_str());
-        if (server.hasArg("pass")) strcpy(config.wifi.password, server.arg("pass").c_str());
-        if (server.hasArg("project")) strcpy(config.firebase.project_id, server.arg("project").c_str());
-        if (server.hasArg("url")) strcpy(config.firebase.database_url, server.arg("url").c_str());
-        if (server.hasArg("key")) strcpy(config.firebase.api_key, server.arg("key").c_str());
+        Serial.println("📝 Dados recebidos do formulário:");
+        
+        if (server.hasArg("base_id")) {
+            strcpy(config.base_id, server.arg("base_id").c_str());
+            Serial.printf("   Base ID: %s\n", config.base_id);
+        }
+        if (server.hasArg("ssid")) {
+            strcpy(config.wifi.ssid, server.arg("ssid").c_str());
+            Serial.printf("   WiFi SSID: %s\n", config.wifi.ssid);
+        }
+        if (server.hasArg("pass")) {
+            strcpy(config.wifi.password, server.arg("pass").c_str());
+            Serial.printf("   WiFi Password: %s\n", config.wifi.password);
+        }
+        if (server.hasArg("url")) {
+            strcpy(config.firebase.database_url, server.arg("url").c_str());
+            Serial.printf("   Firebase URL: %s\n", config.firebase.database_url);
+        }
+        if (server.hasArg("key")) {
+            strcpy(config.firebase.api_key, server.arg("key").c_str());
+            Serial.printf("   Firebase Key: %s\n", config.firebase.api_key);
+        }
+        
+        // Extrair project_id da URL automaticamente
+        String url = config.firebase.database_url;
+        if (url.indexOf("://") > 0) {
+            int start = url.indexOf("://") + 3;
+            int end = url.indexOf(".", start);
+            if (end > start) {
+                String projectId = url.substring(start, end);
+                strcpy(config.firebase.project_id, projectId.c_str());
+                Serial.printf("   Firebase Project (auto): %s\n", config.firebase.project_id);
+            }
+        }
+        
+        Serial.println("💾 Salvando configuração...");
         
         if (configManager.saveConfig()) {
-            server.send(200, "text/html", "<html><body><h1>Saved! Restarting...</h1></body></html>");
-            delay(1000);
+            Serial.println("✅ Configuração salva com sucesso!");
+            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
+            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+            html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
+            html += "<div class='success'><h1>✅ Configuração Salva!</h1><p>🔄 O hub está reiniciando...</p>";
+            html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
+            server.send(200, "text/html", html);
+            delay(2000);
             ESP.restart();
         } else {
-            server.send(500, "text/html", "<html><body><h1>Error saving config</h1></body></html>");
+            Serial.println("❌ Erro ao salvar configuração!");
+            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
+            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
+            html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
+            html += "<a href='/'>Voltar</a></div></body></html>";
+            server.send(500, "text/html", html);
+        }
+    });
+    
+    server.on("/status", HTTP_GET, []() {
+        uint32_t elapsed = millis() - apStartTime;
+        uint32_t remaining = CONFIG_TIMEOUT_MS - elapsed;
+        
+        DynamicJsonDocument doc(512);
+        doc["status"] = "config_mode";
+        doc["uptime_ms"] = millis();
+        doc["config_time_remaining_ms"] = remaining;
+        doc["heap_free"] = ESP.getFreeHeap();
+        doc["base_id"] = configManager.getConfig().base_id;
+        
+        String response;
+        serializeJson(doc, response);
+        server.send(200, "application/json", response);
+    });
+    
+    server.on("/save-json", HTTP_POST, []() {
+        if (!server.hasArg("config_json")) {
+            server.send(400, "text/html", "<html><body><h1>❌ JSON não fornecido</h1></body></html>");
+            return;
+        }
+        
+        String jsonStr = server.arg("config_json");
+        Serial.println("📝 JSON recebido via formulário:");
+        Serial.println(jsonStr);
+        Serial.println("---");
+        
+        DynamicJsonDocument doc(2048);
+        DeserializationError error = deserializeJson(doc, jsonStr);
+        
+        if (error) {
+            Serial.printf("❌ Erro ao parsear JSON: %s\n", error.c_str());
+            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro JSON</title>";
+            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
+            html += "<div class='error'><h1>❌ JSON Inválido</h1><p>Erro: " + String(error.c_str()) + "</p>";
+            html += "<a href='/'>Voltar</a></div></body></html>";
+            server.send(400, "text/html", html);
+            return;
+        }
+        
+        HubConfig& config = configManager.getConfig();
+        
+        // Processar campos do JSON
+        if (doc["base_id"]) {
+            strcpy(config.base_id, doc["base_id"]);
+            Serial.printf("   Base ID: %s\n", config.base_id);
+        }
+        if (doc["wifi"]["ssid"]) {
+            strcpy(config.wifi.ssid, doc["wifi"]["ssid"]);
+            Serial.printf("   WiFi SSID: %s\n", config.wifi.ssid);
+        }
+        if (doc["wifi"]["password"]) {
+            strcpy(config.wifi.password, doc["wifi"]["password"]);
+            Serial.printf("   WiFi Password: %s\n", config.wifi.password);
+        }
+        if (doc["firebase"]["database_url"]) {
+            strcpy(config.firebase.database_url, doc["firebase"]["database_url"]);
+            Serial.printf("   Firebase URL: %s\n", config.firebase.database_url);
+        }
+        if (doc["firebase"]["api_key"]) {
+            strcpy(config.firebase.api_key, doc["firebase"]["api_key"]);
+            Serial.printf("   Firebase Key: %s\n", config.firebase.api_key);
+        }
+        
+        // Extrair project_id da URL automaticamente
+        String url = config.firebase.database_url;
+        if (url.indexOf("://") > 0) {
+            int start = url.indexOf("://") + 3;
+            int end = url.indexOf(".", start);
+            if (end > start) {
+                String projectId = url.substring(start, end);
+                strcpy(config.firebase.project_id, projectId.c_str());
+                Serial.printf("   Firebase Project (auto): %s\n", config.firebase.project_id);
+            }
+        }
+        
+        Serial.println("💾 Salvando configuração via JSON...");
+        
+        if (configManager.saveConfig()) {
+            Serial.println("✅ Configuração JSON salva com sucesso!");
+            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>JSON Salvo</title>";
+            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+            html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
+            html += "<div class='success'><h1>✅ JSON Processado!</h1><p>🔄 O hub está reiniciando...</p>";
+            html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
+            server.send(200, "text/html", html);
+            delay(2000);
+            ESP.restart();
+        } else {
+            Serial.println("❌ Erro ao salvar configuração JSON!");
+            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
+            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
+            html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
+            html += "<a href='/'>Voltar</a></div></body></html>";
+            server.send(500, "text/html", html);
         }
     });
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 
 class WiFiSync {
 public:
@@ -8,7 +9,8 @@ public:
     static void exit();
     static bool connectWiFi();
     static void syncTime();
-    static void downloadConfig();
-    static void uploadData();
-    static void uploadHeartbeat();
+    static bool downloadConfig();
+    static bool uploadData();
+    static bool uploadHeartbeat();
+    static bool validateFirebaseConfig(const DynamicJsonDocument& doc);
 };

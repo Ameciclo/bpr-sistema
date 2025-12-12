@@ -4,8 +4,11 @@
 #include "ble_only.h"
 #include "wifi_sync.h"
 #include "shutdown.h"
+#include "config_manager.h"
 
-StateMachine::StateMachine() : currentState(STATE_BOOT), lastStateChange(0) {}
+extern ConfigManager configManager;
+
+StateMachine::StateMachine() : currentState(STATE_BOOT), lastStateChange(0), firstSync(false), syncFailureCount(0), firstFailureTime(0) {}
 
 void StateMachine::setState(SystemState newState) {
     if (currentState != newState) {
@@ -82,6 +85,9 @@ void StateMachine::handleEvent(SystemEvent event) {
 void StateMachine::enterState(SystemState state) {
     switch (state) {
         case STATE_CONFIG_AP:
+            // Reset failure counter when entering AP mode
+            syncFailureCount = 0;
+            firstFailureTime = 0;
             ConfigAP::enter();
             break;
         case STATE_BLE_ONLY:
@@ -120,12 +126,56 @@ void StateMachine::exitState(SystemState state) {
 void StateMachine::checkTransitions() {
     uint32_t stateTime = millis() - lastStateChange;
     
+    // Check fallback to AP due to sync failures
+    if (currentState == STATE_BLE_ONLY && shouldFallbackToAP()) {
+        Serial.println("⚠️ Muitas falhas de sync - retornando ao modo AP");
+        setState(STATE_CONFIG_AP);
+        return;
+    }
+    
     // Auto transitions based on time
     if (currentState == STATE_BLE_ONLY && stateTime > SHUTDOWN_TIMEOUT) {
         if (BLEOnly::getConnectedBikes() == 0) {
             handleEvent(EVENT_INACTIVITY_TIMEOUT);
         }
     }
+}
+
+void StateMachine::recordSyncFailure() {
+    if (syncFailureCount == 0) {
+        firstFailureTime = millis();
+    }
+    syncFailureCount++;
+    Serial.printf("❌ Falha de sync %d/%d\n", syncFailureCount, configManager.getConfig().fallback.max_failures);
+}
+
+void StateMachine::recordSyncSuccess() {
+    if (syncFailureCount > 0) {
+        Serial.printf("✅ Sync recuperada após %d falhas\n", syncFailureCount);
+    }
+    syncFailureCount = 0;
+    firstFailureTime = 0;
+}
+
+bool StateMachine::shouldFallbackToAP() {
+    if (syncFailureCount == 0) return false;
+    
+    const FallbackConfig& fallback = configManager.getConfig().fallback;
+    
+    // Fallback por número de falhas
+    if (syncFailureCount >= fallback.max_failures) {
+        Serial.printf("⚠️ %d falhas consecutivas atingidas\n", fallback.max_failures);
+        return true;
+    }
+    
+    // Fallback por tempo
+    uint32_t timeoutMs = fallback.timeout_min * 60000;
+    if (millis() - firstFailureTime > timeoutMs) {
+        Serial.printf("⚠️ Timeout de falhas atingido: %d min\n", fallback.timeout_min);
+        return true;
+    }
+    
+    return false;
 }
 
 const char* StateMachine::getStateName(SystemState state) {

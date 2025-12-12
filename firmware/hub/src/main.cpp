@@ -3,7 +3,7 @@
 #include "config_manager.h"
 #include "state_machine.h"
 #include "led_controller.h"
-#include "ble_simple.h"
+#include "ble_only.h"
 #include "buffer_manager.h"
 
 // Instâncias globais
@@ -34,20 +34,25 @@ void setup() {
     }
     
     // Inicializar módulos
-    configManager.loadConfig();
+    bool configLoaded = configManager.loadConfig();
+    bufferManager.begin();
     ledController.begin();
     ledController.bootPattern();
     
-    // Inicializar BLE
-    if (!initBLESimple()) {
-        Serial.println("❌ Falha no BLE");
-        ESP.restart();
+    // Verificar se precisa de configuração
+    if (!configLoaded || !configManager.isConfigValid()) {
+        Serial.println("🔧 Config inválida, entrando no modo AP");
+        Serial.println("📱 Conecte-se ao WiFi: BPR_Hub_Config (senha: botaprarodar)");
+        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
+        Serial.println("⏰ Timeout: 15 minutos");
+        stateMachine.setState(STATE_CONFIG_AP);
+    } else {
+        // Forçar sync inicial para validar configuração
+        Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
+        stateMachine.setFirstSync(true);
+        stateMachine.setState(STATE_WIFI_SYNC);
+        ledController.syncPattern();
     }
-    startBLEServer();
-    
-    // Iniciar máquina de estados
-    stateMachine.setState(STATE_BLE_ONLY);
-    ledController.bleReadyPattern();
     
     Serial.println("✅ Hub inicializado");
 }
@@ -59,12 +64,14 @@ void loop() {
     ledController.update();
     stateMachine.update();
     
-    // Processar BLE
-    connectedBikes = getConnectedClients();
+    // Atualizar contadores
+    if (stateMachine.getCurrentState() == STATE_BLE_ONLY) {
+        connectedBikes = BLEOnly::getConnectedBikes();
+    }
     
     // Verificar transições
     if (stateMachine.getCurrentState() == STATE_BLE_ONLY && 
-        stateMachine.getStateTime() > configManager.getConfig().sync_interval_ms) {
+        stateMachine.getStateTime() > configManager.getConfig().sync_interval_ms()) {
         stateMachine.setState(STATE_WIFI_SYNC);
         ledController.syncPattern();
     }
@@ -92,8 +99,29 @@ void printStatus() {
                  configManager.getConfig().base_id, 
                  stateMachine.getStateName(stateMachine.getCurrentState()), 
                  millis() / 1000);
-    Serial.printf("🚲 Bikes conectadas: %d | 💾 Heap: %d bytes\n", 
-                 connectedBikes, ESP.getFreeHeap());
+    
+    if (stateMachine.getCurrentState() == STATE_CONFIG_AP) {
+        Serial.println("📱 Modo Configuração Ativo:");
+        Serial.println("   WiFi: BPR_Hub_Config (senha: botaprarodar)");
+        Serial.println("   URL: http://192.168.4.1");
+    } else {
+        Serial.printf("🚲 Bikes conectadas: %d | 💾 Heap: %d bytes\n", 
+                     connectedBikes, ESP.getFreeHeap());
+        
+        // Mostrar informações de sincronização
+        if (stateMachine.getCurrentState() == STATE_BLE_ONLY) {
+            uint32_t stateTime = stateMachine.getStateTime();
+            uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
+            uint32_t nextSync = (syncInterval - stateTime) / 1000;
+            
+            if (stateTime < syncInterval) {
+                Serial.printf("🔄 Próxima sync em: %lus\n", nextSync);
+            } else {
+                Serial.println("🔄 Sync pendente...");
+            }
+        }
+    }
+    
     Serial.printf("⏱️ Estado há: %lus\n", 
                  stateMachine.getStateTime() / 1000);
     Serial.println("==================================================");
