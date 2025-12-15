@@ -1,0 +1,29 @@
+{
+  "message": "A bike deve enviar este JSON via característica BLE de CONFIG (não DATA)",
+  "characteristic_uuid": "11111111-2222-3333-4444-555555555555",
+  "request": {
+    "type": "config_request",
+    "bike_id": "bpr-9f818c"
+  },
+  "expected_response": {
+    "bike_id": "bpr-9f818c",
+    "bike_name": "Bike bpr-9f818c",
+    "version": 1,
+    "dev_mode": false,
+    "wifi": {
+      "scan_interval_sec": 300,
+      "scan_timeout_ms": 5000
+    },
+    "ble": {
+      "base_name": "BPR Hub Station",
+      "scan_time_sec": 5
+    },
+    "power": {
+      "deep_sleep_duration_sec": 3600
+    },
+    "battery": {
+      "critical_voltage": 3.2,
+      "low_voltage": 3.45
+    }
+  }
+}

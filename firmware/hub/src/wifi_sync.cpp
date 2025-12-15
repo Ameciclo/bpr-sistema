@@ -222,13 +222,18 @@ bool WiFiSync::uploadData() {
             bufferManager.markAsSent();
             Serial.printf("📤 Dados enviados: %d bytes\n", jsonString.length());
             Serial.printf("   URL: /hubs/%s/data\n", config.base_id);
+            Serial.printf("   Payload: %s\n", jsonString.c_str());
         } else {
             Serial.printf("❌ Upload falhou: HTTP %d\n", httpCode);
             Serial.printf("   URL: %s\n", url.c_str());
+            Serial.printf("   Payload: %s\n", jsonString.c_str());
         }
         
         http.end();
     }
+    
+    // Upload bike config logs
+    uploadBikeConfigLogs();
     
     // Upload heartbeat
     return uploadHeartbeat();
@@ -279,4 +284,11 @@ bool WiFiSync::uploadHeartbeat() {
     
     http.end();
     return success;
+}
+
+bool WiFiSync::uploadBikeConfigLogs() {
+    // This function would extract config logs from buffer and upload them
+    // to /bike_config_logs/{hub_id}/ in Firebase
+    // For now, config logs are included in the general data upload
+    return true;
 }

@@ -12,5 +12,6 @@ public:
     static bool downloadConfig();
     static bool uploadData();
     static bool uploadHeartbeat();
+    static bool uploadBikeConfigLogs();
     static bool validateFirebaseConfig(const DynamicJsonDocument& doc);
 };

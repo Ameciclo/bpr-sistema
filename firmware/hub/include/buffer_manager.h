@@ -14,6 +14,7 @@ public:
     void begin();
     bool addData(const uint8_t* data, size_t length);
     void addHeartbeat(uint8_t bikes);
+    void addConfigLog(const String& bikeId, bool authorized);
     bool needsSync();
     void clear();
     size_t getDataSize();

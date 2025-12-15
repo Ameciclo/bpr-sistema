@@ -1,0 +1,8 @@
+{
+  "auto_approve_bpr": true,
+  "bikes": [
+    "bpr-a1b2c3",
+    "bpr-d4e5f6",
+    "bpr-g7h8i9"
+  ]
+}

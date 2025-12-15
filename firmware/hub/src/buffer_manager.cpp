@@ -74,6 +74,21 @@ void BufferManager::addHeartbeat(uint8_t bikes) {
     connectedBikes = bikes;
 }
 
+void BufferManager::addConfigLog(const String& bikeId, bool authorized) {
+    DynamicJsonDocument logDoc(256);
+    logDoc["type"] = "config_log";
+    logDoc["timestamp"] = time(nullptr);
+    logDoc["bike_id"] = bikeId;
+    logDoc["authorized"] = authorized;
+    
+    String logStr;
+    serializeJson(logDoc, logStr);
+    
+    addData((uint8_t*)logStr.c_str(), logStr.length());
+    Serial.printf("📝 Config log added: %s - %s\n", 
+                 bikeId.c_str(), authorized ? "AUTHORIZED" : "DENIED");
+}
+
 uint8_t BufferManager::getConnectedBikes() {
     return connectedBikes;
 }

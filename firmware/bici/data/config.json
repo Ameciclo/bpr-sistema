@@ -1,0 +1,10 @@
+{
+  "bike_id": "bici_001",
+  "base_ble_name": "BPR",
+  "version": 1,
+  "scan_interval_sec": 300,
+  "scan_interval_low_batt_sec": 900,
+  "deep_sleep_sec": 3600,
+  "min_battery_voltage": 3.45,
+  "timestamp": 0
+}
