@@ -6,6 +6,9 @@
 // Files
 #define CONFIG_FILE "/config.json"
 #define BUFFER_FILE "/buffer.json"
+#define BIKE_REGISTRY_FILE "/bike_registry.json"
+#define BIKE_CONFIG_CACHE_FILE "/bike_config_versions.json"
+#define BIKE_CONFIGS_FILE "/bike_configs.json"
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000

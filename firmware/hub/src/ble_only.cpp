@@ -6,7 +6,9 @@
 #include "buffer_manager.h"
 #include "led_controller.h"
 #include "state_machine.h"
-#include "bike_config.h"
+// #include "bike_config.h" - removido, conflito com bike_config_manager
+#include "bike_registry.h"
+#include "bike_config_manager.h"
 
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
@@ -20,18 +22,68 @@ static NimBLECharacteristic* pConfigChar = nullptr;
 static uint8_t connectedBikes = 0;
 static uint32_t lastSyncCheck = 0;
 static uint32_t lastHeartbeat = 0;
+static std::map<uint16_t, String> connectedDevices;
+static bool filteringEnabled = false;
+
+// BLE Filter implementation
+class AdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
+        if (!filteringEnabled) return;
+        
+        String deviceName = advertisedDevice->getName().c_str();
+        
+        // Só aceitar dispositivos com nome começando com "bpr-"
+        if (!deviceName.startsWith("bpr-") || deviceName.length() != 10) {
+            Serial.printf("🚫 Rejeitando dispositivo: %s (nome inválido)\n", deviceName.c_str());
+            return;
+        }
+        
+        // Verificar se não está blocked
+        if (!BikeRegistry::canConnect(deviceName)) {
+            Serial.printf("🚫 Rejeitando bike blocked: %s\n", deviceName.c_str());
+            return;
+        }
+        
+        Serial.printf("✅ Permitindo conexão de: %s\n", deviceName.c_str());
+    }
+};
+
+void initBLEFilter() {
+    NimBLEDevice::setScanFilterMode(CONFIG_BTDM_SCAN_DUPL_TYPE_DEVICE);
+    NimBLEDevice::getScan()->setAdvertisedDeviceCallbacks(new AdvertisedDeviceCallbacks());
+    filteringEnabled = true;
+    Serial.println("🔍 BLE filtering enabled - only bpr-* devices allowed");
+}
 
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
+        // Obter endereço do dispositivo conectado
+        uint16_t conn_handle = desc->conn_handle;
+        NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
+        
         connectedBikes++;
-        Serial.printf("Bike connected: %d\n", connectedBikes);
+        Serial.printf("🔵 BLE connected: %s (%d total)\n", 
+                     addr.toString().c_str(), connectedBikes);
         ledController.bikeArrivedPattern();
         NimBLEDevice::startAdvertising();
+        
+        // Armazenar handle para push de config posterior
+        connectedDevices[conn_handle] = "";
     }
     
     void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
         if (connectedBikes > 0) connectedBikes--;
-        Serial.printf("Bike disconnected: %d\n", connectedBikes);
+        
+        // Remover do mapa de conexões
+        uint16_t conn_handle = desc->conn_handle;
+        if (connectedDevices.find(conn_handle) != connectedDevices.end()) {
+            String bikeId = connectedDevices[conn_handle];
+            connectedDevices.erase(conn_handle);
+            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), connectedBikes);
+        } else {
+            Serial.printf("🔵 Device disconnected (%d total)\n", connectedBikes);
+        }
+        
         ledController.bikeLeftPattern();
         NimBLEDevice::startAdvertising();
     }
@@ -41,8 +93,64 @@ class DataCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* pChar) {
         std::string value = pChar->getValue();
         if (value.length() > 0) {
-            Serial.printf("📥 Data received: %s\n", value.c_str());
-            bufferManager.addData((uint8_t*)value.data(), value.length());
+            // Tentar extrair bike_id dos dados JSON
+            DynamicJsonDocument doc(512);
+            DeserializationError error = deserializeJson(doc, value.c_str());
+            
+            if (!error && doc["bike_id"]) {
+                String bikeId = doc["bike_id"];
+                
+                // Validar se bike pode se conectar (não blocked)
+                if (BikeRegistry::canConnect(bikeId)) {
+                    // Validar se pode enviar dados (só allowed)
+                    if (BikeRegistry::isAllowed(bikeId)) {
+                        Serial.printf("📥 Data from %s: %s\n", bikeId.c_str(), value.c_str());
+                        
+                        // Atualizar heartbeat se tiver dados de bateria
+                        if (doc["battery"] && doc["heap"]) {
+                            BikeRegistry::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);
+                        }
+                        
+                        // Adicionar timestamp de recebimento aos dados
+                        time_t now = time(nullptr);
+                        struct tm timeinfo;
+                        getLocalTime(&timeinfo);
+                        
+                        char dateStr[64];
+                        strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+                        
+                        doc["hub_receive_timestamp"] = now;
+                        doc["hub_receive_timestamp_human"] = dateStr;
+                        
+                        // Serializar JSON modificado
+                        String modifiedJson;
+                        serializeJson(doc, modifiedJson);
+                        
+                        bufferManager.addData((uint8_t*)modifiedJson.c_str(), modifiedJson.length());
+                        
+                        // TODO: Verificar se tem config nova para enviar
+                        // if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+                        //     BikeConfigManager::pushConfigToBike(bikeId, pConfigChar);
+                        // }
+                        
+                        // Armazenar bike_id para esta conexão
+                        for (auto& pair : connectedDevices) {
+                            if (pair.second.isEmpty()) {
+                                pair.second = bikeId;
+                                break;
+                            }
+                        }
+                    } else {
+                        // Bike pending - só registrar visita, não processar dados
+                        BikeRegistry::recordPendingVisit(bikeId);
+                        Serial.printf("📝 Pending bike %s visited - data ignored (awaiting approval)\n", bikeId.c_str());
+                    }
+                } else {
+                    Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
+                }
+            } else {
+                Serial.printf("⚠️ Data without bike_id: %s\n", value.c_str());
+            }
         }
     }
 };
@@ -73,11 +181,8 @@ private:
         String bikeId = doc["bike_id"] | "";
         
         if (type == "config_request" && bikeId.length() > 0) {
-            String response;
-            if (BikeConfigManager::handleConfigRequest(bikeId, response)) {
-                pConfigChar->setValue(response.c_str());
-                pConfigChar->notify();
-            }
+            // TODO: Implementar resposta de config
+            Serial.printf("📝 Config request from %s (not implemented)\n", bikeId.c_str());
         } else if (type == "config_received") {
             String status = doc["status"] | "";
             Serial.printf("📋 Config confirmation from %s: %s\n", 
@@ -89,7 +194,9 @@ private:
 void BLEOnly::enter() {
     Serial.println("🔵 Entering BLE_ONLY mode");
     
-    // Initialize bike config manager
+    // Initialize bike registry, filter and config manager
+    BikeRegistry::init();
+    initBLEFilter();
     BikeConfigManager::init();
     
     NimBLEDevice::init(BLE_DEVICE_NAME);

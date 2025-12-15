@@ -1,7 +1,7 @@
 #include "self_check.h"
 #include <LittleFS.h>
 #include <WiFi.h>
-#include <BLEDevice.h>
+#include <NimBLEDevice.h>
 #include "constants.h"
 
 SelfCheck::SelfCheck() {}
@@ -136,15 +136,15 @@ bool SelfCheck::checkWiFi() {
 
 bool SelfCheck::checkBLE() {
     // Initialize BLE briefly to test
-    BLEDevice::init("BPR_TEST");
+    NimBLEDevice::init("BPR_TEST");
     
     // Check if BLE was initialized properly
-    if (!BLEDevice::getInitialized()) {
+    if (!NimBLEDevice::getInitialized()) {
         Serial.println("❌ BLE initialization failed");
         return false;
     }
     
-    BLEDevice::deinit(false);
+    NimBLEDevice::deinit(false);
     Serial.println("🔵 BLE capability OK");
     return true;
 }

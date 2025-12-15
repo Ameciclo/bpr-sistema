@@ -5,6 +5,7 @@
 #include "led_controller.h"
 #include "ble_only.h"
 #include "buffer_manager.h"
+#include "self_check.h"
 
 // Instâncias globais
 ConfigManager configManager;
@@ -31,6 +32,12 @@ void setup() {
     if (!LittleFS.begin()) {
         Serial.println("❌ Falha no LittleFS");
         ESP.restart();
+    }
+    
+    // Self-check do sistema
+    SelfCheck selfCheck;
+    if (!selfCheck.systemCheck()) {
+        Serial.println("⚠️ System check failed - continuing anyway");
     }
     
     // Inicializar módulos

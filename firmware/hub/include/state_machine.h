@@ -1,5 +1,9 @@
 #pragma once
+#ifdef NATIVE_SIMULATION
+#include "arduino_mock.h"
+#else
 #include <Arduino.h>
+#endif
 #include "constants.h"
 
 enum SystemState {
@@ -13,7 +17,9 @@ enum SystemState {
 class StateMachine {
 public:
     StateMachine();
+    void begin();
     void setState(SystemState newState);
+    void transitionTo(SystemState newState);
     void update();
     void handleEvent(SystemEvent event);
     void recordSyncFailure();
