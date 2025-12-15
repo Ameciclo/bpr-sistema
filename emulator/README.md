@@ -1,6 +1,6 @@
-# 🧪 BPR Sistema Emulador
+# 🧪 BPR Sistema Emulador v2.0
 
-Emulador completo do sistema BPR que simula o comportamento das centrais, bicicletas e Firebase de forma offline.
+Emulador completo do sistema BPR que simula o comportamento dos hubs, bicis e Firebase de forma offline, atualizado para as novas arquiteturas.
 
 ## 🚀 Como usar
 
@@ -12,37 +12,46 @@ npm start
 
 ## 🎯 Cenários Disponíveis
 
-### 🏢 Central inicializando e configurando
-- Simula boot da central
+### 🏢 Hub inicializando e configurando
+- Simula boot do hub ESP32C3
+- Máquina de estados (CONFIG_AP → BLE_ONLY → WIFI_SYNC)
 - Carregamento de configurações do Firebase
-- Inicialização do BLE
 - Sistema de LED inteligente
+- Buffer local e sincronização
 
-### 🚲 Bike conectando na central
-- Boot da bicicleta
-- Descoberta e conexão BLE com central
-- Envio de heartbeat
-- Atualização de status
+### 🚲 Bici conectando no hub
+- Boot da bicicleta ESP32/ESP8266
+- Estados: BOOT → CONFIG_REQUEST → AT_BASE → SCANNING
+- Descoberta e conexão BLE com hub
+- Solicitação de configuração dinâmica
+- Coordenação de rádio WiFi/BLE
 
-### 🔄 Fluxo completo: Central + Bike + Viagem
-- Central inicializada
-- Bike conecta
-- Bike sai da base (viagem)
-- Scans WiFi durante movimento
-- Retorno à base
-- Sincronização de dados
+### 🔄 Fluxo completo: Hub + Bici + Viagem
+- Hub inicializado em modo BLE_ONLY
+- Bici conecta e recebe configuração
+- Bici entra em modo SCANNING
+- Scans WiFi com buffer local
+- Retorno à base e sincronização
+- Hub faz WIFI_SYNC para upload
 
 ### 🔋 Teste de bateria baixa
-- Simula bike com bateria baixa
-- Envio de alerta
-- Processamento pela central
-- Notificação no sistema
+- Simula bici com bateria baixa
+- Transição para modo LOW_POWER
+- Envio de alerta via BLE
+- Processamento pelo hub
+- Eventual DEEP_SLEEP
 
-### 📡 Múltiplas bikes simultâneas
-- 3 bikes conectando simultaneamente
-- Atividade paralela
-- Gerenciamento de múltiplas conexões
-- LED de contagem
+### 📡 Múltiplas bicis simultâneas
+- 3 bicis conectando simultaneamente
+- Atividade paralela com estados independentes
+- Gerenciamento de múltiplas conexões BLE
+- LED de contagem no hub
+
+### ⚙️ Solicitação de configuração
+- Bici nova sem configuração
+- Estado CONFIG_REQUEST
+- Comunicação BLE para receber config
+- Aplicação e salvamento da configuração
 
 ## 🔧 Arquitetura
 
@@ -50,22 +59,24 @@ npm start
 
 #### `BPREmulator`
 - Orquestra os cenários
-- Gerencia central e bikes
+- Gerencia hub e bicis
 - Interface com usuário
 
-#### `Central`
-- Simula firmware da central ESP32
+#### `Hub`
+- Simula firmware do hub ESP32C3
+- Máquina de estados modular
 - Sistema de LED inteligente
-- Gerenciamento BLE
+- Servidor BLE para bicis
+- Buffer local e sincronização WiFi
 - Heartbeat automático
-- Sincronização Firebase
 
-#### `Bike`
-- Simula firmware da bicicleta ESP8266/ESP32
-- Scans WiFi
-- Tracking de viagens
-- Gerenciamento de bateria
-- Conexão BLE
+#### `Bici`
+- Simula firmware da bici ESP32/ESP8266
+- Máquina de estados otimizada
+- Scans WiFi com buffer local
+- Cliente BLE para comunicação
+- Gerenciamento de energia
+- Configuração dinâmica via BLE
 
 #### `MockFirebase`
 - Simula Firebase Realtime Database
@@ -77,53 +88,69 @@ npm start
 
 ### Configurações
 - Configurações globais do sistema
-- Configurações específicas por central
+- Configurações específicas por hub
 - Parâmetros de LED, WiFi, BLE
+- Configuração dinâmica de bicis
 
 ### Dados Operacionais
-- Status das bases e bikes
+- Status dos hubs e bicis
 - Scans WiFi com redes fictícias
+- Buffer local e sincronização
 - Viagens com rotas e métricas
 - Alertas de sistema
 - Heartbeats automáticos
 
 ### Métricas
 - Voltagem de bateria realística
+- Estados de máquina detalhados
+- Coordenação de rádio WiFi/BLE
+- Consumo de energia simulado
 - Posições GPS simuladas
-- Consumo de CO2 calculado
-- Distâncias percorridas
 
 ## 🎮 Interação
 
 O emulador mostra em tempo real:
-- 🔵 Logs da central (azul)
-- 🔵 Logs das bikes (ciano)  
+- 🔵 Logs do hub (azul)
+- 🔵 Logs das bicis (ciano)  
 - 🔵 Logs do Firebase (cinza)
-- 🔵 Estados do LED
-- 🔵 Conexões BLE
-- 🔵 Transferências de dados
+- 🔵 Estados da máquina de estados
+- 🔵 Padrões de LED inteligente
+- 🔵 Conexões BLE e coordenação de rádio
+- 🔵 Buffer local e sincronização
+- 🔵 Transferências de dados e configurações
 
 ## 🧪 Casos de Teste
 
 ### Teste de Inicialização
-- Verifica boot sequence
-- Carregamento de configs
-- Inicialização de serviços
+- Verifica boot sequence do hub e bici
+- Carregamento de configs e estados
+- Inicialização de serviços modulares
+
+### Teste de Estados
+- Transições de estado do hub
+- Estados da bici (BOOT → CONFIG_REQUEST → SCANNING → AT_BASE)
+- Coordenação de rádio WiFi/BLE
+
+### Teste de Configuração
+- Solicitação de config via BLE
+- Aplicação de configuração dinâmica
+- Persistência em LittleFS
 
 ### Teste de Conectividade
-- Descoberta BLE
+- Descoberta BLE entre bici e hub
 - Handshake de conexão
 - Manutenção de sessão
 
 ### Teste de Dados
-- Upload de scans WiFi
-- Sincronização de viagens
+- Buffer local de scans WiFi
+- Sincronização via estados WIFI_SYNC
+- Upload em lotes para Firebase
 - Persistência de métricas
 
 ### Teste de Alertas
-- Bateria baixa
-- Desconexões
-- Timeouts
+- Bateria baixa e transições de energia
+- Desconexões e reconexões
+- Timeouts e deep sleep
 
 ## 🔍 Debug
 
@@ -138,5 +165,8 @@ emulator.firebase.showData();
 - ✅ **Desenvolvimento rápido** - Ciclos de teste instantâneos  
 - ✅ **Debug visual** - Logs coloridos e detalhados
 - ✅ **Cenários controlados** - Situações específicas reproduzíveis
-- ✅ **Validação de fluxos** - Testa integração completa
+- ✅ **Validação de fluxos** - Testa integração completa hub+bici
 - ✅ **Prototipagem** - Experimenta mudanças sem hardware
+- ✅ **Estados simulados** - Testa máquinas de estado complexas
+- ✅ **Configuração dinâmica** - Valida troca de configs via BLE
+- ✅ **Coordenação de rádio** - Simula interferência WiFi/BLE

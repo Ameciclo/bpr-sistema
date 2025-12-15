@@ -7,10 +7,12 @@ Sistema completo de monitoramento de bicicletas com WiFi scanning, bot Telegram 
 ```
 bpr-sistema/
 ├── firmware/           # Códigos para ESP8266/ESP32
-│   ├── bike/          # Firmware da bicicleta (WiFi scanner)
-│   └── central/       # Firmware da central/base
+│   ├── bici/          # Firmware da bicicleta v2.0 (WiFi scanner)
+│   ├── hub/           # Firmware do hub/central redesenhado
+│   └── bike/          # Firmware legado da bicicleta
 ├── bot/               # Bot do Telegram (@prarodarbot)
 ├── web/               # Site em Remix (botaprarodar)
+├── emulator/          # Emulador completo do sistema
 ├── shared/            # Código/configs compartilhados
 ├── docs/              # Documentação geral
 └── scripts/           # Scripts de deploy/build
@@ -626,9 +628,9 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
 ```
 bpr-sistema/
 ├── 🚲 firmware/           # Códigos ESP8266/ESP32
-│   ├── bike/              # Scanner WiFi da bicicleta
-│   ├── central/           # Base/central de coleta
-│   └── simulator/         # Simulador para testes
+│   ├── bici/              # Firmware bicicleta v2.0 (máquina de estados)
+│   ├── hub/               # Firmware hub redesenhado (modular)
+│   └── bike/              # Firmware legado da bicicleta
 ├── 🤖 bot/                # Bot Telegram (@prarodarbot)
 │   ├── src/               # Código principal organizado
 │   ├── functions/         # Firebase Functions (deploy)
@@ -636,7 +638,7 @@ bpr-sistema/
 │   └── tools/             # Ferramentas auxiliares
 ├── 🌐 web/                # Dashboard web (Remix)
 ├── 📊 shared/             # Configurações compartilhadas
-├── 🧪 emulator/           # Emulador completo do sistema
+├── 🧪 emulator/           # Emulador completo do sistema v2.0
 ├── 📚 docs/               # Documentação geral
 └── 🔧 scripts/            # Scripts de deploy/build
 ```

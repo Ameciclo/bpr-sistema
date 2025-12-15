@@ -1,7 +1,7 @@
 {
   "name": "bpr-emulator",
-  "version": "1.0.0",
-  "description": "Emulador completo do sistema BPR - Central e Bikes",
+  "version": "2.0.0",
+  "description": "Emulador completo do sistema BPR v2.0 - Hub e Bicis com máquinas de estado",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

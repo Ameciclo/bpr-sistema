@@ -27,11 +27,12 @@ async function main() {
       name: 'scenario',
       message: 'Escolha o cenário para emular:',
       choices: [
-        { name: '🏢 Central inicializando e configurando', value: 'central_boot' },
-        { name: '🚲 Bike conectando na central', value: 'bike_connect' },
-        { name: '🔄 Fluxo completo: Central + Bike + Viagem', value: 'full_flow' },
+        { name: '🏢 Hub inicializando e configurando', value: 'hub_boot' },
+        { name: '🚲 Bici conectando no hub', value: 'bici_connect' },
+        { name: '🔄 Fluxo completo: Hub + Bici + Viagem', value: 'full_flow' },
         { name: '🔋 Teste de bateria baixa', value: 'low_battery' },
-        { name: '📡 Múltiplas bikes simultâneas', value: 'multi_bikes' }
+        { name: '📡 Múltiplas bicis simultâneas', value: 'multi_bicis' },
+        { name: '⚙️ Solicitação de configuração', value: 'config_request' }
       ]
     }]);
 

@@ -1,14 +1,14 @@
 const chalk = require('chalk');
 const inquirer = require('inquirer');
-const { Central } = require('./central');
-const { Bike } = require('./bike');
+const { Hub } = require('./hub');
+const { Bici } = require('./bici');
 const { MockFirebase } = require('./firebase');
 
 class InteractiveEmulator {
   constructor() {
     this.firebase = new MockFirebase();
-    this.central = null;
-    this.bikes = [];
+    this.hub = null;
+    this.bicis = [];
   }
 
   async run() {
@@ -20,8 +20,8 @@ class InteractiveEmulator {
         name: 'action',
         message: 'O que fazer?',
         choices: [
-          { name: '🏢 Iniciar Central', value: 'start_central' },
-          { name: '🚲 Adicionar Bike', value: 'add_bike' },
+          { name: '🏢 Iniciar Hub', value: 'start_hub' },
+          { name: '🚲 Adicionar Bici', value: 'add_bici' },
           { name: '🔄 Simular Viagem', value: 'simulate_trip' },
           { name: '🔋 Testar Bateria Baixa', value: 'low_battery' },
           { name: '📊 Ver Estado Firebase', value: 'show_data' },
@@ -30,11 +30,11 @@ class InteractiveEmulator {
       }]);
 
       switch (action) {
-        case 'start_central':
-          await this.startCentral();
+        case 'start_hub':
+          await this.startHub();
           break;
-        case 'add_bike':
-          await this.addBike();
+        case 'add_bici':
+          await this.addBici();
           break;
         case 'simulate_trip':
           await this.simulateTrip();
@@ -52,75 +52,75 @@ class InteractiveEmulator {
     }
   }
 
-  async startCentral() {
-    if (this.central) {
-      console.log(chalk.yellow('⚠️  Central já está rodando'));
+  async startHub() {
+    if (this.hub) {
+      console.log(chalk.yellow('⚠️  Hub já está rodando'));
       return;
     }
 
-    this.central = new Central('base01', this.firebase);
-    await this.central.boot();
-    await this.central.loadConfig();
-    await this.central.startBLE();
+    this.hub = new Hub('hub01', this.firebase);
+    await this.hub.boot();
+    await this.hub.enterState('BLE_ONLY');
   }
 
-  async addBike() {
-    if (!this.central) {
-      console.log(chalk.red('❌ Inicie a central primeiro'));
+  async addBici() {
+    if (!this.hub) {
+      console.log(chalk.red('❌ Inicie o hub primeiro'));
       return;
     }
 
-    const bikeId = `bike${String(this.bikes.length + 1).padStart(2, '0')}`;
-    const bike = new Bike(bikeId, this.firebase);
+    const biciId = `bpr-${String(this.bicis.length + 1).padStart(6, '0')}`;
+    const bici = new Bici(biciId, this.firebase);
     
-    await bike.boot();
-    await bike.connectToCentral(this.central);
+    await bici.boot();
+    await bici.connectToHub(this.hub);
+    await bici.enterState('AT_BASE');
     
-    this.bikes.push(bike);
-    console.log(chalk.green(`✅ Bike ${bikeId} adicionada (${this.bikes.length} total)`));
+    this.bicis.push(bici);
+    console.log(chalk.green(`✅ Bici ${biciId} adicionada (${this.bicis.length} total)`));
   }
 
   async simulateTrip() {
-    if (this.bikes.length === 0) {
-      console.log(chalk.red('❌ Adicione bikes primeiro'));
+    if (this.bicis.length === 0) {
+      console.log(chalk.red('❌ Adicione bicis primeiro'));
       return;
     }
 
-    const { bikeIndex } = await inquirer.prompt([{
+    const { biciIndex } = await inquirer.prompt([{
       type: 'list',
-      name: 'bikeIndex',
-      message: 'Qual bike vai viajar?',
-      choices: this.bikes.map((bike, i) => ({ name: bike.id, value: i }))
+      name: 'biciIndex',
+      message: 'Qual bici vai viajar?',
+      choices: this.bicis.map((bici, i) => ({ name: bici.id, value: i }))
     }]);
 
-    const bike = this.bikes[bikeIndex];
+    const bici = this.bicis[biciIndex];
     
-    await bike.leaveBase();
-    await this.central.onBikeLeft(bike.id);
+    await bici.enterState('SCANNING');
+    await this.hub.onBiciLeft(bici.id);
     
     // Simula viagem
     for (let i = 0; i < 3; i++) {
-      await bike.performWiFiScan();
-      await bike.move();
+      await bici.performWiFiScan();
+      await bici.move();
       await this.sleep(1000);
     }
     
-    await bike.returnToBase();
-    await bike.connectToCentral(this.central);
-    await bike.syncData();
+    await bici.connectToHub(this.hub);
+    await bici.enterState('AT_BASE');
+    await bici.syncData();
   }
 
   async testLowBattery() {
-    if (this.bikes.length === 0) {
-      console.log(chalk.red('❌ Adicione bikes primeiro'));
+    if (this.bicis.length === 0) {
+      console.log(chalk.red('❌ Adicione bicis primeiro'));
       return;
     }
 
-    const bike = this.bikes[0];
-    bike.battery = 3.2;
+    const bici = this.bicis[0];
+    bici.battery = 3.2;
     
-    await bike.sendBatteryAlert();
-    await this.central.onLowBattery(bike.id, bike.battery);
+    await bici.sendBatteryAlert();
+    await this.hub.onLowBattery(bici.id, bici.battery);
   }
 
   sleep(ms) {

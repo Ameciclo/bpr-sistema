@@ -1,13 +1,13 @@
 const chalk = require('chalk');
-const { Central } = require('./central');
-const { Bike } = require('./bike');
+const { Hub } = require('./hub');
+const { Bici } = require('./bici');
 const { MockFirebase } = require('./firebase');
 
 class BPREmulator {
   constructor() {
     this.firebase = new MockFirebase();
-    this.central = null;
-    this.bikes = [];
+    this.hub = null;
+    this.bicis = [];
     this.running = false;
   }
 
@@ -16,11 +16,11 @@ class BPREmulator {
     console.log(chalk.yellow(`\n▶️  Iniciando cenário: ${scenario}\n`));
 
     switch (scenario) {
-      case 'central_boot':
-        await this.centralBootScenario();
+      case 'hub_boot':
+        await this.hubBootScenario();
         break;
-      case 'bike_connect':
-        await this.bikeConnectScenario();
+      case 'bici_connect':
+        await this.biciConnectScenario();
         break;
       case 'full_flow':
         await this.fullFlowScenario();
@@ -28,109 +28,129 @@ class BPREmulator {
       case 'low_battery':
         await this.lowBatteryScenario();
         break;
-      case 'multi_bikes':
-        await this.multiBikesScenario();
+      case 'multi_bicis':
+        await this.multiBicisScenario();
+        break;
+      case 'config_request':
+        await this.configRequestScenario();
         break;
       default:
         console.log(chalk.red('Cenário não implementado'));
     }
   }
 
-  async centralBootScenario() {
-    console.log(chalk.blue('🏢 Simulando inicialização da Central...\n'));
+  async hubBootScenario() {
+    console.log(chalk.blue('🏢 Simulando inicialização do Hub...\n'));
     
-    this.central = new Central('base01', this.firebase);
-    await this.central.boot();
-    await this.central.loadConfig();
-    await this.central.startBLE();
+    this.hub = new Hub('hub01', this.firebase);
+    await this.hub.boot();
+    await this.hub.enterState('CONFIG_AP');
+    await this.hub.enterState('BLE_ONLY');
     
-    console.log(chalk.green('✅ Central pronta e aguardando bikes\n'));
+    console.log(chalk.green('✅ Hub pronto e aguardando bicis\n'));
     await this.sleep(2000);
   }
 
-  async bikeConnectScenario() {
-    await this.centralBootScenario();
+  async biciConnectScenario() {
+    await this.hubBootScenario();
     
-    console.log(chalk.cyan('🚲 Simulando bike se conectando...\n'));
+    console.log(chalk.cyan('🚲 Simulando bici se conectando...\n'));
     
-    const bike = new Bike('bike07', this.firebase);
-    this.bikes.push(bike);
+    const bici = new Bici('bpr-abc123', this.firebase);
+    this.bicis.push(bici);
     
-    await bike.boot();
-    await bike.connectToCentral(this.central);
-    await bike.sendHeartbeat();
+    await bici.boot();
+    await bici.enterState('CONFIG_REQUEST');
+    await bici.connectToHub(this.hub);
+    await bici.enterState('AT_BASE');
     
-    console.log(chalk.green('✅ Bike conectada com sucesso\n'));
+    console.log(chalk.green('✅ Bici conectada com sucesso\n'));
     await this.sleep(2000);
   }
 
   async fullFlowScenario() {
-    await this.bikeConnectScenario();
+    await this.biciConnectScenario();
     
     console.log(chalk.magenta('🔄 Simulando viagem completa...\n'));
     
-    const bike = this.bikes[0];
+    const bici = this.bicis[0];
     
-    // Bike sai da base
-    await bike.leaveBase();
-    await this.central.onBikeLeft(bike.id);
+    // Bici sai da base
+    await bici.enterState('SCANNING');
+    await this.hub.onBiciLeft(bici.id);
     
     // Simula movimento e scans WiFi
     for (let i = 0; i < 3; i++) {
-      await bike.performWiFiScan();
-      await bike.move();
+      await bici.performWiFiScan();
+      await bici.move();
       await this.sleep(1000);
     }
     
-    // Bike volta para base
-    await bike.returnToBase();
-    await bike.connectToCentral(this.central);
-    await bike.syncData();
+    // Bici volta para base
+    await bici.connectToHub(this.hub);
+    await bici.enterState('AT_BASE');
+    await bici.syncData();
     
     console.log(chalk.green('✅ Viagem completa simulada\n'));
   }
 
   async lowBatteryScenario() {
-    await this.bikeConnectScenario();
+    await this.biciConnectScenario();
     
     console.log(chalk.red('🔋 Simulando bateria baixa...\n'));
     
-    const bike = this.bikes[0];
-    bike.battery = 3.2; // Bateria baixa
+    const bici = this.bicis[0];
+    bici.battery = 3.2; // Bateria baixa
     
-    await bike.sendBatteryAlert();
-    await this.central.onLowBattery(bike.id, bike.battery);
+    await bici.sendBatteryAlert();
+    await this.hub.onLowBattery(bici.id, bici.battery);
     
     console.log(chalk.yellow('⚠️  Alerta de bateria baixa processado\n'));
   }
 
-  async multiBikesScenario() {
-    await this.centralBootScenario();
+  async multiBicisScenario() {
+    await this.hubBootScenario();
     
-    console.log(chalk.cyan('📡 Simulando múltiplas bikes...\n'));
+    console.log(chalk.cyan('📡 Simulando múltiplas bicis...\n'));
     
-    // Cria 3 bikes
+    // Cria 3 bicis
     for (let i = 1; i <= 3; i++) {
-      const bike = new Bike(`bike0${i}`, this.firebase);
-      this.bikes.push(bike);
+      const bici = new Bici(`bpr-${i.toString().padStart(6, '0')}`, this.firebase);
+      this.bicis.push(bici);
       
-      await bike.boot();
-      await bike.connectToCentral(this.central);
+      await bici.boot();
+      await bici.connectToHub(this.hub);
       await this.sleep(500);
     }
     
-    console.log(chalk.green(`✅ ${this.bikes.length} bikes conectadas\n`));
+    console.log(chalk.green(`✅ ${this.bicis.length} bicis conectadas\n`));
     
     // Simula atividade simultânea
-    const promises = this.bikes.map(async (bike, index) => {
+    const promises = this.bicis.map(async (bici, index) => {
       await this.sleep(index * 1000); // Stagger
-      await bike.leaveBase();
-      await bike.performWiFiScan();
-      await bike.returnToBase();
+      await bici.enterState('SCANNING');
+      await bici.performWiFiScan();
+      await bici.enterState('AT_BASE');
     });
     
     await Promise.all(promises);
     console.log(chalk.green('✅ Atividade simultânea concluída\n'));
+  }
+
+  async configRequestScenario() {
+    await this.hubBootScenario();
+    
+    console.log(chalk.yellow('⚙️ Simulando solicitação de configuração...\n'));
+    
+    const bici = new Bici('bpr-new001', this.firebase);
+    this.bicis.push(bici);
+    
+    await bici.boot();
+    await bici.enterState('CONFIG_REQUEST');
+    await bici.requestConfigFromHub(this.hub);
+    await bici.enterState('AT_BASE');
+    
+    console.log(chalk.green('✅ Configuração recebida e aplicada\n'));
   }
 
   sleep(ms) {

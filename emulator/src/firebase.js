@@ -27,96 +27,104 @@ class MockFirebase {
         min_battery_voltage: 3.45,
         update_timestamp: Date.now()
       },
-      central_configs: realConfigs,
-      bases: {},
-      bikes: {},
+      hub_configs: realConfigs,
+      hubs: {},
+      bicis: {},
       wifi_scans: {},
       rides: {},
       alerts: {}
     };
   }
 
-  async getCentralConfig(baseId) {
-    this.log(`📥 Buscando config para central ${baseId}`);
+  async getHubConfig(hubId) {
+    this.log(`📥 Buscando config para hub ${hubId}`);
     await this.sleep(500);
     
-    const config = this.data.central_configs[baseId];
+    const config = this.data.hub_configs[hubId];
     if (!config) {
-      throw new Error(`Config não encontrada para ${baseId}`);
+      this.log(`⚠️ Config não encontrada para ${hubId}, usando padrão`);
+      return {
+        hub_id: hubId,
+        sync_interval_sec: 300,
+        wifi_timeout_sec: 30,
+        led_pin: 8,
+        firebase_batch_size: 8000
+      };
     }
     
-    this.log(`✅ Config encontrada para ${baseId}`);
+    this.log(`✅ Config encontrada para ${hubId}`);
     return config;
   }
 
-  async updateBikeStatus(bikeId, status, baseId = null) {
-    this.log(`📝 Atualizando status da bike ${bikeId}: ${status}`);
+  async updateBiciStatus(biciId, status, hubId = null) {
+    this.log(`📝 Atualizando status da bici ${biciId}: ${status}`);
     
-    if (!this.data.bikes[bikeId]) {
-      this.data.bikes[bikeId] = { uid: bikeId };
+    if (!this.data.bicis[biciId]) {
+      this.data.bicis[biciId] = { uid: biciId };
     }
     
-    this.data.bikes[bikeId].status = status;
-    this.data.bikes[bikeId].base_id = baseId;
-    this.data.bikes[bikeId].last_update = Date.now();
+    this.data.bicis[biciId].status = status;
+    this.data.bicis[biciId].hub_id = hubId;
+    this.data.bicis[biciId].last_update = Date.now();
     
     await this.sleep(200);
   }
 
-  async updateBikeData(bikeId, data) {
-    this.log(`📝 Atualizando dados da bike ${bikeId}`);
+  async updateBiciData(biciId, data) {
+    this.log(`📝 Atualizando dados da bici ${biciId}`);
     
-    if (!this.data.bikes[bikeId]) {
-      this.data.bikes[bikeId] = { uid: bikeId };
+    if (!this.data.bicis[biciId]) {
+      this.data.bicis[biciId] = { uid: biciId };
     }
     
-    Object.assign(this.data.bikes[bikeId], data);
+    Object.assign(this.data.bicis[biciId], data);
     await this.sleep(200);
   }
 
-  async updateBaseStatus(baseId, data) {
-    this.log(`📝 Atualizando status da base ${baseId}`);
+  async updateHubStatus(hubId, data) {
+    this.log(`📝 Atualizando status do hub ${hubId}`);
     
-    if (!this.data.bases[baseId]) {
-      this.data.bases[baseId] = { base_id: baseId };
+    if (!this.data.hubs[hubId]) {
+      this.data.hubs[hubId] = { hub_id: hubId };
     }
     
-    Object.assign(this.data.bases[baseId], data);
+    Object.assign(this.data.hubs[hubId], data);
     await this.sleep(200);
   }
 
-  async uploadWiFiScan(bikeId, scanData) {
-    this.log(`📡 Upload scan WiFi da bike ${bikeId}: ${scanData.networks.length} redes`);
+  async uploadWiFiScan(biciId, scanData) {
+    const networks = scanData.scans || scanData.networks || [];
+    this.log(`📡 Upload scan WiFi da bici ${biciId}: ${networks.length} redes`);
     
-    if (!this.data.wifi_scans[bikeId]) {
-      this.data.wifi_scans[bikeId] = {};
+    if (!this.data.wifi_scans[biciId]) {
+      this.data.wifi_scans[biciId] = {};
     }
     
-    this.data.wifi_scans[bikeId][scanData.timestamp] = scanData.networks;
+    this.data.wifi_scans[biciId][scanData.timestamp || Date.now()] = networks;
     await this.sleep(300);
   }
 
-  async uploadRide(bikeId, rideData) {
-    this.log(`🚲 Upload viagem da bike ${bikeId}: ${rideData.km.toFixed(1)}km`);
+  async uploadRide(biciId, rideData) {
+    this.log(`🚲 Upload viagem da bici ${biciId}: ${rideData.km.toFixed(1)}km`);
     
-    if (!this.data.rides[bikeId]) {
-      this.data.rides[bikeId] = {};
+    if (!this.data.rides[biciId]) {
+      this.data.rides[biciId] = {};
     }
     
     const rideId = `ride_${Date.now()}`;
-    this.data.rides[bikeId][rideId] = rideData;
+    this.data.rides[biciId][rideId] = rideData;
     
     await this.sleep(500);
   }
 
-  async createAlert(type, bikeId, data) {
-    this.log(`🚨 Criando alerta ${type} para bike ${bikeId}`);
+  async createAlert(type, biciId, data) {
+    this.log(`🚨 Criando alerta ${type} para bici ${biciId}`);
     
     if (!this.data.alerts[type]) {
       this.data.alerts[type] = {};
     }
     
-    this.data.alerts[type][bikeId] = {
+    this.data.alerts[type][biciId] = {
       timestamp: Date.now(),
       ...data
     };
@@ -124,29 +132,53 @@ class MockFirebase {
     await this.sleep(200);
   }
 
-  async sendHeartbeat(baseId, heartbeatData) {
-    this.log(`💓 Heartbeat da base ${baseId}: ${heartbeatData.bikes_connected} bikes`);
+  async sendHeartbeat(hubId, heartbeatData) {
+    this.log(`💓 Heartbeat do hub ${hubId}: ${heartbeatData.bicis_connected} bicis`);
     
-    if (!this.data.bases[baseId]) {
-      this.data.bases[baseId] = { base_id: baseId };
+    if (!this.data.hubs[hubId]) {
+      this.data.hubs[hubId] = { hub_id: hubId };
     }
     
-    this.data.bases[baseId].last_heartbeat = heartbeatData;
+    this.data.hubs[hubId].last_heartbeat = heartbeatData;
     await this.sleep(100);
+  }
+
+  async setHeartbeat(hubId, heartbeat) {
+    return this.sendHeartbeat(hubId, heartbeat);
+  }
+
+  async uploadBatch(batchData) {
+    this.log(`📦 Upload batch: ${batchData.length} items`);
+    
+    for (const item of batchData) {
+      switch (item.type) {
+        case 'bici_connected':
+          await this.updateBiciData(item.bici_id, item.data);
+          break;
+        case 'wifi_data':
+          await this.uploadWiFiScan(item.bici_id, item.data);
+          break;
+        case 'low_battery':
+          await this.createAlert('battery_low', item.bici_id, { voltage: item.voltage });
+          break;
+      }
+    }
+    
+    await this.sleep(500);
   }
 
   // Método para visualizar dados
   showData() {
     console.log(chalk.yellow('\n📊 Estado atual do Firebase Mock:\n'));
     
-    console.log(chalk.blue('🏢 Bases:'));
-    Object.entries(this.data.bases).forEach(([id, base]) => {
-      console.log(`  ${id}: ${base.last_heartbeat?.bikes_connected || 0} bikes conectadas`);
+    console.log(chalk.blue('🏢 Hubs:'));
+    Object.entries(this.data.hubs).forEach(([id, hub]) => {
+      console.log(`  ${id}: ${hub.last_heartbeat?.bicis_connected || 0} bicis conectadas`);
     });
     
-    console.log(chalk.cyan('\n🚲 Bikes:'));
-    Object.entries(this.data.bikes).forEach(([id, bike]) => {
-      console.log(`  ${id}: ${bike.status} (${bike.battery_voltage?.toFixed(2)}V)`);
+    console.log(chalk.cyan('\n🚲 Bicis:'));
+    Object.entries(this.data.bicis).forEach(([id, bici]) => {
+      console.log(`  ${id}: ${bici.status} (${bici.battery_voltage?.toFixed(2)}V)`);
     });
     
     console.log(chalk.red('\n🚨 Alertas:'));
