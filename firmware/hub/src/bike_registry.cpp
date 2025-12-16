@@ -150,7 +150,8 @@ void BikeRegistry::updateFromFirebase(const DynamicJsonDocument& firebaseData) {
     
     bikeRegistry.clear();
     
-    for (JsonPair bike : firebaseData.as<JsonObject>()) {
+    JsonObjectConst obj = firebaseData.as<JsonObjectConst>();
+    for (JsonPairConst bike : obj) {
         String bikeId = bike.key().c_str();
         bikeRegistry[bikeId] = bike.value();
         
@@ -170,7 +171,8 @@ bool BikeRegistry::getRegistryForUpload(DynamicJsonDocument& doc) {
     doc.clear();
     
     // Só enviar bikes que tiveram heartbeat atualizado
-    for (JsonPair bike : bikeRegistry.as<JsonObject>()) {
+    JsonObject obj = bikeRegistry.as<JsonObject>();
+    for (JsonPair bike : obj) {
         String bikeId = bike.key().c_str();
         if (bike.value()["last_heartbeat"].isNull()) continue;
         
@@ -184,7 +186,8 @@ int BikeRegistry::getAllowedCount() {
     if (!registryLoaded) return 0;
     
     int count = 0;
-    for (JsonPair bike : bikeRegistry.as<JsonObject>()) {
+    JsonObject obj = bikeRegistry.as<JsonObject>();
+    for (JsonPair bike : obj) {
         String status = bike.value()["status"] | "";
         if (status == "allowed") count++;
     }
@@ -219,7 +222,8 @@ int BikeRegistry::getPendingCount() {
     if (!registryLoaded) return 0;
     
     int count = 0;
-    for (JsonPair bike : bikeRegistry.as<JsonObject>()) {
+    JsonObject obj = bikeRegistry.as<JsonObject>();
+    for (JsonPair bike : obj) {
         String status = bike.value()["status"] | "";
         if (status == "pending") count++;
     }

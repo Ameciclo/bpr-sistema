@@ -3,7 +3,7 @@
 #include "config_ap.h"
 #include "ble_only.h"
 #include "wifi_sync.h"
-#include "shutdown.h"
+// #include "shutdown.h" - removido
 #include "config_manager.h"
 
 extern ConfigManager configManager;
@@ -34,9 +34,6 @@ void StateMachine::update() {
         case STATE_WIFI_SYNC:
             WiFiSync::update();
             break;
-        case STATE_SHUTDOWN:
-            Shutdown::update();
-            break;
         default:
             break;
     }
@@ -65,15 +62,11 @@ void StateMachine::handleEvent(SystemEvent event) {
             break;
             
         case EVENT_INACTIVITY_TIMEOUT:
-            if (currentState == STATE_BLE_ONLY) {
-                setState(STATE_SHUTDOWN);
-            }
+            // SHUTDOWN removido - não usado
             break;
             
         case EVENT_WAKE_UP:
-            if (currentState == STATE_SHUTDOWN) {
-                setState(STATE_BLE_ONLY);
-            }
+            // SHUTDOWN removido - não usado
             break;
             
         case EVENT_ERROR:
@@ -96,9 +89,6 @@ void StateMachine::enterState(SystemState state) {
         case STATE_WIFI_SYNC:
             WiFiSync::enter();
             break;
-        case STATE_SHUTDOWN:
-            Shutdown::enter();
-            break;
         default:
             break;
     }
@@ -115,9 +105,6 @@ void StateMachine::exitState(SystemState state) {
         case STATE_WIFI_SYNC:
             WiFiSync::exit();
             break;
-        case STATE_SHUTDOWN:
-            Shutdown::exit();
-            break;
         default:
             break;
     }
@@ -133,12 +120,7 @@ void StateMachine::checkTransitions() {
         return;
     }
     
-    // Auto transitions based on time
-    if (currentState == STATE_BLE_ONLY && stateTime > SHUTDOWN_TIMEOUT) {
-        if (BLEOnly::getConnectedBikes() == 0) {
-            handleEvent(EVENT_INACTIVITY_TIMEOUT);
-        }
-    }
+    // Auto transitions removidas - SHUTDOWN não usado
 }
 
 void StateMachine::recordSyncFailure() {
@@ -184,7 +166,6 @@ const char* StateMachine::getStateName(SystemState state) {
         case STATE_CONFIG_AP: return "CONFIG_AP";
         case STATE_BLE_ONLY: return "BLE_ONLY";
         case STATE_WIFI_SYNC: return "WIFI_SYNC";
-        case STATE_SHUTDOWN: return "SHUTDOWN";
         default: return "UNKNOWN";
     }
 }

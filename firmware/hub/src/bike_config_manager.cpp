@@ -102,7 +102,8 @@ bool BikeConfigManager::downloadConfigsFromFirebase() {
 }
 
 void BikeConfigManager::checkForConfigChanges(const DynamicJsonDocument& newConfigs) {
-    for (JsonPair bike : newConfigs.as<JsonObject>()) {
+    JsonObjectConst obj = newConfigs.as<JsonObjectConst>();
+    for (JsonPairConst bike : obj) {
         String bikeId = bike.key().c_str();
         int newVersion = bike.value()["version"] | 1;
         int oldVersion = configVersions[bikeId]["version"] | 0;

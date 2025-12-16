@@ -39,7 +39,7 @@
 #define CONFIG_TIMEOUT_MS 900000  // 15 minutos
 
 // Timeouts
-#define SHUTDOWN_TIMEOUT 3600000
+// SHUTDOWN removido - não usado
 
 // NTP Configuration (constants)
 #define NTP_SERVER "pool.ntp.org"

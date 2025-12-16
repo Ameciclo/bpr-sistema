@@ -10,8 +10,7 @@ enum SystemState {
     STATE_BOOT,
     STATE_CONFIG_AP,
     STATE_BLE_ONLY,
-    STATE_WIFI_SYNC,
-    STATE_SHUTDOWN
+    STATE_WIFI_SYNC
 };
 
 class StateMachine {

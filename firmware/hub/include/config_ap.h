@@ -7,4 +7,5 @@ public:
     static void update();
     static void exit();
     static void setupWebServer();
+    static bool tryUpdateWiFiInFirebase();
 };

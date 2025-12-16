@@ -6,6 +6,7 @@
 #include "config_manager.h"
 #include "led_controller.h"
 #include "state_machine.h"
+#include <HTTPClient.h>
 
 extern ConfigManager configManager;
 extern LEDController ledController;
@@ -65,6 +66,56 @@ void ConfigAP::exit() {
     WiFi.softAPdisconnect(true);
 }
 
+bool ConfigAP::tryUpdateWiFiInFirebase() {
+    const HubConfig& config = configManager.getConfig();
+    
+    // Conectar WiFi temporariamente
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(config.wifi.ssid, config.wifi.password);
+    
+    // Aguardar conexão (timeout 15s)
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        attempts++;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(AP_SSID, AP_PASSWORD);
+        return false;
+    }
+    
+    // Tentar upload WiFi
+    HTTPClient http;
+    String url = String(config.firebase.database_url) + 
+                "/central_configs/" + config.base_id + "/wifi.json?auth=" + 
+                config.firebase.api_key;
+    
+    DynamicJsonDocument doc(256);
+    doc["ssid"] = config.wifi.ssid;
+    doc["password"] = config.wifi.password;
+    
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    int httpCode = http.PUT(jsonString);
+    bool success = (httpCode == HTTP_CODE_OK);
+    
+    http.end();
+    
+    // Voltar para modo AP
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    
+    return success;
+}
+
 void ConfigAP::setupWebServer() {
     server.on("/", HTTP_GET, []() {
         String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>BPR Hub Config</title>";
@@ -81,19 +132,35 @@ void ConfigAP::setupWebServer() {
         html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
         html += "<button onclick='showJson()' id='jsonBtn' style='background:#95a5a6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>JSON</button></div>";
         
-        // Formulário tradicional
+        // Obter configurações atuais para pré-preenchimento
+        const HubConfig& currentConfig = configManager.getConfig();
+        
+        // Formulário tradicional com valores pré-preenchidos
         html += "<div id='formDiv'><form action='/save' method='post'>";
-        html += "<label>ID da Base:</label><input name='base_id' placeholder='Ex: base01, ameciclo, cepas' required><br>";
-        html += "<label>WiFi SSID:</label><input name='ssid' placeholder='Nome da rede WiFi' required><br>";
-        html += "<label>WiFi Senha:</label><input name='pass' type='password' placeholder='Senha do WiFi' required><br>";
-        html += "<label>Firebase Database URL:</label><input name='url' placeholder='https://projeto.firebaseio.com' required><br>";
-        html += "<label>Firebase API Key:</label><input name='key' placeholder='AIza...' required><br>";
+        html += "<label>ID da Base:</label><input name='base_id' value='" + String(currentConfig.base_id) + "' placeholder='Ex: base01, ameciclo, cepas' required><br>";
+        html += "<label>WiFi SSID:</label><input name='ssid' value='" + String(currentConfig.wifi.ssid) + "' placeholder='Nome da rede WiFi' required><br>";
+        html += "<label>WiFi Senha:</label><input name='pass' type='password' value='" + String(currentConfig.wifi.password) + "' placeholder='Senha do WiFi' required><br>";
+        html += "<label>Firebase Database URL:</label><input name='url' value='" + String(currentConfig.firebase.database_url) + "' placeholder='https://projeto.firebaseio.com' required><br>";
+        html += "<label>Firebase API Key:</label><input name='key' value='" + String(currentConfig.firebase.api_key) + "' placeholder='AIza...' required><br>";
         html += "<button type='submit'>💾 Salvar Configuração</button></form></div>";
         
-        // Configuração via JSON
+        // Gerar JSON atual para pré-preenchimento
+        String currentJson = "{\n";
+        currentJson += "  \"base_id\": \"" + String(currentConfig.base_id) + "\",\n";
+        currentJson += "  \"wifi\": {\n";
+        currentJson += "    \"ssid\": \"" + String(currentConfig.wifi.ssid) + "\",\n";
+        currentJson += "    \"password\": \"" + String(currentConfig.wifi.password) + "\"\n";
+        currentJson += "  },\n";
+        currentJson += "  \"firebase\": {\n";
+        currentJson += "    \"database_url\": \"" + String(currentConfig.firebase.database_url) + "\",\n";
+        currentJson += "    \"api_key\": \"" + String(currentConfig.firebase.api_key) + "\"\n";
+        currentJson += "  }\n";
+        currentJson += "}";
+        
+        // Configuração via JSON com valores pré-preenchidos
         html += "<div id='jsonDiv' style='display:none'><form action='/save-json' method='post'>";
         html += "<label>Cole o JSON de configuração:</label><br>";
-        html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' placeholder='{\n  \"base_id\": \"minha_base\",\n  \"wifi\": {\n    \"ssid\": \"MinhaRede\",\n    \"password\": \"minha_senha\"\n  },\n  \"firebase\": {\n    \"database_url\": \"https://projeto.firebaseio.com\",\n    \"api_key\": \"AIza...\"\n  }\n}' required></textarea><br>";
+        html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
         html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: 15 minutos.</div>";
@@ -147,6 +214,17 @@ void ConfigAP::setupWebServer() {
         
         if (configManager.saveConfig()) {
             Serial.println("✅ Configuração salva com sucesso!");
+            
+            // Tentar atualizar WiFi no Firebase imediatamente
+            if (strlen(config.wifi.ssid) > 0 && strlen(config.firebase.database_url) > 0) {
+                Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
+                if (tryUpdateWiFiInFirebase()) {
+                    Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
+                } else {
+                    Serial.println("⚠️ Falha ao atualizar WiFi no Firebase (será tentado no próximo sync)");
+                }
+            }
+            
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
@@ -247,6 +325,18 @@ void ConfigAP::setupWebServer() {
         
         if (configManager.saveConfig()) {
             Serial.println("✅ Configuração JSON salva com sucesso!");
+            
+            // Tentar atualizar WiFi no Firebase imediatamente
+            HubConfig& savedConfig = configManager.getConfig();
+            if (strlen(savedConfig.wifi.ssid) > 0 && strlen(savedConfig.firebase.database_url) > 0) {
+                Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
+                if (tryUpdateWiFiInFirebase()) {
+                    Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
+                } else {
+                    Serial.println("⚠️ Falha ao atualizar WiFi no Firebase (será tentado no próximo sync)");
+                }
+            }
+            
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>JSON Salvo</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
