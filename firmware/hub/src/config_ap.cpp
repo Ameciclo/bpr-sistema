@@ -14,23 +14,28 @@ static WebServer server(80);
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
 
-void ConfigAP::enter(bool isInitialMode) {
+void ConfigAP::enter(bool isInitialMode)
+{
     isInitialConfigMode = isInitialMode;
-    
-    if (isInitialMode) {
+
+    if (isInitialMode)
+    {
         Serial.println("🔧 Config inválida, entrando no modo AP");
         Serial.println("📱 Conecte-se ao WiFi: BPR_Hub_Config (senha: botaprarodar)");
         Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
-    } else {
+    }
+    else
+    {
         Serial.println("⚠️ Modo AP por falha de sync");
     }
-    
+
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
-    
+
     // Configurar callback para conexões
-    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+                 {
         if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
             Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
                          info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
@@ -41,95 +46,110 @@ void ConfigAP::enter(bool isInitialMode) {
                          info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
                          info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
                          info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]);
-        }
-    });
-    
+        } });
+
     setupWebServer();
     server.begin();
     apStartTime = millis();
     ledController.configPattern();
 }
 
-void ConfigAP::update() {
+void ConfigAP::update()
+{
     server.handleClient();
-    
-    // Timeout apenas para modo fallback, não para configuração inicial
-    if (!isInitialConfigMode) {
+
+    if (!isInitialConfigMode)
+    {
         static uint32_t lastTimeoutWarning = 0;
         uint32_t elapsed = millis() - apStartTime;
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
         uint32_t remaining = timeoutMs - elapsed;
-        
-        if (millis() - lastTimeoutWarning > 60000) { // A cada minuto
+
+        if (millis() - lastTimeoutWarning > 60000)
+        { // A cada minuto
             Serial.printf("⏰ Modo CONFIG_AP (fallback) - Tempo restante: %lu min\n", remaining / 60000);
             lastTimeoutWarning = millis();
         }
-        
-        if (elapsed > timeoutMs) {
-            Serial.printf("⏰ Timeout do modo CONFIG_AP (%d min) - Reiniciando...\n", 
-                         configManager.getConfig().timeouts.config_ap_min);
-            ESP.restart();
+
+        if (elapsed > timeoutMs)
+        {
+            if (isInitialConfigMode) {
+                // Config inicial falhou - restart necessário
+                Serial.printf("⏰ Timeout CONFIG_AP inicial (%d min) - Reiniciando...\n",
+                             configManager.getConfig().timeouts.config_ap_min);
+                ESP.restart();
+            } else {
+                // Fallback - voltar para operação normal
+                Serial.println("⏰ Timeout CONFIG_AP (fallback) - Voltando para BLE_ONLY");
+                // main.cpp vai detectar e mudar estado
+                return;
+            }
         }
     }
 }
 
-void ConfigAP::exit() {
+void ConfigAP::exit()
+{
     server.stop();
     WiFi.softAPdisconnect(true);
+    WiFi.removeEvent();  // Limpar callbacks WiFi
+    Serial.println("🔚 ConfigAP: Callbacks limpos, saindo do modo AP");
 }
 
-bool ConfigAP::tryUpdateWiFiInFirebase() {
-    const HubConfig& config = configManager.getConfig();
-    
-    // Conectar WiFi temporariamente
+bool ConfigAP::tryUpdateWiFiInFirebase()
+{
+    const HubConfig &config = configManager.getConfig();
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(config.wifi.ssid, config.wifi.password);
-    
-    // Aguardar conexão (timeout 15s)
+
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 30)
+    {
         delay(500);
         attempts++;
     }
-    
-    if (WiFi.status() != WL_CONNECTED) {
+
+    if (WiFi.status() != WL_CONNECTED)
+    {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_AP);
         WiFi.softAP(AP_SSID, AP_PASSWORD);
         return false;
     }
-    
-    // Tentar upload WiFi
+
     HTTPClient http;
-    String url = String(config.firebase.database_url) + 
-                "/bases/" + config.base_id + "configs/wifi.json?auth=" + 
-                config.firebase.api_key;
-    
+    String url = String(config.firebase.database_url) +
+                 "/bases/" + config.base_id + "configs/wifi.json?auth=" +
+                 config.firebase.api_key;
+
     DynamicJsonDocument doc(256);
     doc["ssid"] = config.wifi.ssid;
     doc["password"] = config.wifi.password;
-    
+
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    
+
     String jsonString;
     serializeJson(doc, jsonString);
-    
+
     int httpCode = http.PUT(jsonString);
     bool success = (httpCode == HTTP_CODE_OK);
-    
+
     http.end();
-    
+
     // Voltar para modo AP
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    
+
     return success;
 }
 
-void ConfigAP::setupWebServer() {
-    server.on("/", HTTP_GET, []() {
+void ConfigAP::setupWebServer()
+{
+    server.on("/", HTTP_GET, []()
+              {
         String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>BPR Hub Config</title>";
         html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
         html += ".container{background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);max-width:500px}";
@@ -185,10 +205,10 @@ void ConfigAP::setupWebServer() {
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
         html += "function showJson(){document.getElementById('formDiv').style.display='none';document.getElementById('jsonDiv').style.display='block';document.getElementById('formBtn').style.background='#95a5a6';document.getElementById('jsonBtn').style.background='#3498db';}</script>";
         html += "</div></body></html>";
-        server.send(200, "text/html", html);
-    });
-    
-    server.on("/save", HTTP_POST, []() {
+        server.send(200, "text/html", html); });
+
+    server.on("/save", HTTP_POST, []()
+              {
         HubConfig& config = configManager.getConfig();
         
         Serial.println("📝 Dados recebidos do formulário:");
@@ -257,12 +277,15 @@ void ConfigAP::setupWebServer() {
             html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
             html += "<a href='/'>Voltar</a></div></body></html>";
             server.send(500, "text/html", html);
-        }
-    });
-    
-    server.on("/status", HTTP_GET, []() {
+        } });
+
+    server.on("/status", HTTP_GET, []()
+              {
         uint32_t elapsed = millis() - apStartTime;
-        uint32_t remaining = CONFIG_TIMEOUT_MS - elapsed;
+        
+        // Usar o mesmo timeout do update() para consistência
+        uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
+        uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
         
         DynamicJsonDocument doc(512);
         doc["status"] = "config_mode";
@@ -273,10 +296,10 @@ void ConfigAP::setupWebServer() {
         
         String response;
         serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    });
-    
-    server.on("/save-json", HTTP_POST, []() {
+        server.send(200, "application/json", response); });
+
+    server.on("/save-json", HTTP_POST, []()
+              {
         if (!server.hasArg("config_json")) {
             server.send(400, "text/html", "<html><body><h1>❌ JSON não fornecido</h1></body></html>");
             return;
@@ -369,6 +392,5 @@ void ConfigAP::setupWebServer() {
             html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
             html += "<a href='/'>Voltar</a></div></body></html>";
             server.send(500, "text/html", html);
-        }
-    });
+        } });
 }
