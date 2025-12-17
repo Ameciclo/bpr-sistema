@@ -5,15 +5,16 @@
 #include "config_manager.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
-#include "state_machine.h"
-// #include "bike_config.h" - removido, conflito com bike_config_manager
 #include "bike_registry.h"
 #include "bike_config_manager.h"
 
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
 extern LEDController ledController;
-extern StateMachine stateMachine;
+extern SystemState currentState;
+extern void recordSyncFailure();
+extern void recordSyncSuccess();
+extern void changeState(SystemState newState);
 
 static NimBLEServer* pServer = nullptr;
 static NimBLEService* pService = nullptr;
@@ -215,7 +216,7 @@ void BLEOnly::update() {
         
         if (bufferManager.needsSync()) {
             Serial.println("🔄 Triggering sync");
-            stateMachine.handleEvent(EVENT_SYNC_TRIGGER);
+            changeState(STATE_WIFI_SYNC);
             return;
         }
     }

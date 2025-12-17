@@ -49,6 +49,14 @@
 #define MAX_SYNC_FAILURES 5
 #define SYNC_FAILURE_TIMEOUT_MS 1800000  // 30 minutos
 
+// System States
+enum SystemState {
+    STATE_BOOT,
+    STATE_CONFIG_AP,
+    STATE_BLE_ONLY,
+    STATE_WIFI_SYNC
+};
+
 // Events
 enum SystemEvent {
     EVENT_CONFIG_COMPLETE,

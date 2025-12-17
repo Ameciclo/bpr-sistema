@@ -6,14 +6,17 @@
 #include "config_manager.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
-#include "state_machine.h"
 #include "bike_registry.h"
 #include "bike_config_manager.h"
 
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
 extern LEDController ledController;
-extern StateMachine stateMachine;
+extern SystemState currentState;
+extern bool firstSync;
+extern void recordSyncFailure();
+extern void recordSyncSuccess();
+extern void changeState(SystemState newState);
 
 static uint32_t syncStartTime = 0;
 
@@ -37,23 +40,23 @@ void WiFiSync::enter() {
     
     if (syncSuccess) {
         Serial.println("✅ Sync complete");
-        stateMachine.recordSyncSuccess();
-        stateMachine.setFirstSync(false);
-        stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+        recordSyncSuccess();
+        firstSync = false;
+        changeState(STATE_BLE_ONLY);
     } else {
         Serial.println("❌ Sync failed");
-        stateMachine.recordSyncFailure();
+        recordSyncFailure();
         
-        if (stateMachine.isFirstSync()) {
+        if (firstSync) {
             Serial.println("🚨 ERRO CRÍTICO: Primeiro sync falhou!");
             Serial.println("   - Não foi possível baixar configurações do Firebase");
             Serial.println("   - Sistema não pode funcionar sem config válida");
             Serial.println("   - Retornando ao modo CONFIG_AP para reconfigurar");
-            stateMachine.setFirstSync(false);
-            stateMachine.setState(STATE_CONFIG_AP);
+            firstSync = false;
+            changeState(STATE_CONFIG_AP);
         } else {
             Serial.println("⚠️ Sync falhou - continuando com última config válida");
-            stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+            changeState(STATE_BLE_ONLY);
         }
     }
 }
@@ -63,7 +66,7 @@ void WiFiSync::update() {
     if (millis() - syncStartTime > configManager.getConfig().timeouts.wifi_sec * 3000) {
         Serial.println("⏰ Sync timeout");
         WiFi.disconnect(true);
-        stateMachine.handleEvent(EVENT_SYNC_COMPLETE);
+        changeState(STATE_BLE_ONLY);
     }
 }
 

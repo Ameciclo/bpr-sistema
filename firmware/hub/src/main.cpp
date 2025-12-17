@@ -1,135 +1,233 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include "config_manager.h"
-#include "state_machine.h"
-#include "led_controller.h"
+#include "constants.h"
+#include "config_ap.h"
 #include "ble_only.h"
+#include "wifi_sync.h"
+#include "led_controller.h"
 #include "buffer_manager.h"
 #include "self_check.h"
+#include "sync_monitor.h"
 
 // Instâncias globais
 ConfigManager configManager;
-StateMachine stateMachine;
 LEDController ledController;
 BufferManager bufferManager;
 
+// State machine variables
+SystemState currentState = STATE_BOOT;
+uint32_t stateStartTime = 0;
+bool firstSync = false;
+
 // Variáveis globais
-int connectedBikes = 0;
 unsigned long lastHeartbeat = 0;
+bool isInitialConfigMode = false;
 
 // Declarações de funções
 void printStatus();
 void sendHeartbeat();
+void changeState(SystemState newState);
+const char *getStateName(SystemState state);
 
-void setup() {
+void setup()
+{
     Serial.begin(115200);
-    delay(1000);
-    
-    Serial.println("\n🏢 BPR Hub Station v2.0");
+
+    Serial.println("\n🏢 BPR Hub Station v1.0");
     Serial.println("========================");
-    
+
     // Inicializar LittleFS
-    if (!LittleFS.begin()) {
+    if (!LittleFS.begin())
+    {
         Serial.println("❌ Falha no LittleFS");
         ESP.restart();
     }
-    
+
     // Self-check do sistema
     SelfCheck selfCheck;
-    if (!selfCheck.systemCheck()) {
+    if (!selfCheck.systemCheck())
+    {
         Serial.println("⚠️ System check failed - continuing anyway");
     }
-    
+
     // Inicializar módulos
     bool configLoaded = configManager.loadConfig();
     bufferManager.begin();
     ledController.begin();
     ledController.bootPattern();
-    
+
     // Verificar se precisa de configuração
-    if (!configLoaded || !configManager.isConfigValid()) {
-        Serial.println("🔧 Config inválida, entrando no modo AP");
-        Serial.println("📱 Conecte-se ao WiFi: BPR_Hub_Config (senha: botaprarodar)");
-        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
-        Serial.println("⏰ Timeout: 15 minutos");
-        stateMachine.setState(STATE_CONFIG_AP);
-    } else {
-        // Forçar sync inicial para validar configuração
-        Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
-        stateMachine.setFirstSync(true);
-        stateMachine.setState(STATE_WIFI_SYNC);
-        ledController.syncPattern();
+    if (!configLoaded || !configManager.isConfigValid())
+    {
+        isInitialConfigMode = true;
+        changeState(STATE_CONFIG_AP);
     }
-    
+
+    // Se config é válida, forçar sync inicial
+    if (configLoaded && configManager.isConfigValid())
+    {
+        Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
+        firstSync = true;
+        changeState(STATE_WIFI_SYNC);
+    }
+
     Serial.println("✅ Hub inicializado");
 }
 
-void loop() {
+void loop()
+{
     static unsigned long lastStatusPrint = 0;
-    
+
     // Atualizar módulos
     ledController.update();
-    stateMachine.update();
-    
-    // Atualizar contadores
-    if (stateMachine.getCurrentState() == STATE_BLE_ONLY) {
-        connectedBikes = BLEOnly::getConnectedBikes();
+
+    // Update do estado atual
+    switch (currentState)
+    {
+    case STATE_CONFIG_AP:
+        ConfigAP::update();
+        break;
+    case STATE_BLE_ONLY:
+        BLEOnly::update();
+        break;
+    case STATE_WIFI_SYNC:
+        WiFiSync::update();
+        break;
+    default:
+        break;
     }
-    
-    // Verificar transições
-    if (stateMachine.getCurrentState() == STATE_BLE_ONLY && 
-        stateMachine.getStateTime() > configManager.getConfig().sync_interval_ms()) {
-        stateMachine.setState(STATE_WIFI_SYNC);
-        ledController.syncPattern();
+
+    // Fallback por falhas de sync
+    if (currentState == STATE_BLE_ONLY && SyncMonitor::shouldFallback())
+    {
+        Serial.println("⚠️ Fallback to AP mode");
+        isInitialConfigMode = false;
+        changeState(STATE_CONFIG_AP);
     }
-    
+
     // Status periódico (30s)
-    if (millis() - lastStatusPrint > 30000) {
+    if (millis() - lastStatusPrint > 30000)
+    {
         printStatus();
         lastStatusPrint = millis();
     }
-    
-    delay(100);
+
+    // DEBUG
+    sendHeartbeat();
 }
 
-void sendHeartbeat() {
-    if (millis() - lastHeartbeat > 60000) { // 1 min
-        Serial.printf("💓 Heartbeat - Bikes: %d, Heap: %d\n", 
-                     connectedBikes, ESP.getFreeHeap());
+void sendHeartbeat()
+{
+    if (millis() - lastHeartbeat > 60000)
+    { // 1 min
+        int bikes = (currentState == STATE_BLE_ONLY) ? BLEOnly::getConnectedBikes() : 0;
+        Serial.printf("💓 Heartbeat - Bikes: %d, Heap: %d\n",
+                      bikes, ESP.getFreeHeap());
         lastHeartbeat = millis();
     }
 }
 
-void printStatus() {
+void changeState(SystemState newState)
+{
+    if (currentState == newState)
+        return;
+
+    Serial.printf("🔄 %s -> %s\n", getStateName(currentState), getStateName(newState));
+
+    // Exit current state
+    switch (currentState)
+    {
+    case STATE_CONFIG_AP:
+        ConfigAP::exit();
+        break;
+    case STATE_BLE_ONLY:
+        BLEOnly::exit();
+        break;
+    case STATE_WIFI_SYNC:
+        WiFiSync::exit();
+        break;
+    default:
+        break;
+    }
+
+    currentState = newState;
+    stateStartTime = millis();
+
+    // Enter new state
+    switch (newState)
+    {
+    case STATE_CONFIG_AP:
+        SyncMonitor::reset();
+        ConfigAP::enter(isInitialConfigMode);
+        break;
+    case STATE_BLE_ONLY:
+        BLEOnly::enter();
+        break;
+    case STATE_WIFI_SYNC:
+        WiFiSync::enter();
+        break;
+    default:
+        break;
+    }
+}
+
+const char *getStateName(SystemState state)
+{
+    switch (state)
+    {
+    case STATE_BOOT:
+        return "BOOT";
+    case STATE_CONFIG_AP:
+        return "CONFIG_AP";
+    case STATE_BLE_ONLY:
+        return "BLE_ONLY";
+    case STATE_WIFI_SYNC:
+        return "WIFI_SYNC";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void printStatus()
+{
     Serial.println("==================================================");
-    Serial.printf("🏢 %s | Estado: %s | Uptime: %lus\n", 
-                 configManager.getConfig().base_id, 
-                 stateMachine.getStateName(stateMachine.getCurrentState()), 
-                 millis() / 1000);
-    
-    if (stateMachine.getCurrentState() == STATE_CONFIG_AP) {
+    Serial.printf("🏢 %s | Estado: %s | Uptime: %lus\n",
+                  configManager.getConfig().base_id,
+                  getStateName(currentState),
+                  millis() / 1000);
+
+    if (currentState == STATE_CONFIG_AP)
+    {
         Serial.println("📱 Modo Configuração Ativo:");
         Serial.println("   WiFi: BPR_Hub_Config (senha: botaprarodar)");
         Serial.println("   URL: http://192.168.4.1");
-    } else {
-        Serial.printf("🚲 Bikes conectadas: %d | 💾 Heap: %d bytes\n", 
-                     connectedBikes, ESP.getFreeHeap());
-        
+    }
+    else
+    {
+        int bikes = (currentState == STATE_BLE_ONLY) ? BLEOnly::getConnectedBikes() : 0;
+        Serial.printf("🚲 Bikes conectadas: %d | 💾 Heap: %d bytes\n",
+                      bikes, ESP.getFreeHeap());
+
         // Mostrar informações de sincronização
-        if (stateMachine.getCurrentState() == STATE_BLE_ONLY) {
-            uint32_t stateTime = stateMachine.getStateTime();
+        if (currentState == STATE_BLE_ONLY)
+        {
+            uint32_t stateTime = millis() - stateStartTime;
             uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
             uint32_t nextSync = (syncInterval - stateTime) / 1000;
-            
-            if (stateTime < syncInterval) {
+
+            if (stateTime < syncInterval)
+            {
                 Serial.printf("🔄 Próxima sync em: %lus\n", nextSync);
-            } else {
+            }
+            else
+            {
                 Serial.println("🔄 Sync pendente...");
             }
         }
     }
-    
-    Serial.printf("⏱️ Estado há: %lus\n", 
-                 stateMachine.getStateTime() / 1000);
+
+    Serial.printf("⏱️ Estado há: %lus\n",
+                  (millis() - stateStartTime) / 1000);
     Serial.println("==================================================");
 }

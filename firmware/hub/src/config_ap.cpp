@@ -5,18 +5,26 @@
 #include "constants.h"
 #include "config_manager.h"
 #include "led_controller.h"
-#include "state_machine.h"
 #include <HTTPClient.h>
 
 extern ConfigManager configManager;
 extern LEDController ledController;
-extern StateMachine stateMachine;
 
 static WebServer server(80);
 static uint32_t apStartTime = 0;
+static bool isInitialConfigMode = false;
 
-void ConfigAP::enter() {
-    Serial.println("CONFIG_AP mode");
+void ConfigAP::enter(bool isInitialMode) {
+    isInitialConfigMode = isInitialMode;
+    
+    if (isInitialMode) {
+        Serial.println("🔧 Config inválida, entrando no modo AP");
+        Serial.println("📱 Conecte-se ao WiFi: BPR_Hub_Config (senha: botaprarodar)");
+        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
+    } else {
+        Serial.println("⚠️ Modo AP por falha de sync");
+    }
+    
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
@@ -45,21 +53,23 @@ void ConfigAP::enter() {
 void ConfigAP::update() {
     server.handleClient();
     
-    // Mostrar tempo restante a cada minuto
-    static uint32_t lastTimeoutWarning = 0;
-    uint32_t elapsed = millis() - apStartTime;
-    uint32_t remaining = CONFIG_TIMEOUT_MS - elapsed;
-    
-    if (millis() - lastTimeoutWarning > 60000) { // A cada minuto
-        Serial.printf("⏰ Modo CONFIG_AP - Tempo restante: %lu min\n", remaining / 60000);
-        lastTimeoutWarning = millis();
-    }
-    
-    uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
-    if (elapsed > timeoutMs) {
-        Serial.printf("⏰ Timeout do modo CONFIG_AP (%d min) - Reiniciando...\n", 
-                     configManager.getConfig().timeouts.config_ap_min);
-        ESP.restart();
+    // Timeout apenas para modo fallback, não para configuração inicial
+    if (!isInitialConfigMode) {
+        static uint32_t lastTimeoutWarning = 0;
+        uint32_t elapsed = millis() - apStartTime;
+        uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
+        uint32_t remaining = timeoutMs - elapsed;
+        
+        if (millis() - lastTimeoutWarning > 60000) { // A cada minuto
+            Serial.printf("⏰ Modo CONFIG_AP (fallback) - Tempo restante: %lu min\n", remaining / 60000);
+            lastTimeoutWarning = millis();
+        }
+        
+        if (elapsed > timeoutMs) {
+            Serial.printf("⏰ Timeout do modo CONFIG_AP (%d min) - Reiniciando...\n", 
+                         configManager.getConfig().timeouts.config_ap_min);
+            ESP.restart();
+        }
     }
 }
 
@@ -165,7 +175,11 @@ void ConfigAP::setupWebServer() {
         html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
-        html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
+        if (isInitialConfigMode) {
+            html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Sem limite de tempo.</div>";
+        } else {
+            html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
+        }
         
         // JavaScript para alternar tabs
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
