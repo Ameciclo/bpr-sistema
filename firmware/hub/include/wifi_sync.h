@@ -21,5 +21,5 @@ public:
     static bool uploadWiFiConfig();
     static bool downloadBikeRegistry();
     static bool uploadBikeRegistry();
-    static bool validateFirebaseConfig(const DynamicJsonDocument& doc);
+
 };

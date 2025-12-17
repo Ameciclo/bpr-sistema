@@ -219,3 +219,99 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig
     Serial.printf("   LED count interval: %d segundos\n", config.intervals.led_count_sec);
     Serial.printf("   Fallback: %d falhas ou %d min\n", config.fallback.max_failures, config.fallback.timeout_min);
 }
+
+String ConfigManager::getHubConfigUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/configs.json?auth=" + 
+           config.firebase.api_key;
+}
+
+String ConfigManager::getBikeRegistryUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/bikes.json?auth=" + 
+           config.firebase.api_key;
+}
+
+String ConfigManager::getWiFiConfigUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/configs/wifi.json?auth=" + 
+           config.firebase.api_key;
+}
+
+String ConfigManager::getHeartbeatUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/last_heartbeat.json?auth=" + 
+           config.firebase.api_key;
+}
+
+String ConfigManager::getBufferDataUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/data.json?auth=" + 
+           config.firebase.api_key;
+}
+
+bool ConfigManager::updateFromJson(const String& json) {
+    // Early return se JSON vazio
+    if (json.length() < 100) {
+        Serial.println("🚨 JSON too small - invalid config!");
+        return false;
+    }
+    
+    DynamicJsonDocument doc(2048);
+    
+    // Early return se parse falhar
+    if (deserializeJson(doc, json) != DeserializationError::Ok) {
+        Serial.println("🚨 JSON parse failed!");
+        return false;
+    }
+    
+    // Early return se validação falhar
+    if (!isValidFirebaseConfig(doc)) {
+        Serial.println("🚨 Config validation failed!");
+        return false;
+    }
+    
+    // Sucesso - atualizar config
+    updateFromFirebase(doc);
+    Serial.println("✅ Config updated successfully from JSON");
+    return true;
+}
+
+bool ConfigManager::isValidFirebaseConfig(const DynamicJsonDocument& doc) const {
+    Serial.println("🔍 Validating Firebase config fields...");
+    
+    // Lista de campos obrigatórios
+    struct RequiredField {
+        const char* path;
+        const char* description;
+    };
+    
+    RequiredField required[] = {
+        {"intervals.sync_sec", "Sync interval"},
+        {"timeouts.wifi_sec", "WiFi timeout"},
+        {"led.ble_ready_ms", "LED BLE pattern"},
+        {"limits.max_bikes", "Max bikes limit"},
+        {"fallback.max_failures", "Max failures"}
+    };
+    
+    // Early return se algum campo obrigatório faltar
+    for (auto& field : required) {
+        bool exists = false;
+        
+        if (strcmp(field.path, "intervals.sync_sec") == 0) exists = doc["intervals"]["sync_sec"];
+        else if (strcmp(field.path, "timeouts.wifi_sec") == 0) exists = doc["timeouts"]["wifi_sec"];
+        else if (strcmp(field.path, "led.ble_ready_ms") == 0) exists = doc["led"]["ble_ready_ms"];
+        else if (strcmp(field.path, "limits.max_bikes") == 0) exists = doc["limits"]["max_bikes"];
+        else if (strcmp(field.path, "fallback.max_failures") == 0) exists = doc["fallback"]["max_failures"];
+        
+        if (!exists) {
+            Serial.printf("❌ Missing required field: %s (%s)\n", field.description, field.path);
+            return false;
+        }
+        
+        Serial.printf("✅ %s: OK\n", field.description);
+    }
+    
+    Serial.println("✅ All required fields present - config valid!");
+    return true;
+}

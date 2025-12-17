@@ -80,6 +80,17 @@ public:
     
     const HubConfig& getConfig() const { return config; }
     HubConfig& getConfig() { return config; }
+    
+    // Firebase URL builders
+    String getHubConfigUrl() const;
+    String getBikeRegistryUrl() const;
+    String getWiFiConfigUrl() const;
+    String getHeartbeatUrl() const;
+    String getBufferDataUrl() const;
+    
+    // JSON parsing and validation
+    bool updateFromJson(const String& json);
+    bool isValidFirebaseConfig(const DynamicJsonDocument& doc) const;
 
 private:
     HubConfig config;
