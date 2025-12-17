@@ -121,12 +121,12 @@ bool WiFiSync::downloadConfig() {
     const HubConfig& config = configManager.getConfig();
     
     String url = String(config.firebase.database_url) + 
-                "/central_configs/" + config.base_id + ".json?auth=" + 
+                "/bases/" + config.base_id + "/configs" + ".json?auth=" + 
                 config.firebase.api_key;
     
     Serial.printf("🔄 Baixando config obrigatória do Firebase...\n");
     Serial.printf("   Base ID: %s\n", config.base_id);
-    Serial.printf("   URL: /central_configs/%s\n", config.base_id);
+    Serial.printf("   URL: /bases/%s\n", config.base_id + "/configs");
     
     http.begin(url);
     int httpCode = http.GET();
@@ -172,7 +172,7 @@ bool WiFiSync::downloadConfig() {
         }
     } else if (httpCode == 404) {
         Serial.printf("🚨 ERRO CRÍTICO: Config não encontrada! HTTP 404\n");
-        Serial.printf("   Verifique se existe: /central_configs/%s.json\n", config.base_id);
+        Serial.printf("   Verifique se existe: /bases/%s.json\n", config.base_id + "/configs");
         Serial.printf("   Base ID configurado: '%s'\n", config.base_id);
     } else {
         Serial.printf("🚨 ERRO CRÍTICO: Falha na conexão Firebase! HTTP %d\n", httpCode);
@@ -247,7 +247,7 @@ bool WiFiSync::uploadData() {
     DynamicJsonDocument doc(4096);
     if (bufferManager.getDataForUpload(doc)) {
         String url = String(config.firebase.database_url) + 
-                    "/hubs/" + config.base_id + "/data.json?auth=" + 
+                    "/bases/" + config.base_id + "/data.json?auth=" + 
                     config.firebase.api_key;
         
         http.begin(url);
@@ -261,7 +261,7 @@ bool WiFiSync::uploadData() {
         if (httpCode == HTTP_CODE_OK) {
             bufferManager.markAsSent();
             Serial.printf("📤 Dados enviados: %d bytes\n", jsonString.length());
-            Serial.printf("   URL: /hubs/%s/data\n", config.base_id);
+            Serial.printf("   URL: /bases/%s/data\n", config.base_id);
             Serial.printf("   Payload: %s\n", jsonString.c_str());
         } else {
             Serial.printf("❌ Upload falhou: HTTP %d\n", httpCode);
@@ -331,7 +331,7 @@ bool WiFiSync::uploadWiFiConfig() {
     const HubConfig& config = configManager.getConfig();
     
     String url = String(config.firebase.database_url) + 
-                "/central_configs/" + config.base_id + "/wifi.json?auth=" + 
+                "/bases/" + config.base_id + "/configs/wifi.json?auth=" + 
                 config.firebase.api_key;
     
     DynamicJsonDocument doc(256);

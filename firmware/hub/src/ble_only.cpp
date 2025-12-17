@@ -25,35 +25,7 @@ static uint32_t lastHeartbeat = 0;
 static std::map<uint16_t, String> connectedDevices;
 static bool filteringEnabled = false;
 
-// BLE Filter implementation
-class AdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
-    void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
-        if (!filteringEnabled) return;
-        
-        String deviceName = advertisedDevice->getName().c_str();
-        
-        // Só aceitar dispositivos com nome começando com "bpr-"
-        if (!deviceName.startsWith("bpr-") || deviceName.length() != 10) {
-            Serial.printf("🚫 Rejeitando dispositivo: %s (nome inválido)\n", deviceName.c_str());
-            return;
-        }
-        
-        // Verificar se não está blocked
-        if (!BikeRegistry::canConnect(deviceName)) {
-            Serial.printf("🚫 Rejeitando bike blocked: %s\n", deviceName.c_str());
-            return;
-        }
-        
-        Serial.printf("✅ Permitindo conexão de: %s\n", deviceName.c_str());
-    }
-};
-
-void initBLEFilter() {
-    NimBLEDevice::setScanFilterMode(CONFIG_BTDM_SCAN_DUPL_TYPE_DEVICE);
-    NimBLEDevice::getScan()->setAdvertisedDeviceCallbacks(new AdvertisedDeviceCallbacks());
-    filteringEnabled = true;
-    Serial.println("🔍 BLE filtering enabled - only bpr-* devices allowed");
-}
+// Filtro BLE removido - hub é servidor, não cliente
 
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
@@ -62,13 +34,14 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
         
         connectedBikes++;
-        Serial.printf("🔵 BLE connected: %s (%d total)\n", 
-                     addr.toString().c_str(), connectedBikes);
+        Serial.printf("🔵 BLE CONNECT: %s | Handle: %d | Total: %d\n", 
+                     addr.toString().c_str(), conn_handle, connectedBikes);
         ledController.bikeArrivedPattern();
         NimBLEDevice::startAdvertising();
         
         // Armazenar handle para push de config posterior
         connectedDevices[conn_handle] = "";
+        Serial.printf("📝 Stored connection handle %d\n", conn_handle);
     }
     
     void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
@@ -99,9 +72,11 @@ class DataCallbacks : public NimBLECharacteristicCallbacks {
             
             if (!error && doc["bike_id"]) {
                 String bikeId = doc["bike_id"];
+                Serial.printf("🔍 Processing data from bike: %s\n", bikeId.c_str());
                 
                 // Validar se bike pode se conectar (não blocked)
                 if (BikeRegistry::canConnect(bikeId)) {
+                    Serial.printf("✅ Bike %s can connect\n", bikeId.c_str());
                     // Validar se pode enviar dados (só allowed)
                     if (BikeRegistry::isAllowed(bikeId)) {
                         Serial.printf("📥 Data from %s: %s\n", bikeId.c_str(), value.c_str());
@@ -194,10 +169,10 @@ private:
 void BLEOnly::enter() {
     Serial.println("🔵 Entering BLE_ONLY mode");
     
-    // Initialize bike registry, filter and config manager
+    // Initialize bike registry and config manager
     BikeRegistry::init();
-    initBLEFilter();
     BikeConfigManager::init();
+    Serial.println("🔍 BLE server mode - accepting all connections");
     
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);
@@ -275,5 +250,6 @@ uint8_t BLEOnly::getConnectedBikes() {
 void BLEOnly::sendHeartbeat() {
     // This will be sent during next WiFi sync
     bufferManager.addHeartbeat(connectedBikes);
-    Serial.printf("💓 Heartbeat: %d bikes connected\n", connectedBikes);
+    Serial.printf("💓 Heartbeat: %d bikes connected | Devices map size: %d\n", 
+                 connectedBikes, connectedDevices.size());
 }

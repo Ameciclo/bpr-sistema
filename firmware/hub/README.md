@@ -148,7 +148,7 @@ flowchart TD
 
 ### **Configuração do Hub:**
 ```json
-/central_configs/{base_id} = {
+/bases/{base_id}/configs = {
   "base_id": "base01",
   "sync_interval_sec": 300,
   "wifi_timeout_sec": 30,

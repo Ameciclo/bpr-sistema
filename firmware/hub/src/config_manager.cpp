@@ -25,6 +25,7 @@ ConfigManager::ConfigManager() {
     
     config.timeouts.wifi_sec = 30;
     config.timeouts.firebase_ms = 10000;
+    config.timeouts.config_ap_min = 15;
     
     config.led.pin = LED_PIN;
     config.led.boot_ms = LED_BOOT_INTERVAL;
@@ -84,6 +85,7 @@ bool ConfigManager::loadConfig() {
     
     if (doc["timeouts"]["wifi_sec"]) config.timeouts.wifi_sec = doc["timeouts"]["wifi_sec"];
     if (doc["timeouts"]["firebase_ms"]) config.timeouts.firebase_ms = doc["timeouts"]["firebase_ms"];
+    if (doc["timeouts"]["config_ap_min"]) config.timeouts.config_ap_min = doc["timeouts"]["config_ap_min"];
     
     if (doc["led"]["boot_ms"]) config.led.boot_ms = doc["led"]["boot_ms"];
     if (doc["led"]["ble_ready_ms"]) config.led.ble_ms = doc["led"]["ble_ready_ms"];
@@ -130,6 +132,7 @@ bool ConfigManager::saveConfig() {
     
     doc["timeouts"]["wifi_sec"] = config.timeouts.wifi_sec;
     doc["timeouts"]["firebase_ms"] = config.timeouts.firebase_ms;
+    doc["timeouts"]["config_ap_min"] = config.timeouts.config_ap_min;
     
     doc["led"]["boot_ms"] = config.led.boot_ms;
     doc["led"]["ble_ready_ms"] = config.led.ble_ms;
@@ -192,6 +195,7 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig
         config.wifi.timeout_ms = config.timeouts.wifi_sec * 1000;
     }
     if (firebaseConfig["timeouts"]["firebase_ms"]) config.timeouts.firebase_ms = firebaseConfig["timeouts"]["firebase_ms"];
+    if (firebaseConfig["timeouts"]["config_ap_min"]) config.timeouts.config_ap_min = firebaseConfig["timeouts"]["config_ap_min"];
     
     if (firebaseConfig["led"]["boot_ms"]) config.led.boot_ms = firebaseConfig["led"]["boot_ms"];
     if (firebaseConfig["led"]["ble_ready_ms"]) config.led.ble_ms = firebaseConfig["led"]["ble_ready_ms"];

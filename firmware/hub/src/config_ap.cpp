@@ -55,8 +55,10 @@ void ConfigAP::update() {
         lastTimeoutWarning = millis();
     }
     
-    if (elapsed > CONFIG_TIMEOUT_MS) {
-        Serial.println("⏰ Timeout do modo CONFIG_AP - Reiniciando...");
+    uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
+    if (elapsed > timeoutMs) {
+        Serial.printf("⏰ Timeout do modo CONFIG_AP (%d min) - Reiniciando...\n", 
+                     configManager.getConfig().timeouts.config_ap_min);
         ESP.restart();
     }
 }
@@ -90,7 +92,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase() {
     // Tentar upload WiFi
     HTTPClient http;
     String url = String(config.firebase.database_url) + 
-                "/central_configs/" + config.base_id + "/wifi.json?auth=" + 
+                "/bases/" + config.base_id + "configs/wifi.json?auth=" + 
                 config.firebase.api_key;
     
     DynamicJsonDocument doc(256);
@@ -163,7 +165,7 @@ void ConfigAP::setupWebServer() {
         html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
-        html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: 15 minutos.</div>";
+        html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
         
         // JavaScript para alternar tabs
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";

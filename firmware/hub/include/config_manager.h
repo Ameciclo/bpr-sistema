@@ -41,6 +41,7 @@ struct IntervalsConfig {
 struct TimeoutsConfig {
     uint32_t wifi_sec;
     uint32_t firebase_ms;
+    uint16_t config_ap_min;
 };
 
 struct LimitsConfig {

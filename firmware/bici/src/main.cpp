@@ -95,12 +95,14 @@ void setup() {
         LittleFS.begin(true);
     }
     WiFi.mode(WIFI_STA);
-    NimBLEDevice::init("BPR_Bici");
     
     Serial.println("🚲 BPR Bici Simple v1.0");
     
     // Gerar ID único se não existir
     generateUniqueID();
+    
+    // Inicializar BLE com o bike_id gerado
+    NimBLEDevice::init(config.bike_id);
     
     // Load config first
     if (!loadConfig()) {

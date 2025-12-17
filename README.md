@@ -101,7 +101,7 @@ pio run --target upload     # Upload firmware
 
 ##### **Estrutura no Firebase:**
 ```
-/central_configs/
+/bases/
 ├── ameciclo.json    # Config completa da Ameciclo
 ├── cepas.json       # Config completa da CEPAS
 └── ctresiste.json   # Config completa da CTResiste
