@@ -16,58 +16,49 @@ extern SystemState currentState;
 extern bool firstSync;
 extern void recordSyncFailure();
 extern void recordSyncSuccess();
-extern void changeState(SystemState newState);
 
 static uint32_t syncStartTime = 0;
 
-void WiFiSync::enter() {
+SyncResult WiFiSync::enter() {
     Serial.println("📡 Entering WIFI_SYNC mode");
     syncStartTime = millis();
     ledController.syncPattern();
     
-    bool syncSuccess = false;
-    
+    // Early return se WiFi falhar
     if (!connectWiFi()) {
         Serial.println("❌ WiFi connection failed");
-    } else {
-        syncTime();
-        if (downloadConfig() && uploadData()) {
-            syncSuccess = true;
-        }
+        recordSyncFailure();
+        return SyncResult::FAILURE;
     }
     
+    // WiFi conectado - executar sync
+    syncTime();
+    
+    bool hubConfigOk = downloadHubConfig();
+    bool bikeRegistryOk = downloadBikeRegistry();
+    bool bikeConfigsOk = downloadBikeConfigs();
+    
+    bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
+    bool registryOk = uploadBikeRegistry();
+    bool bufferOk = uploadBufferData();
+    bool heartbeatOk = uploadHeartbeat();
+    
+    bool syncSuccess = hubConfigOk && bikeRegistryOk && bikeConfigsOk && wifiConfigOk && registryOk && bufferOk && heartbeatOk;
+    
+    // Sempre desconectar WiFi
     WiFi.disconnect(true);
     
-    if (syncSuccess) {
-        Serial.println("✅ Sync complete");
-        recordSyncSuccess();
-        firstSync = false;
-        changeState(STATE_BLE_ONLY);
-    } else {
+    // Early return se sync falhar
+    if (!syncSuccess) {
         Serial.println("❌ Sync failed");
         recordSyncFailure();
-        
-        if (firstSync) {
-            Serial.println("🚨 ERRO CRÍTICO: Primeiro sync falhou!");
-            Serial.println("   - Não foi possível baixar configurações do Firebase");
-            Serial.println("   - Sistema não pode funcionar sem config válida");
-            Serial.println("   - Retornando ao modo CONFIG_AP para reconfigurar");
-            firstSync = false;
-            changeState(STATE_CONFIG_AP);
-        } else {
-            Serial.println("⚠️ Sync falhou - continuando com última config válida");
-            changeState(STATE_BLE_ONLY);
-        }
+        return SyncResult::FAILURE;
     }
-}
-
-void WiFiSync::update() {
-    // Timeout check
-    if (millis() - syncStartTime > configManager.getConfig().timeouts.wifi_sec * 3000) {
-        Serial.println("⏰ Sync timeout");
-        WiFi.disconnect(true);
-        changeState(STATE_BLE_ONLY);
-    }
+    
+    // Sucesso
+    Serial.println("✅ Sync complete");
+    recordSyncSuccess();
+    return SyncResult::SUCCESS;
 }
 
 void WiFiSync::exit() {
@@ -119,7 +110,7 @@ void WiFiSync::syncTime() {
     }
 }
 
-bool WiFiSync::downloadConfig() {
+bool WiFiSync::downloadHubConfig() {
     HTTPClient http;
     const HubConfig& config = configManager.getConfig();
     
@@ -127,9 +118,8 @@ bool WiFiSync::downloadConfig() {
                 "/bases/" + config.base_id + "/configs" + ".json?auth=" + 
                 config.firebase.api_key;
     
-    Serial.printf("🔄 Baixando config obrigatória do Firebase...\n");
+    Serial.printf("🔄 Downloading hub config from Firebase...\n");
     Serial.printf("   Base ID: %s\n", config.base_id);
-    Serial.printf("   URL: /bases/%s\n", config.base_id + "/configs");
     
     http.begin(url);
     int httpCode = http.GET();
@@ -137,54 +127,45 @@ bool WiFiSync::downloadConfig() {
     if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
         
-        Serial.printf("⚙️ JSON baixado do Firebase (%d bytes):\n", payload.length());
-        Serial.println(payload);
-        Serial.println("---");
-        
-        // Verificar se não é muito pequeno (provavelmente erro)
         if (payload.length() < 100) {
-            Serial.println("🚨 ERRO CRÍTICO: JSON muito pequeno - config inválida!");
-            Serial.printf("   Tamanho: %d bytes (mínimo: 100)\n", payload.length());
-            Serial.println("   Verifique se a config existe no Firebase");
+            Serial.println("🚨 Hub config too small - invalid!");
             http.end();
             return false;
         }
         
-        // Baixar também o registro de bikes e configs
-        downloadBikeRegistry();
-        BikeConfigManager::downloadConfigsFromFirebase();
-        
         DynamicJsonDocument doc(2048);
         
         if (deserializeJson(doc, payload) == DeserializationError::Ok) {
-            // Validar se JSON tem campos obrigatórios
             if (validateFirebaseConfig(doc)) {
                 configManager.updateFromFirebase(doc);
-                Serial.printf("✅ Config obrigatória baixada e aplicada com sucesso!\n");
-                Serial.printf("   Sync interval: %d segundos\n", configManager.getConfig().intervals.sync_sec);
-                Serial.printf("   Max bikes: %d\n", configManager.getConfig().limits.max_bikes);
+                Serial.printf("✅ Hub config downloaded successfully\n");
+                Serial.printf("   Sync interval: %d seconds\n", configManager.getConfig().intervals.sync_sec);
                 http.end();
                 return true;
             } else {
-                Serial.println("🚨 ERRO CRÍTICO: Config incompleta no Firebase!");
-                Serial.println("   Campos obrigatórios ausentes - sistema não pode funcionar");
+                Serial.println("🚨 Hub config validation failed!");
             }
         } else {
-            Serial.println("🚨 ERRO CRÍTICO: JSON inválido no Firebase!");
-            Serial.println("   Não foi possível parsear a configuração");
+            Serial.println("🚨 Hub config JSON parse failed!");
         }
-    } else if (httpCode == 404) {
-        Serial.printf("🚨 ERRO CRÍTICO: Config não encontrada! HTTP 404\n");
-        Serial.printf("   Verifique se existe: /bases/%s.json\n", config.base_id + "/configs");
-        Serial.printf("   Base ID configurado: '%s'\n", config.base_id);
     } else {
-        Serial.printf("🚨 ERRO CRÍTICO: Falha na conexão Firebase! HTTP %d\n", httpCode);
-        Serial.printf("   URL: %s\n", url.c_str());
-        Serial.println("   Verifique: internet, Firebase URL, API key");
+        Serial.printf("🚨 Hub config download failed: HTTP %d\n", httpCode);
     }
     
     http.end();
     return false;
+}
+
+bool WiFiSync::downloadBikeConfigs() {
+    Serial.println("🔄 Downloading bike configs...");
+    
+    if (BikeConfigManager::downloadConfigsFromFirebase()) {
+        Serial.println("✅ Bike configs downloaded successfully");
+        return true;
+    } else {
+        Serial.println("🚨 Bike configs download failed!");
+        return false;
+    }
 }
 
 bool WiFiSync::validateFirebaseConfig(const DynamicJsonDocument& doc) {
@@ -234,52 +215,40 @@ bool WiFiSync::validateFirebaseConfig(const DynamicJsonDocument& doc) {
     return valid;
 }
 
-bool WiFiSync::uploadData() {
+bool WiFiSync::uploadBufferData() {
+    DynamicJsonDocument doc(4096);
+    if (!bufferManager.getDataForUpload(doc)) {
+        Serial.println("📝 No buffer data to upload");
+        return true; // Não ter dados não é erro
+    }
+    
     HTTPClient http;
     const HubConfig& config = configManager.getConfig();
     
-    // Se é primeira sync, atualizar WiFi no Firebase
-    if (stateMachine.isFirstSync()) {
-        uploadWiFiConfig();
-    }
+    String url = String(config.firebase.database_url) + 
+                "/bases/" + config.base_id + "/data.json?auth=" + 
+                config.firebase.api_key;
     
-    // Upload bike registry updates
-    uploadBikeRegistry();
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
     
-    // Upload buffered data
-    DynamicJsonDocument doc(4096);
-    if (bufferManager.getDataForUpload(doc)) {
-        String url = String(config.firebase.database_url) + 
-                    "/bases/" + config.base_id + "/data.json?auth=" + 
-                    config.firebase.api_key;
-        
-        http.begin(url);
-        http.addHeader("Content-Type", "application/json");
-        
-        String jsonString;
-        serializeJson(doc, jsonString);
-        
-        int httpCode = http.PATCH(jsonString);
-        
-        if (httpCode == HTTP_CODE_OK) {
-            bufferManager.markAsSent();
-            Serial.printf("📤 Dados enviados: %d bytes\n", jsonString.length());
-            Serial.printf("   URL: /bases/%s/data\n", config.base_id);
-            Serial.printf("   Payload: %s\n", jsonString.c_str());
-        } else {
-            Serial.printf("❌ Upload falhou: HTTP %d\n", httpCode);
-            Serial.printf("   URL: %s\n", url.c_str());
-            Serial.printf("   Payload: %s\n", jsonString.c_str());
-        }
-        
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    int httpCode = http.PATCH(jsonString);
+    
+    if (httpCode == HTTP_CODE_OK) {
+        bufferManager.markAsSent();
+        Serial.printf("📤 Buffer data uploaded: %d bytes\n", jsonString.length());
+        Serial.printf("   URL: /bases/%s/data\n", config.base_id);
         http.end();
+        return true;
+    } else {
+        Serial.printf("❌ Buffer upload failed: HTTP %d\n", httpCode);
+        Serial.printf("   URL: %s\n", url.c_str());
+        http.end();
+        return false;
     }
-    
-    // Upload bike config logs
-    uploadBikeConfigLogs();
-    
-    // Upload heartbeat
-    return uploadHeartbeat();
 }
 
 bool WiFiSync::uploadHeartbeat() {
@@ -430,11 +399,4 @@ bool WiFiSync::uploadBikeRegistry() {
     }
     
     http.end();
-}
-
-bool WiFiSync::uploadBikeConfigLogs() {
-    // This function would extract config logs from buffer and upload them
-    // to /bike_config_logs/{hub_id}/ in Firebase
-    // For now, config logs are included in the general data upload
-    return true;
 }

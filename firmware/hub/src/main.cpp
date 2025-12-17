@@ -28,6 +28,7 @@ bool isInitialConfigMode = false;
 void printStatus();
 void sendHeartbeat();
 void changeState(SystemState newState);
+void handleSyncResult(SyncResult result);
 const char *getStateName(SystemState state);
 
 void setup()
@@ -93,6 +94,11 @@ void loop()
         break;
     case STATE_WIFI_SYNC:
         WiFiSync::update();
+        // Check for timeout
+        if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000) {
+            Serial.println("⏰ WiFi sync timeout");
+            handleSyncResult(SyncResult::FAILURE);
+        }
         break;
     default:
         break;
@@ -165,7 +171,10 @@ void changeState(SystemState newState)
         BLEOnly::enter();
         break;
     case STATE_WIFI_SYNC:
-        WiFiSync::enter();
+        {
+            SyncResult result = WiFiSync::enter();
+            handleSyncResult(result);
+        }
         break;
     default:
         break;
@@ -230,4 +239,28 @@ void printStatus()
     Serial.printf("⏱️ Estado há: %lus\n",
                   (millis() - stateStartTime) / 1000);
     Serial.println("==================================================");
+}
+
+void handleSyncResult(SyncResult result) {
+    switch(result) {
+        case SyncResult::SUCCESS:
+            Serial.println("✅ Sync successful - transitioning to BLE_ONLY");
+            firstSync = false;
+            changeState(STATE_BLE_ONLY);
+            break;
+            
+        case SyncResult::FAILURE:
+            if (firstSync) {
+                Serial.println("🚨 ERRO CRÍTICO: Primeiro sync falhou!");
+                Serial.println("   - Não foi possível baixar configurações do Firebase");
+                Serial.println("   - Sistema não pode funcionar sem config válida");
+                Serial.println("   - Retornando ao modo CONFIG_AP para reconfigurar");
+                firstSync = false;
+                changeState(STATE_CONFIG_AP);
+            } else {
+                Serial.println("⚠️ Sync falhou - continuando com última config válida");
+                changeState(STATE_BLE_ONLY);
+            }
+            break;
+    }
 }
