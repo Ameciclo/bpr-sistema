@@ -18,7 +18,7 @@ void BufferManager::begin()
 
 bool BufferManager::addData(const String& bikeId, const uint8_t *data, size_t length)
 {
-    if (dataCount >= MAX_BUFFER_SIZE || length > 256)
+    if (dataCount >= configManager.getBufferMaxSize() || length > configManager.getMaxItemSize())
     {
         return false;
     }
@@ -28,11 +28,11 @@ bool BufferManager::addData(const String& bikeId, const uint8_t *data, size_t le
     size_t finalSize = length;
     bool compressed = false;
     
-    // TODO: Implementar compressão quando necessário
-    // if (length > 64) {
-    //     finalData = compress(data, length, &finalSize);
-    //     compressed = true;
-    // }
+    if (configManager.getCompressionEnabled() && length > configManager.getCompressionMinSize()) {
+        // TODO: Implementar compressão quando necessário
+        // finalData = compress(data, length, &finalSize);
+        // compressed = true;
+    }
 
     // Calcular CRC32
     CRC32 crc;
@@ -53,7 +53,7 @@ bool BufferManager::addData(const String& bikeId, const uint8_t *data, size_t le
     Serial.printf("📦 Data added: %s [%d bytes, CRC:%08X]\n", bikeId.c_str(), finalSize, checksum);
 
     // Auto-save periodicamente
-    if (dataCount % 5 == 0) {
+    if (dataCount % configManager.getAutoSaveInterval() == 0) {
         saveBuffer();
     }
 
@@ -62,8 +62,8 @@ bool BufferManager::addData(const String& bikeId, const uint8_t *data, size_t le
 
 bool BufferManager::needsSync()
 {
-    int threshold = (MAX_BUFFER_SIZE * 80) / 100; // 80% do buffer
-    uint32_t syncInterval = configManager.getConfig().intervals.sync_sec * 1000; // sec -> ms
+    int threshold = (configManager.getBufferMaxSize() * configManager.getBufferSyncThreshold()) / 100;
+    uint32_t syncInterval = configManager.getSyncInterval() * 1000; // sec -> ms
     
     return dataCount >= threshold || 
            (dataCount > 0 && (millis() - lastSync) > syncInterval);
@@ -76,7 +76,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
     }
 
     doc["timestamp"] = time(nullptr);
-    doc["base_id"] = configManager.getConfig().base_id;
+    doc["base_id"] = configManager.getBaseId();
     doc["data_count"] = dataCount;
 
     JsonArray dataArray = doc.createNestedArray("data");
@@ -153,7 +153,7 @@ void BufferManager::loadBuffer()
     int loadedCount = 0;
 
     for (JsonObject item : dataArray) {
-        if (loadedCount >= MAX_BUFFER_SIZE) break;
+        if (loadedCount >= configManager.getBufferMaxSize()) break;
 
         buffer[loadedCount].bikeId = item["bike_id"] | "unknown";
         buffer[loadedCount].timestamp = item["ts"];
@@ -166,7 +166,7 @@ void BufferManager::loadBuffer()
         String hexData = item["data"];
         size_t dataSize = hexData.length() / 2;
 
-        for (size_t i = 0; i < dataSize && i < 256; i++) {
+        for (size_t i = 0; i < dataSize && i < configManager.getMaxItemSize(); i++) {
             String byteString = hexData.substring(i * 2, i * 2 + 2);
             buffer[loadedCount].data[i] = strtol(byteString.c_str(), NULL, 16);
         }
@@ -213,7 +213,7 @@ void BufferManager::saveBuffer()
 
 void BufferManager::createBackup()
 {
-    if (dataCount == 0) return;
+    if (dataCount == 0 || !configManager.getBackupEnabled()) return;
 
     char backupFile[64];
     sprintf(backupFile, "/backup_%lu.json", time(nullptr));
@@ -234,13 +234,14 @@ void BufferManager::createBackup()
 
 void BufferManager::cleanupOldBackups()
 {
-    uint32_t retentionHours = 24; // 24 horas padrão
+    uint32_t retentionHours = configManager.getBackupRetentionHours();
     uint32_t cutoffTime = time(nullptr) - (retentionHours * 3600);
     
     // Se pouco espaço, ser mais agressivo na limpeza
     if (!hasEnoughSpace()) {
         Serial.println("⚠️ Low storage - aggressive cleanup mode");
-        cutoffTime = time(nullptr) - (retentionHours * 1800); // Metade do tempo
+        float multiplier = configManager.getAggressiveCleanupMultiplier();
+        cutoffTime = time(nullptr) - (uint32_t)(retentionHours * 3600 * multiplier);
     }
     
     File root = LittleFS.open("/");
@@ -315,7 +316,8 @@ void BufferManager::printStorageInfo()
     Serial.printf("💾 Backups: %d files, %d KB\n", backupCount, backupSize / 1024);
     
     // Alerta se pouco espaço
-    if (freeBytes < 10240) { // < 10KB
+    uint32_t warningThreshold = configManager.getStorageWarningKB() * 1024;
+    if (freeBytes < warningThreshold) {
         Serial.printf("⚠️ LOW STORAGE WARNING: Only %d KB free!\n", freeBytes / 1024);
     }
 }
@@ -336,5 +338,5 @@ void BufferManager::printFileSize(const String& filePath)
 bool BufferManager::hasEnoughSpace()
 {
     size_t freeBytes = LittleFS.totalBytes() - LittleFS.usedBytes();
-    return freeBytes > 20480; // Mínimo 20KB livres
+    return freeBytes > (configManager.getStorageMinFreeKB() * 1024);
 }

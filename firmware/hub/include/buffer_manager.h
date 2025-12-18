@@ -2,8 +2,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-#define MAX_BUFFER_SIZE 50
-
 struct DataItem {
     String bikeId;
     uint32_t timestamp;
@@ -34,7 +32,7 @@ public:
     bool hasEnoughSpace();
 
 private:
-    DataItem buffer[MAX_BUFFER_SIZE];
+    DataItem buffer[50]; // Tamanho máximo, controlado por config
     uint16_t dataCount;
     uint32_t lastSync;
     
