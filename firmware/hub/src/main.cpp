@@ -3,8 +3,8 @@
 #include "config_manager.h"
 #include "constants.h"
 #include "config_ap.h"
-#include "ble_only.h"
-#include "wifi_sync.h"
+#include "bike_pairing.h"
+#include "cloud_sync.h"
 #include "led_controller.h"
 #include "buffer_manager.h"
 #include "self_check.h"
@@ -35,7 +35,7 @@ void setup()
 {
     Serial.begin(115200);
 
-    Serial.println("\n🏢 BPR Hub Station v1.0");
+    Serial.println("\n🏢 BPR Central Station v1.0");
     Serial.println("========================");
 
     // Inicializar LittleFS
@@ -70,7 +70,7 @@ void setup()
     {
         Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
         firstSync = true;
-        changeState(STATE_WIFI_SYNC);
+        changeState(STATE_CLOUD_SYNC);
     }
 
     Serial.println("✅ Hub inicializado");
@@ -89,14 +89,14 @@ void loop()
     case STATE_CONFIG_AP:
         ConfigAP::update();
         break;
-    case STATE_BLE_ONLY:
-        BLEOnly::update();
+    case STATE_BIKE_PAIRING:
+        BikePairing::update();
         break;
-    case STATE_WIFI_SYNC:
-        WiFiSync::update();
+    case STATE_CLOUD_SYNC:
+        CloudSync::update();
         // Check for timeout
         if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000) {
-            Serial.println("⏰ WiFi sync timeout");
+            Serial.println("⏰ Cloud sync timeout");
             handleSyncResult(SyncResult::FAILURE);
         }
         break;
@@ -105,7 +105,7 @@ void loop()
     }
 
     // Fallback por falhas de sync
-    if (currentState == STATE_BLE_ONLY && SyncMonitor::shouldFallback())
+    if (currentState == STATE_BIKE_PAIRING && SyncMonitor::shouldFallback())
     {
         Serial.println("⚠️ Fallback to AP mode");
         isInitialConfigMode = false;
@@ -127,7 +127,7 @@ void sendHeartbeat()
 {
     if (millis() - lastHeartbeat > 60000)
     { // 1 min
-        int bikes = (currentState == STATE_BLE_ONLY) ? BLEOnly::getConnectedBikes() : 0;
+        int bikes = (currentState == STATE_BIKE_PAIRING) ? BikePairing::getConnectedBikes() : 0;
         Serial.printf("💓 Heartbeat - Bikes: %d, Heap: %d\n",
                       bikes, ESP.getFreeHeap());
         lastHeartbeat = millis();
@@ -147,11 +147,11 @@ void changeState(SystemState newState)
     case STATE_CONFIG_AP:
         ConfigAP::exit();
         break;
-    case STATE_BLE_ONLY:
-        BLEOnly::exit();
+    case STATE_BIKE_PAIRING:
+        BikePairing::exit();
         break;
-    case STATE_WIFI_SYNC:
-        WiFiSync::exit();
+    case STATE_CLOUD_SYNC:
+        CloudSync::exit();
         break;
     default:
         break;
@@ -167,12 +167,12 @@ void changeState(SystemState newState)
         SyncMonitor::reset();
         ConfigAP::enter(isInitialConfigMode);
         break;
-    case STATE_BLE_ONLY:
-        BLEOnly::enter();
+    case STATE_BIKE_PAIRING:
+        BikePairing::enter();
         break;
-    case STATE_WIFI_SYNC:
+    case STATE_CLOUD_SYNC:
         {
-            SyncResult result = WiFiSync::enter();
+            SyncResult result = CloudSync::enter();
             handleSyncResult(result);
         }
         break;
@@ -189,10 +189,10 @@ const char *getStateName(SystemState state)
         return "BOOT";
     case STATE_CONFIG_AP:
         return "CONFIG_AP";
-    case STATE_BLE_ONLY:
-        return "BLE_ONLY";
-    case STATE_WIFI_SYNC:
-        return "WIFI_SYNC";
+    case STATE_BIKE_PAIRING:
+        return "BIKE_PAIRING";
+    case STATE_CLOUD_SYNC:
+        return "CLOUD_SYNC";
     default:
         return "UNKNOWN";
     }
@@ -214,12 +214,12 @@ void printStatus()
     }
     else
     {
-        int bikes = (currentState == STATE_BLE_ONLY) ? BLEOnly::getConnectedBikes() : 0;
+        int bikes = (currentState == STATE_BIKE_PAIRING) ? BikePairing::getConnectedBikes() : 0;
         Serial.printf("🚲 Bikes conectadas: %d | 💾 Heap: %d bytes\n",
                       bikes, ESP.getFreeHeap());
 
         // Mostrar informações de sincronização
-        if (currentState == STATE_BLE_ONLY)
+        if (currentState == STATE_BIKE_PAIRING)
         {
             uint32_t stateTime = millis() - stateStartTime;
             uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
@@ -244,9 +244,9 @@ void printStatus()
 void handleSyncResult(SyncResult result) {
     switch(result) {
         case SyncResult::SUCCESS:
-            Serial.println("✅ Sync successful - transitioning to BLE_ONLY");
+            Serial.println("✅ Sync successful - transitioning to BIKE_PAIRING");
             firstSync = false;
-            changeState(STATE_BLE_ONLY);
+            changeState(STATE_BIKE_PAIRING);
             break;
             
         case SyncResult::FAILURE:
@@ -259,7 +259,7 @@ void handleSyncResult(SyncResult result) {
                 changeState(STATE_CONFIG_AP);
             } else {
                 Serial.println("⚠️ Sync falhou - continuando com última config válida");
-                changeState(STATE_BLE_ONLY);
+                changeState(STATE_BIKE_PAIRING);
             }
             break;
     }

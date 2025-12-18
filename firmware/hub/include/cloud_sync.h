@@ -7,14 +7,14 @@ enum class SyncResult {
     FAILURE
 };
 
-class WiFiSync {
+class CloudSync {
 public:
     static SyncResult enter();
     static void update();
     static void exit();
     static bool connectWiFi();
     static void syncTime();
-    static bool downloadHubConfig();
+    static bool downloadCentralConfig();
     static bool downloadBikeConfigs();
     static bool uploadBufferData();
     static bool uploadHeartbeat();

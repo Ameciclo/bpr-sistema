@@ -54,7 +54,30 @@ struct FallbackConfig {
     uint16_t timeout_min;
 };
 
-struct HubConfig {
+struct BufferConfig {
+    uint8_t max_size;
+    uint8_t sync_threshold_percent;
+    uint8_t auto_save_interval;
+    uint16_t max_item_size;
+};
+
+struct CompressionConfig {
+    bool enabled;
+    uint16_t min_size_bytes;
+};
+
+struct StorageConfig {
+    uint16_t min_free_kb;
+    uint16_t warning_threshold_kb;
+    float aggressive_cleanup_multiplier;
+};
+
+struct BackupConfig {
+    bool enabled;
+    uint16_t retention_hours;
+};
+
+struct CentralConfig {
     char base_id[32];
     LocationConfig location;
     WiFiConfig wifi;
@@ -64,6 +87,10 @@ struct HubConfig {
     LEDConfig led;
     LimitsConfig limits;
     FallbackConfig fallback;
+    BufferConfig buffer;
+    CompressionConfig compression;
+    StorageConfig storage;
+    BackupConfig backup;
     
     // Compatibility methods
     uint32_t sync_interval_ms() const { return intervals.sync_sec * 1000; }
@@ -78,11 +105,11 @@ public:
     bool isConfigValid();
     void updateFromFirebase(const DynamicJsonDocument& firebaseConfig);
     
-    const HubConfig& getConfig() const { return config; }
-    HubConfig& getConfig() { return config; }
+    const CentralConfig& getConfig() const { return config; }
+    CentralConfig& getConfig() { return config; }
     
     // Firebase URL builders
-    String getHubConfigUrl() const;
+    String getCentralConfigUrl() const;
     String getBikeRegistryUrl() const;
     String getWiFiConfigUrl() const;
     String getHeartbeatUrl() const;
@@ -91,7 +118,30 @@ public:
     // JSON parsing and validation
     bool updateFromJson(const String& json);
     bool isValidFirebaseConfig(const DynamicJsonDocument& doc) const;
+    
+    // Buffer configuration getters
+    int getBufferMaxSize() const { return config.buffer.max_size; }
+    int getBufferSyncThreshold() const { return config.buffer.sync_threshold_percent; }
+    int getAutoSaveInterval() const { return config.buffer.auto_save_interval; }
+    int getMaxItemSize() const { return config.buffer.max_item_size; }
+    
+    // Compression configuration
+    bool getCompressionEnabled() const { return config.compression.enabled; }
+    int getCompressionMinSize() const { return config.compression.min_size_bytes; }
+    
+    // Storage configuration
+    int getStorageMinFreeKB() const { return config.storage.min_free_kb; }
+    int getStorageWarningKB() const { return config.storage.warning_threshold_kb; }
+    float getAggressiveCleanupMultiplier() const { return config.storage.aggressive_cleanup_multiplier; }
+    
+    // Backup configuration
+    bool getBackupEnabled() const { return config.backup.enabled; }
+    int getBackupRetentionHours() const { return config.backup.retention_hours; }
+    
+    // Convenience methods
+    String getBaseId() const { return String(config.base_id); }
+    int getSyncInterval() const { return config.intervals.sync_sec; }
 
 private:
-    HubConfig config;
+    CentralConfig config;
 };

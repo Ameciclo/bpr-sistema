@@ -229,3 +229,55 @@ int BikeRegistry::getPendingCount() {
     }
     return count;
 }
+
+void BikeRegistry::logConfigEvent(const String& bikeId, const String& event, bool success) {
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+    
+    char dateStr[64];
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+    
+    // Criar entrada no log de configuração
+    JsonArray configLog;
+    if (bikeRegistry[bikeId]["config_log"].isNull()) {
+        configLog = bikeRegistry[bikeId].createNestedArray("config_log");
+    } else {
+        configLog = bikeRegistry[bikeId]["config_log"];
+    }
+    
+    JsonObject logEntry = configLog.createNestedObject();
+    logEntry["timestamp"] = now;
+    logEntry["timestamp_human"] = dateStr;
+    logEntry["event"] = event;
+    logEntry["success"] = success;
+    
+    // Manter apenas os últimos 10 logs
+    while (configLog.size() > 10) {
+        configLog.remove(0);
+    }
+    
+    saveRegistry();
+    Serial.printf("📝 Config event logged: %s - %s (%s)\n", 
+                 bikeId.c_str(), event.c_str(), success ? "SUCCESS" : "FAILED");
+}
+
+int BikeRegistry::getConnectedCount() {
+    if (!registryLoaded) return 0;
+    
+    int count = 0;
+    time_t now = time(nullptr);
+    
+    JsonObject obj = bikeRegistry.as<JsonObject>();
+    for (JsonPair bike : obj) {
+        JsonObject heartbeat = bike.value()["last_heartbeat"];
+        if (!heartbeat.isNull()) {
+            uint32_t lastSeen = heartbeat["timestamp"] | 0;
+            // Considerar conectada se heartbeat foi há menos de 5 minutos
+            if ((now - lastSeen) < 300) {
+                count++;
+            }
+        }
+    }
+    return count;
+}

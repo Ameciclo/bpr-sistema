@@ -18,4 +18,6 @@ public:
     static bool getRegistryForUpload(DynamicJsonDocument& doc);
     static int getAllowedCount();
     static int getPendingCount();
+    static void logConfigEvent(const String& bikeId, const String& event, bool success);
+    static int getConnectedCount();
 };

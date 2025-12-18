@@ -5,7 +5,7 @@
 
 ConfigManager::ConfigManager() {
     // Initialize with defaults
-    strcpy(config.base_id, "hub_default");
+    strcpy(config.base_id, "central_default");
     
     config.location.lat = 0.0;
     config.location.lng = 0.0;
@@ -42,6 +42,25 @@ ConfigManager::ConfigManager() {
     
     config.fallback.max_failures = MAX_SYNC_FAILURES;
     config.fallback.timeout_min = SYNC_FAILURE_TIMEOUT_MS / 60000;
+    
+    // Buffer defaults
+    config.buffer.max_size = 50;
+    config.buffer.sync_threshold_percent = 80;
+    config.buffer.auto_save_interval = 5;
+    config.buffer.max_item_size = 256;
+    
+    // Compression defaults
+    config.compression.enabled = false;
+    config.compression.min_size_bytes = 64;
+    
+    // Storage defaults
+    config.storage.min_free_kb = 20;
+    config.storage.warning_threshold_kb = 10;
+    config.storage.aggressive_cleanup_multiplier = 0.5;
+    
+    // Backup defaults
+    config.backup.enabled = true;
+    config.backup.retention_hours = 24;
 }
 
 bool ConfigManager::loadConfig() {
@@ -102,6 +121,25 @@ bool ConfigManager::loadConfig() {
     if (doc["fallback"]["max_failures"]) config.fallback.max_failures = doc["fallback"]["max_failures"];
     if (doc["fallback"]["timeout_min"]) config.fallback.timeout_min = doc["fallback"]["timeout_min"];
     
+    // Buffer config
+    if (doc["buffer"]["max_size"]) config.buffer.max_size = doc["buffer"]["max_size"];
+    if (doc["buffer"]["sync_threshold_percent"]) config.buffer.sync_threshold_percent = doc["buffer"]["sync_threshold_percent"];
+    if (doc["buffer"]["auto_save_interval"]) config.buffer.auto_save_interval = doc["buffer"]["auto_save_interval"];
+    if (doc["buffer"]["max_item_size"]) config.buffer.max_item_size = doc["buffer"]["max_item_size"];
+    
+    // Compression config
+    if (doc["compression"]["enabled"]) config.compression.enabled = doc["compression"]["enabled"];
+    if (doc["compression"]["min_size_bytes"]) config.compression.min_size_bytes = doc["compression"]["min_size_bytes"];
+    
+    // Storage config
+    if (doc["storage"]["min_free_kb"]) config.storage.min_free_kb = doc["storage"]["min_free_kb"];
+    if (doc["storage"]["warning_threshold_kb"]) config.storage.warning_threshold_kb = doc["storage"]["warning_threshold_kb"];
+    if (doc["storage"]["aggressive_cleanup_multiplier"]) config.storage.aggressive_cleanup_multiplier = doc["storage"]["aggressive_cleanup_multiplier"];
+    
+    // Backup config
+    if (doc["backup"]["enabled"]) config.backup.enabled = doc["backup"]["enabled"];
+    if (doc["backup"]["retention_hours"]) config.backup.retention_hours = doc["backup"]["retention_hours"];
+    
     Serial.printf("✅ Config carregada do arquivo:\n");
     Serial.printf("   Base ID: %s\n", config.base_id);
     Serial.printf("   WiFi: %s\n", config.wifi.ssid);
@@ -148,6 +186,21 @@ bool ConfigManager::saveConfig() {
     
     doc["fallback"]["max_failures"] = config.fallback.max_failures;
     doc["fallback"]["timeout_min"] = config.fallback.timeout_min;
+    
+    doc["buffer"]["max_size"] = config.buffer.max_size;
+    doc["buffer"]["sync_threshold_percent"] = config.buffer.sync_threshold_percent;
+    doc["buffer"]["auto_save_interval"] = config.buffer.auto_save_interval;
+    doc["buffer"]["max_item_size"] = config.buffer.max_item_size;
+    
+    doc["compression"]["enabled"] = config.compression.enabled;
+    doc["compression"]["min_size_bytes"] = config.compression.min_size_bytes;
+    
+    doc["storage"]["min_free_kb"] = config.storage.min_free_kb;
+    doc["storage"]["warning_threshold_kb"] = config.storage.warning_threshold_kb;
+    doc["storage"]["aggressive_cleanup_multiplier"] = config.storage.aggressive_cleanup_multiplier;
+    
+    doc["backup"]["enabled"] = config.backup.enabled;
+    doc["backup"]["retention_hours"] = config.backup.retention_hours;
     
     File file = LittleFS.open(CONFIG_FILE, "w");
     if (!file) {
@@ -212,6 +265,25 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig
     if (firebaseConfig["fallback"]["max_failures"]) config.fallback.max_failures = firebaseConfig["fallback"]["max_failures"];
     if (firebaseConfig["fallback"]["timeout_min"]) config.fallback.timeout_min = firebaseConfig["fallback"]["timeout_min"];
     
+    // Buffer config
+    if (firebaseConfig["buffer"]["max_size"]) config.buffer.max_size = firebaseConfig["buffer"]["max_size"];
+    if (firebaseConfig["buffer"]["sync_threshold_percent"]) config.buffer.sync_threshold_percent = firebaseConfig["buffer"]["sync_threshold_percent"];
+    if (firebaseConfig["buffer"]["auto_save_interval"]) config.buffer.auto_save_interval = firebaseConfig["buffer"]["auto_save_interval"];
+    if (firebaseConfig["buffer"]["max_item_size"]) config.buffer.max_item_size = firebaseConfig["buffer"]["max_item_size"];
+    
+    // Compression config
+    if (firebaseConfig["compression"]["enabled"]) config.compression.enabled = firebaseConfig["compression"]["enabled"];
+    if (firebaseConfig["compression"]["min_size_bytes"]) config.compression.min_size_bytes = firebaseConfig["compression"]["min_size_bytes"];
+    
+    // Storage config
+    if (firebaseConfig["storage"]["min_free_kb"]) config.storage.min_free_kb = firebaseConfig["storage"]["min_free_kb"];
+    if (firebaseConfig["storage"]["warning_threshold_kb"]) config.storage.warning_threshold_kb = firebaseConfig["storage"]["warning_threshold_kb"];
+    if (firebaseConfig["storage"]["aggressive_cleanup_multiplier"]) config.storage.aggressive_cleanup_multiplier = firebaseConfig["storage"]["aggressive_cleanup_multiplier"];
+    
+    // Backup config
+    if (firebaseConfig["backup"]["enabled"]) config.backup.enabled = firebaseConfig["backup"]["enabled"];
+    if (firebaseConfig["backup"]["retention_hours"]) config.backup.retention_hours = firebaseConfig["backup"]["retention_hours"];
+    
     saveConfig();
     Serial.println("🔄 Config atualizada e salva localmente");
     Serial.printf("   Sync interval: %d segundos\n", config.intervals.sync_sec);
@@ -220,7 +292,7 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig
     Serial.printf("   Fallback: %d falhas ou %d min\n", config.fallback.max_failures, config.fallback.timeout_min);
 }
 
-String ConfigManager::getHubConfigUrl() const {
+String ConfigManager::getCentralConfigUrl() const {
     return String(config.firebase.database_url) + 
            "/bases/" + config.base_id + "/configs.json?auth=" + 
            config.firebase.api_key;

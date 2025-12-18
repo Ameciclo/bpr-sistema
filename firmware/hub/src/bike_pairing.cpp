@@ -1,4 +1,4 @@
-#include "ble_only.h"
+#include "bike_pairing.h"
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include "constants.h"
@@ -26,7 +26,7 @@ static uint32_t lastHeartbeat = 0;
 static std::map<uint16_t, String> connectedDevices;
 static bool filteringEnabled = false;
 
-// Filtro BLE removido - hub é servidor, não cliente
+// Filtro BLE removido - central é servidor, não cliente
 
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
@@ -95,8 +95,8 @@ class DataCallbacks : public NimBLECharacteristicCallbacks {
                         char dateStr[64];
                         strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
                         
-                        doc["hub_receive_timestamp"] = now;
-                        doc["hub_receive_timestamp_human"] = dateStr;
+                        doc["central_receive_timestamp"] = now;
+                        doc["central_receive_timestamp_human"] = dateStr;
                         
                         // Serializar JSON modificado
                         String modifiedJson;
@@ -167,8 +167,8 @@ private:
     }
 };
 
-void BLEOnly::enter() {
-    Serial.println("🔵 Entering BLE_ONLY mode");
+void BikePairing::enter() {
+    Serial.println("🔵 Entering BIKE_PAIRING mode");
     
     // Initialize bike registry and config manager
     BikeRegistry::init();
@@ -207,7 +207,7 @@ void BLEOnly::enter() {
     ledController.bleReadyPattern();
 }
 
-void BLEOnly::update() {
+void BikePairing::update() {
     uint32_t now = millis();
     
     // Check sync trigger
@@ -216,7 +216,7 @@ void BLEOnly::update() {
         
         if (bufferManager.needsSync()) {
             Serial.println("🔄 Triggering sync");
-            changeState(STATE_WIFI_SYNC);
+            changeState(STATE_CLOUD_SYNC);
             return;
         }
     }
@@ -236,19 +236,19 @@ void BLEOnly::update() {
     }
 }
 
-void BLEOnly::exit() {
+void BikePairing::exit() {
     if (pServer) {
         pServer->getAdvertising()->stop();
         NimBLEDevice::deinit(false);
     }
-    Serial.println("🔚 Exiting BLE_ONLY mode");
+    Serial.println("🔚 Exiting BIKE_PAIRING mode");
 }
 
-uint8_t BLEOnly::getConnectedBikes() {
+uint8_t BikePairing::getConnectedBikes() {
     return connectedBikes;
 }
 
-void BLEOnly::sendHeartbeat() {
+void BikePairing::sendHeartbeat() {
     // This will be sent during next WiFi sync
     bufferManager.addHeartbeat(connectedBikes);
     Serial.printf("💓 Heartbeat: %d bikes connected | Devices map size: %d\n", 

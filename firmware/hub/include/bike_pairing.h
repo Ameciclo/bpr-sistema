@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-class BLEOnly {
+class BikePairing {
 public:
     static void enter();
     static void update();

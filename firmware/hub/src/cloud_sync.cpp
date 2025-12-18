@@ -1,4 +1,4 @@
-#include "wifi_sync.h"
+#include "cloud_sync.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -19,9 +19,9 @@ extern void recordSyncSuccess();
 
 static uint32_t syncStartTime = 0;
 
-SyncResult WiFiSync::enter()
+SyncResult CloudSync::enter()
 {
-    Serial.println("📡 Entering WIFI_SYNC mode");
+    Serial.println("📡 Entering CLOUD_SYNC mode");
     syncStartTime = millis();
     ledController.syncPattern();
 
@@ -36,7 +36,7 @@ SyncResult WiFiSync::enter()
     // WiFi conectado - executar sync
     syncTime();
 
-    bool hubConfigOk = downloadHubConfig();
+    bool centralConfigOk = downloadCentralConfig();
     bool bikeRegistryOk = downloadBikeRegistry();
     bool bikeConfigsOk = downloadBikeConfigs();
 
@@ -45,7 +45,7 @@ SyncResult WiFiSync::enter()
     bool bufferOk = uploadBufferData();
     bool heartbeatOk = uploadHeartbeat();
 
-    bool syncSuccess = hubConfigOk && bikeRegistryOk && bikeConfigsOk && wifiConfigOk && registryOk && bufferOk && heartbeatOk;
+    bool syncSuccess = centralConfigOk && bikeRegistryOk && bikeConfigsOk && wifiConfigOk && registryOk && bufferOk && heartbeatOk;
 
     // Sempre desconectar WiFi
     WiFi.disconnect(true);
@@ -64,15 +64,15 @@ SyncResult WiFiSync::enter()
     return SyncResult::SUCCESS;
 }
 
-void WiFiSync::exit()
+void CloudSync::exit()
 {
     WiFi.disconnect(true);
-    Serial.println("🔚 Exiting WIFI_SYNC mode");
+    Serial.println("🔚 Exiting CLOUD_SYNC mode");
 }
 
-bool WiFiSync::connectWiFi()
+bool CloudSync::connectWiFi()
 {
-    const HubConfig &config = configManager.getConfig();
+    const CentralConfig &config = configManager.getConfig();
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(config.wifi.ssid, config.wifi.password);
@@ -92,7 +92,7 @@ bool WiFiSync::connectWiFi()
     return true;
 }
 
-void WiFiSync::syncTime()
+void CloudSync::syncTime()
 {
     Serial.printf("⏰ Sincronizando horário com %s (UTC%+d)...\n",
                   NTP_SERVER, TIMEZONE_OFFSET / 3600);
@@ -122,13 +122,13 @@ void WiFiSync::syncTime()
     }
 }
 
-bool WiFiSync::downloadHubConfig()
+bool CloudSync::downloadCentralConfig()
 {
     HTTPClient http;
 
-    String url = configManager.getHubConfigUrl();
+    String url = configManager.getCentralConfigUrl();
 
-    Serial.printf("🔄 Downloading hub config from Firebase...\n");
+    Serial.printf("🔄 Downloading central config from Firebase...\n");
     Serial.printf("   Base ID: %s\n", configManager.getConfig().base_id);
 
     http.begin(url);
@@ -137,7 +137,7 @@ bool WiFiSync::downloadHubConfig()
     // Early return se HTTP falhar
     if (httpCode != HTTP_CODE_OK)
     {
-        Serial.printf("🚨 Hub config download failed: HTTP %d\n", httpCode);
+        Serial.printf("🚨 Central config download failed: HTTP %d\n", httpCode);
         http.end();
         return false;
     }
@@ -154,12 +154,12 @@ bool WiFiSync::downloadHubConfig()
     }
 
     // Sucesso
-    Serial.printf("✅ Hub config downloaded successfully\n");
+    Serial.printf("✅ Central config downloaded successfully\n");
     Serial.printf("   Sync interval: %d seconds\n", configManager.getConfig().intervals.sync_sec);
     return true;
 }
 
-bool WiFiSync::downloadBikeConfigs()
+bool CloudSync::downloadBikeConfigs()
 {
     Serial.println("🔄 Downloading bike configs...");
 
@@ -175,7 +175,7 @@ bool WiFiSync::downloadBikeConfigs()
     }
 }
 
-bool WiFiSync::uploadBufferData()
+bool CloudSync::uploadBufferData()
 {
     DynamicJsonDocument doc(4096);
 
@@ -214,7 +214,7 @@ bool WiFiSync::uploadBufferData()
     return true;
 }
 
-bool WiFiSync::uploadHeartbeat()
+bool CloudSync::uploadHeartbeat()
 {
     HTTPClient http;
 
@@ -261,12 +261,12 @@ bool WiFiSync::uploadHeartbeat()
     return success;
 }
 
-bool WiFiSync::uploadWiFiConfig()
+bool CloudSync::uploadWiFiConfig()
 {
     HTTPClient http;
 
     String url = configManager.getWiFiConfigUrl();
-    const HubConfig &config = configManager.getConfig();
+    const CentralConfig &config = configManager.getConfig();
 
     DynamicJsonDocument doc(256);
     doc["ssid"] = config.wifi.ssid;
@@ -293,7 +293,7 @@ bool WiFiSync::uploadWiFiConfig()
     return true;
 }
 
-bool WiFiSync::downloadBikeRegistry()
+bool CloudSync::downloadBikeRegistry()
 {
     HTTPClient http;
 
@@ -337,7 +337,7 @@ bool WiFiSync::downloadBikeRegistry()
     return true;
 }
 
-bool WiFiSync::uploadBikeRegistry()
+bool CloudSync::uploadBikeRegistry()
 {
     DynamicJsonDocument doc(2048);
 

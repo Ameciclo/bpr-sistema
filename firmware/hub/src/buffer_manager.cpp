@@ -1,172 +1,340 @@
 #include "buffer_manager.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <CRC32.h>
 #include "constants.h"
+#include "config_manager.h"
 
-BufferManager::BufferManager() : dataCount(0), lastSync(0), connectedBikes(0) {}
+extern ConfigManager configManager;
 
-void BufferManager::begin() {
-    loadState();
+BufferManager::BufferManager() : dataCount(0), lastSync(0) {}
+
+void BufferManager::begin()
+{
+    cleanupOldBackups();
+    loadBuffer();
+    Serial.printf("📥 DataBuffer initialized: %d items\n", dataCount);
 }
 
-bool BufferManager::addData(const uint8_t* data, size_t length) {
-    if (dataCount >= 50 || length > 256) {
+bool BufferManager::addData(const String& bikeId, const uint8_t *data, size_t length)
+{
+    if (dataCount >= MAX_BUFFER_SIZE || length > 256)
+    {
         return false;
     }
+
+    // Comprimir se configurado
+    uint8_t* finalData = (uint8_t*)data;
+    size_t finalSize = length;
+    bool compressed = false;
     
-    // Store data with timestamp
-    buffer[dataCount].timestamp = millis();
-    buffer[dataCount].size = length;
-    memcpy(buffer[dataCount].data, data, length);
+    // TODO: Implementar compressão quando necessário
+    // if (length > 64) {
+    //     finalData = compress(data, length, &finalSize);
+    //     compressed = true;
+    // }
+
+    // Calcular CRC32
+    CRC32 crc;
+    crc.update(finalData, finalSize);
+    uint32_t checksum = crc.finalize();
+
+    // Armazenar dados
+    buffer[dataCount].bikeId = bikeId;
+    buffer[dataCount].timestamp = time(nullptr);
+    buffer[dataCount].size = finalSize;
+    buffer[dataCount].crc32 = checksum;
+    buffer[dataCount].uploaded = false;
+    buffer[dataCount].confirmed = false;
+    buffer[dataCount].compressed = compressed;
+    memcpy(buffer[dataCount].data, finalData, finalSize);
     dataCount++;
-    
-    Serial.printf("📦 Buffer: %d/%d items\n", dataCount, MAX_BUFFER_SIZE);
-    
-    // Auto-save every 10 items
-    if (dataCount % 10 == 0) {
-        saveState();
+
+    Serial.printf("📦 Data added: %s [%d bytes, CRC:%08X]\n", bikeId.c_str(), finalSize, checksum);
+
+    // Auto-save periodicamente
+    if (dataCount % 5 == 0) {
+        saveBuffer();
     }
-    
+
     return true;
 }
 
-bool BufferManager::needsSync() {
-    return dataCount > 40 || // 80% de 50
-           (dataCount > 0 && (millis() - lastSync) > SYNC_INTERVAL_DEFAULT);
+bool BufferManager::needsSync()
+{
+    int threshold = (MAX_BUFFER_SIZE * 80) / 100; // 80% do buffer
+    uint32_t syncInterval = configManager.getConfig().intervals.sync_sec * 1000; // sec -> ms
+    
+    return dataCount >= threshold || 
+           (dataCount > 0 && (millis() - lastSync) > syncInterval);
 }
 
-bool BufferManager::getDataForUpload(DynamicJsonDocument& doc) {
+bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
+{
     if (dataCount == 0) {
         return false;
     }
-    
+
     doc["timestamp"] = time(nullptr);
-    doc["hub_id"] = "hub_default";
+    doc["base_id"] = configManager.getConfig().base_id;
     doc["data_count"] = dataCount;
-    
+
     JsonArray dataArray = doc.createNestedArray("data");
-    
-    for (int i = 0; i < dataCount; i++) {
+
+    for (int i = 0; i < dataCount; i++)
+    {
         JsonObject item = dataArray.createNestedObject();
+        item["bike_id"] = buffer[i].bikeId;
         item["ts"] = buffer[i].timestamp;
         item["size"] = buffer[i].size;
-        
+        item["crc32"] = String(buffer[i].crc32, HEX);
+        item["compressed"] = buffer[i].compressed;
+
         String hexData = "";
-        for (size_t j = 0; j < buffer[i].size; j++) {
+        for (size_t j = 0; j < buffer[i].size; j++)
+        {
             char hex[3];
             sprintf(hex, "%02X", buffer[i].data[j]);
             hexData += hex;
         }
         item["data"] = hexData;
+        
+        // Marcar como enviado
+        buffer[i].uploaded = true;
     }
-    
+
     return true;
 }
 
-void BufferManager::markAsSent() {
+void BufferManager::markAsConfirmed()
+{
+    // Criar backup antes de limpar
+    createBackup();
+    
+    // Limpar dados confirmados
     dataCount = 0;
     lastSync = millis();
-    saveState();
-    Serial.println("✅ Buffer cleared after successful upload");
+    saveBuffer();
+    
+    Serial.println("✅ Buffer cleared after confirmed upload");
 }
 
-void BufferManager::addHeartbeat(uint8_t bikes) {
-    connectedBikes = bikes;
-}
-
-void BufferManager::addConfigLog(const String& bikeId, bool authorized) {
-    DynamicJsonDocument logDoc(256);
-    logDoc["type"] = "config_log";
-    logDoc["timestamp"] = time(nullptr);
-    logDoc["bike_id"] = bikeId;
-    logDoc["authorized"] = authorized;
-    
-    String logStr;
-    serializeJson(logDoc, logStr);
-    
-    addData((uint8_t*)logStr.c_str(), logStr.length());
-    Serial.printf("📝 Config log added: %s - %s\n", 
-                 bikeId.c_str(), authorized ? "AUTHORIZED" : "DENIED");
-}
-
-uint8_t BufferManager::getConnectedBikes() {
-    return connectedBikes;
-}
-
-void BufferManager::saveState() {
-    DynamicJsonDocument doc(4096);
-    
-    doc["data_count"] = dataCount;
-    doc["last_sync"] = lastSync;
-    doc["connected_bikes"] = connectedBikes;
-    
-    JsonArray dataArray = doc.createNestedArray("buffer");
+void BufferManager::rollbackUpload()
+{
+    // Marcar dados como não enviados em caso de falha
     for (int i = 0; i < dataCount; i++) {
-        JsonObject item = dataArray.createNestedObject();
-        item["ts"] = buffer[i].timestamp;
-        item["size"] = buffer[i].size;
-        
-        String hexData = "";
-        for (size_t j = 0; j < buffer[i].size; j++) {
-            char hex[3];
-            sprintf(hex, "%02X", buffer[i].data[j]);
-            hexData += hex;
-        }
-        item["data"] = hexData;
+        buffer[i].uploaded = false;
     }
-    
-    File file = LittleFS.open(BUFFER_FILE, "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-        Serial.println("💾 Buffer state saved");
-    }
+    Serial.println("⚠️ Upload failed - data marked as pending");
 }
 
-void BufferManager::loadState() {
+void BufferManager::loadBuffer()
+{
     if (!LittleFS.exists(BUFFER_FILE)) {
-        Serial.println("No buffer state file found");
+        dataCount = 0;
+        lastSync = 0;
         return;
     }
-    
+
     File file = LittleFS.open(BUFFER_FILE, "r");
-    if (!file) {
-        Serial.println("Failed to open buffer state file");
-        return;
-    }
-    
-    DynamicJsonDocument doc(4096);
+    if (!file) return;
+
+    DynamicJsonDocument doc(8192);
     if (deserializeJson(doc, file) != DeserializationError::Ok) {
         file.close();
-        Serial.println("Failed to parse buffer state");
         return;
     }
     file.close();
-    
+
     dataCount = doc["data_count"] | 0;
     lastSync = doc["last_sync"] | 0;
-    connectedBikes = doc["connected_bikes"] | 0;
-    
+
     JsonArray dataArray = doc["buffer"];
     int loadedCount = 0;
-    
+
     for (JsonObject item : dataArray) {
-        if (loadedCount >= 50) break;
-        
+        if (loadedCount >= MAX_BUFFER_SIZE) break;
+
+        buffer[loadedCount].bikeId = item["bike_id"] | "unknown";
         buffer[loadedCount].timestamp = item["ts"];
         buffer[loadedCount].size = item["size"];
-        
+        buffer[loadedCount].crc32 = strtoul(item["crc32"] | "0", NULL, 16);
+        buffer[loadedCount].uploaded = item["uploaded"] | false;
+        buffer[loadedCount].confirmed = item["confirmed"] | false;
+        buffer[loadedCount].compressed = item["compressed"] | false;
+
         String hexData = item["data"];
         size_t dataSize = hexData.length() / 2;
-        
+
         for (size_t i = 0; i < dataSize && i < 256; i++) {
             String byteString = hexData.substring(i * 2, i * 2 + 2);
             buffer[loadedCount].data[i] = strtol(byteString.c_str(), NULL, 16);
         }
-        
+
         loadedCount++;
     }
-    
+
     dataCount = loadedCount;
-    Serial.printf("📥 Buffer state loaded: %d items\n", dataCount);
+}
+
+void BufferManager::saveBuffer()
+{
+    DynamicJsonDocument doc(8192);
+
+    doc["data_count"] = dataCount;
+    doc["last_sync"] = lastSync;
+
+    JsonArray dataArray = doc.createNestedArray("buffer");
+    for (int i = 0; i < dataCount; i++) {
+        JsonObject item = dataArray.createNestedObject();
+        item["bike_id"] = buffer[i].bikeId;
+        item["ts"] = buffer[i].timestamp;
+        item["size"] = buffer[i].size;
+        item["crc32"] = String(buffer[i].crc32, HEX);
+        item["uploaded"] = buffer[i].uploaded;
+        item["confirmed"] = buffer[i].confirmed;
+        item["compressed"] = buffer[i].compressed;
+
+        String hexData = "";
+        for (size_t j = 0; j < buffer[i].size; j++) {
+            char hex[3];
+            sprintf(hex, "%02X", buffer[i].data[j]);
+            hexData += hex;
+        }
+        item["data"] = hexData;
+    }
+
+    File file = LittleFS.open(BUFFER_FILE, "w");
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    }
+}
+
+void BufferManager::createBackup()
+{
+    if (dataCount == 0) return;
+
+    char backupFile[64];
+    sprintf(backupFile, "/backup_%lu.json", time(nullptr));
+
+    File source = LittleFS.open(BUFFER_FILE, "r");
+    File backup = LittleFS.open(backupFile, "w");
+    
+    if (source && backup) {
+        while (source.available()) {
+            backup.write(source.read());
+        }
+        Serial.printf("💾 Backup created: %s\n", backupFile);
+    }
+    
+    if (source) source.close();
+    if (backup) backup.close();
+}
+
+void BufferManager::cleanupOldBackups()
+{
+    uint32_t retentionHours = 24; // 24 horas padrão
+    uint32_t cutoffTime = time(nullptr) - (retentionHours * 3600);
+    
+    // Se pouco espaço, ser mais agressivo na limpeza
+    if (!hasEnoughSpace()) {
+        Serial.println("⚠️ Low storage - aggressive cleanup mode");
+        cutoffTime = time(nullptr) - (retentionHours * 1800); // Metade do tempo
+    }
+    
+    File root = LittleFS.open("/");
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.startsWith("backup_")) {
+            // Extrair timestamp do nome do arquivo
+            int underscorePos = fileName.indexOf('_');
+            int dotPos = fileName.indexOf('.');
+            if (underscorePos > 0 && dotPos > underscorePos) {
+                String timestampStr = fileName.substring(underscorePos + 1, dotPos);
+                uint32_t fileTime = timestampStr.toInt();
+                
+                if (fileTime < cutoffTime) {
+                    LittleFS.remove("/" + fileName);
+                    Serial.printf("🗑️ Old backup removed: %s\n", fileName.c_str());
+                }
+            }
+        }
+        file = root.openNextFile();
+    }
+}
+
+int BufferManager::getDataCount()
+{
+    return dataCount;
+}
+
+int BufferManager::getPendingCount()
+{
+    int pending = 0;
+    for (int i = 0; i < dataCount; i++) {
+        if (!buffer[i].uploaded) pending++;
+    }
+    return pending;
+}
+
+void BufferManager::printStorageInfo()
+{
+    size_t totalBytes = LittleFS.totalBytes();
+    size_t usedBytes = LittleFS.usedBytes();
+    size_t freeBytes = totalBytes - usedBytes;
+    
+    Serial.printf("💾 LittleFS Storage:\n");
+    Serial.printf("   Total: %d KB\n", totalBytes / 1024);
+    Serial.printf("   Used:  %d KB (%.1f%%)\n", usedBytes / 1024, (float)usedBytes / totalBytes * 100);
+    Serial.printf("   Free:  %d KB\n", freeBytes / 1024);
+    
+    // Listar arquivos principais
+    Serial.printf("📄 Main Files:\n");
+    printFileSize(BUFFER_FILE);
+    printFileSize(BIKE_REGISTRY_FILE);
+    printFileSize("/central_config.json");
+    
+    // Contar backups
+    int backupCount = 0;
+    size_t backupSize = 0;
+    File root = LittleFS.open("/");
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.startsWith("backup_")) {
+            backupCount++;
+            backupSize += file.size();
+        }
+        file = root.openNextFile();
+    }
+    
+    Serial.printf("💾 Backups: %d files, %d KB\n", backupCount, backupSize / 1024);
+    
+    // Alerta se pouco espaço
+    if (freeBytes < 10240) { // < 10KB
+        Serial.printf("⚠️ LOW STORAGE WARNING: Only %d KB free!\n", freeBytes / 1024);
+    }
+}
+
+void BufferManager::printFileSize(const String& filePath)
+{
+    if (LittleFS.exists(filePath)) {
+        File file = LittleFS.open(filePath, "r");
+        if (file) {
+            Serial.printf("   %s: %d bytes\n", filePath.c_str(), file.size());
+            file.close();
+        }
+    } else {
+        Serial.printf("   %s: not found\n", filePath.c_str());
+    }
+}
+
+bool BufferManager::hasEnoughSpace()
+{
+    size_t freeBytes = LittleFS.totalBytes() - LittleFS.usedBytes();
+    return freeBytes > 20480; // Mínimo 20KB livres
 }
