@@ -1,256 +1,287 @@
 #include "bike_pairing.h"
-#include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include "constants.h"
-#include "config_manager.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
 #include "bike_registry.h"
 #include "bike_config_manager.h"
+#include "ble_server.h"
 
-extern ConfigManager configManager;
 extern BufferManager bufferManager;
 extern LEDController ledController;
 extern SystemState currentState;
-extern void recordSyncFailure();
-extern void recordSyncSuccess();
-extern void changeState(SystemState newState);
 
-static NimBLEServer* pServer = nullptr;
-static NimBLEService* pService = nullptr;
-static NimBLECharacteristic* pDataChar = nullptr;
-static NimBLECharacteristic* pConfigChar = nullptr;
-static uint8_t connectedBikes = 0;
-static uint32_t lastSyncCheck = 0;
 static uint32_t lastHeartbeat = 0;
-static std::map<uint16_t, String> connectedDevices;
-static bool filteringEnabled = false;
+static PairingStatus currentStatus = PAIRING_IDLE;
+static uint32_t lastActivity = 0;
+static uint32_t busyTimeout = 10000; // 10 segundos para considerar idle
 
-// Filtro BLE removido - central é servidor, não cliente
-
-class ServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
-        // Obter endereço do dispositivo conectado
-        uint16_t conn_handle = desc->conn_handle;
-        NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
-        
-        connectedBikes++;
-        Serial.printf("🔵 BLE CONNECT: %s | Handle: %d | Total: %d\n", 
-                     addr.toString().c_str(), conn_handle, connectedBikes);
-        ledController.bikeArrivedPattern();
-        NimBLEDevice::startAdvertising();
-        
-        // Armazenar handle para push de config posterior
-        connectedDevices[conn_handle] = "";
-        Serial.printf("📝 Stored connection handle %d\n", conn_handle);
-    }
-    
-    void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
-        if (connectedBikes > 0) connectedBikes--;
-        
-        // Remover do mapa de conexões
-        uint16_t conn_handle = desc->conn_handle;
-        if (connectedDevices.find(conn_handle) != connectedDevices.end()) {
-            String bikeId = connectedDevices[conn_handle];
-            connectedDevices.erase(conn_handle);
-            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), connectedBikes);
-        } else {
-            Serial.printf("🔵 Device disconnected (%d total)\n", connectedBikes);
-        }
-        
-        ledController.bikeLeftPattern();
-        NimBLEDevice::startAdvertising();
-    }
-};
-
-class DataCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* pChar) {
-        std::string value = pChar->getValue();
-        if (value.length() > 0) {
-            // Tentar extrair bike_id dos dados JSON
-            DynamicJsonDocument doc(512);
-            DeserializationError error = deserializeJson(doc, value.c_str());
-            
-            if (!error && doc["bike_id"]) {
-                String bikeId = doc["bike_id"];
-                Serial.printf("🔍 Processing data from bike: %s\n", bikeId.c_str());
-                
-                // Validar se bike pode se conectar (não blocked)
-                if (BikeRegistry::canConnect(bikeId)) {
-                    Serial.printf("✅ Bike %s can connect\n", bikeId.c_str());
-                    // Validar se pode enviar dados (só allowed)
-                    if (BikeRegistry::isAllowed(bikeId)) {
-                        Serial.printf("📥 Data from %s: %s\n", bikeId.c_str(), value.c_str());
-                        
-                        // Atualizar heartbeat se tiver dados de bateria
-                        if (doc["battery"] && doc["heap"]) {
-                            BikeRegistry::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);
-                        }
-                        
-                        // Adicionar timestamp de recebimento aos dados
-                        time_t now = time(nullptr);
-                        struct tm timeinfo;
-                        getLocalTime(&timeinfo);
-                        
-                        char dateStr[64];
-                        strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-                        
-                        doc["central_receive_timestamp"] = now;
-                        doc["central_receive_timestamp_human"] = dateStr;
-                        
-                        // Serializar JSON modificado
-                        String modifiedJson;
-                        serializeJson(doc, modifiedJson);
-                        
-                        bufferManager.addData((uint8_t*)modifiedJson.c_str(), modifiedJson.length());
-                        
-                        // TODO: Verificar se tem config nova para enviar
-                        // if (BikeConfigManager::hasConfigUpdate(bikeId)) {
-                        //     BikeConfigManager::pushConfigToBike(bikeId, pConfigChar);
-                        // }
-                        
-                        // Armazenar bike_id para esta conexão
-                        for (auto& pair : connectedDevices) {
-                            if (pair.second.isEmpty()) {
-                                pair.second = bikeId;
-                                break;
-                            }
-                        }
-                    } else {
-                        // Bike pending - só registrar visita, não processar dados
-                        BikeRegistry::recordPendingVisit(bikeId);
-                        Serial.printf("📝 Pending bike %s visited - data ignored (awaiting approval)\n", bikeId.c_str());
-                    }
-                } else {
-                    Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
-                }
-            } else {
-                Serial.printf("⚠️ Data without bike_id: %s\n", value.c_str());
-            }
-        }
-    }
-};
-
-class ConfigCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* pChar) {
-        std::string value = pChar->getValue();
-        if (value.length() > 0) {
-            handleConfigRequest(String(value.c_str()));
-        }
-    }
-    
-    void onRead(NimBLECharacteristic* pChar) {
-        // Config responses are sent via onWrite, not onRead
-    }
-    
-private:
-    void handleConfigRequest(const String& request) {
-        DynamicJsonDocument doc(256);
-        DeserializationError error = deserializeJson(doc, request);
-        
-        if (error) {
-            Serial.printf("❌ Config request parse error: %s\n", error.c_str());
-            return;
-        }
-        
-        String type = doc["type"] | "";
-        String bikeId = doc["bike_id"] | "";
-        
-        if (type == "config_request" && bikeId.length() > 0) {
-            // TODO: Implementar resposta de config
-            Serial.printf("📝 Config request from %s (not implemented)\n", bikeId.c_str());
-        } else if (type == "config_received") {
-            String status = doc["status"] | "";
-            Serial.printf("📋 Config confirmation from %s: %s\n", 
-                         bikeId.c_str(), status.c_str());
-        }
-    }
-};
-
-void BikePairing::enter() {
+void BikePairing::enter()
+{
     Serial.println("🔵 Entering BIKE_PAIRING mode");
-    
-    // Initialize bike registry and config manager
+
+    // Initialize services
     BikeRegistry::init();
     BikeConfigManager::init();
-    Serial.println("🔍 BLE server mode - accepting all connections");
     
-    NimBLEDevice::init(BLE_DEVICE_NAME);
-    NimBLEDevice::setPower(ESP_PWR_LVL_P3);
-    pServer = NimBLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks());
-    
-    pService = pServer->createService(BLE_SERVICE_UUID);
-    
-    // Data characteristic
-    pDataChar = pService->createCharacteristic(
-        BLE_CHAR_DATA_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
-    );
-    pDataChar->setCallbacks(new DataCallbacks());
-    
-    // Config characteristic
-    pConfigChar = pService->createCharacteristic(
-        BLE_CHAR_CONFIG_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY
-    );
-    pConfigChar->setCallbacks(new ConfigCallbacks());
-    
-    pService->start();
-    
-    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    NimBLEDevice::startAdvertising();
-    
-    Serial.println("📡 BLE Server started with config support");
-    ledController.bleReadyPattern();
-}
-
-void BikePairing::update() {
-    uint32_t now = millis();
-    
-    // Check sync trigger
-    if (now - lastSyncCheck > configManager.getConfig().sync_interval_ms()) {
-        lastSyncCheck = now;
-        
-        if (bufferManager.needsSync()) {
-            Serial.println("🔄 Triggering sync");
-            changeState(STATE_CLOUD_SYNC);
-            return;
-        }
+    // Start BLE server
+    if (!BLEServer::start()) {
+        Serial.println("❌ Failed to start BLE Server");
+        return;
     }
     
-    // Heartbeat
-    if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
+    Serial.println("📡 BLE Server started successfully");
+    ledController.bikePairingPattern();
+}
+
+void BikePairing::update()
+{
+    uint32_t now = millis();
+
+    // Heartbeat local (só para debug de bikes conectadas)
+    if (now - lastHeartbeat > HEARTBEAT_INTERVAL)
+    {
         lastHeartbeat = now;
         sendHeartbeat();
     }
-    
-    // Update LED status
+
+    // Update LED status (feedback visual de bikes conectadas)
     static uint32_t lastLedUpdate = 0;
-    uint32_t ledInterval = configManager.getConfig().intervals.led_count_sec * 1000;
-    if (now - lastLedUpdate > ledInterval) {
+    uint32_t ledInterval = 30000; // 30 segundos fixo
+    if (now - lastLedUpdate > ledInterval)
+    {
         lastLedUpdate = now;
-        ledController.countPattern(connectedBikes);
+        ledController.countPattern(BLEServer::getConnectedBikes());
     }
 }
 
-void BikePairing::exit() {
-    if (pServer) {
-        pServer->getAdvertising()->stop();
-        NimBLEDevice::deinit(false);
-    }
+void BikePairing::exit()
+{
+    BLEServer::stop();
     Serial.println("🔚 Exiting BIKE_PAIRING mode");
 }
 
-uint8_t BikePairing::getConnectedBikes() {
-    return connectedBikes;
+uint8_t BikePairing::getConnectedBikes()
+{
+    return BLEServer::getConnectedBikes();
 }
 
-void BikePairing::sendHeartbeat() {
-    // This will be sent during next WiFi sync
-    bufferManager.addHeartbeat(connectedBikes);
-    Serial.printf("💓 Heartbeat: %d bikes connected | Devices map size: %d\n", 
-                 connectedBikes, connectedDevices.size());
+void BikePairing::sendHeartbeat()
+{
+    DynamicJsonDocument heartbeat(1024);
+    heartbeat["timestamp"] = millis() / 1000;
+    heartbeat["uptime_sec"] = millis() / 1000;
+    heartbeat["heap_free"] = ESP.getFreeHeap();
+    
+    // Array detalhado de cada bike
+    JsonArray bikes = heartbeat.createNestedArray("bikes");
+    
+    // Iterar por todas as bikes conhecidas
+    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
+    
+    for (const String& bikeId : knownBikes) {
+        JsonObject bike = bikes.createNestedObject();
+        bike["id"] = bikeId;
+        bike["last_seen"] = BikeRegistry::getLastSeen(bikeId);
+        bike["status"] = calculateBikeStatus(bikeId);
+        bike["sleep_interval_sec"] = BikeConfigManager::getSleepInterval(bikeId);
+        bike["next_expected_contact"] = calculateNextContact(bikeId);
+        bike["battery_last"] = BikeRegistry::getLastBattery(bikeId);
+        bike["is_overdue"] = isBikeOverdue(bikeId);
+    }
+    
+    // Resumo geral
+    heartbeat["total_bikes"] = knownBikes.size();
+    heartbeat["bikes_connected_now"] = BLEServer::getConnectedBikes();
+    heartbeat["bikes_sleeping"] = countSleepingBikes();
+    heartbeat["bikes_overdue"] = countOverdueBikes();
+    
+    // Salvar no LittleFS
+    bufferManager.addHeartbeat(heartbeat.as<String>());
+    
+    Serial.printf("💓 Heartbeat: %d total, %d sleeping, %d overdue\n", 
+                  (int)knownBikes.size(), countSleepingBikes(), countOverdueBikes());
+}
+
+PairingStatus BikePairing::getStatus()
+{
+    // Se passou do timeout, voltar para IDLE
+    if (currentStatus != PAIRING_IDLE && (millis() - lastActivity) > busyTimeout) {
+        currentStatus = PAIRING_IDLE;
+    }
+    return currentStatus;
+}
+
+bool BikePairing::isSafeToExit()
+{
+    // Seguro sair se:
+    // 1. Status é IDLE
+    // 2. OU se passou muito tempo sem atividade (timeout)
+    return (getStatus() == PAIRING_IDLE) || (millis() - lastActivity) > busyTimeout;
+}
+
+// Implementação dos callbacks do BLE Server
+void BLEServer::onBikeConnected(const String& bikeId) {
+    ledController.bikeArrivedPattern();
+    Serial.printf("🚲 Bike %s connected\n", bikeId.c_str());
+    
+    // Verificar se bike pode conectar (não blocked)
+    if (!BikeRegistry::canConnect(bikeId)) {
+        Serial.printf("❌ Blocked bike %s - disconnecting\n", bikeId.c_str());
+        BLEServer::forceDisconnectBike(bikeId);
+        return;
+    }
+    
+    // Se tem config pendente, enviar imediatamente
+    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+        currentStatus = PAIRING_SENDING_CONFIG;
+        lastActivity = millis();
+        
+        String config = BikeConfigManager::getConfigForBike(bikeId);
+        BLEServer::pushConfigToBike(bikeId, config);
+        BikeConfigManager::markConfigSent(bikeId);
+        
+        Serial.printf("⚙️ Config sent to %s on connection\n", bikeId.c_str());
+    } else {
+        Serial.printf("📝 No config update for %s - skipping\n", bikeId.c_str());
+    }
+}
+
+void BLEServer::onBikeDisconnected(const String& bikeId) {
+    ledController.bikeLeftPattern();
+    if (!bikeId.isEmpty()) {
+        Serial.printf("🚲 Bike %s disconnected - LED pattern triggered\n", bikeId.c_str());
+    } else {
+        Serial.printf("🚲 Device disconnected - LED pattern triggered\n");
+    }
+}
+
+void BLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData) {
+    // Marcar atividade de recepção de dados
+    currentStatus = PAIRING_RECEIVING_DATA;
+    lastActivity = millis();
+    
+    Serial.printf("🔍 Processing data from bike: %s\n", bikeId.c_str());
+    
+    // Validar se bike pode se conectar (não blocked)
+    if (!BikeRegistry::canConnect(bikeId)) {
+        Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
+        currentStatus = PAIRING_IDLE; // Rejeição é rápida
+        return;
+    }
+    
+    Serial.printf("✅ Bike %s can connect\n", bikeId.c_str());
+    
+    // Validar se pode enviar dados (só allowed)
+    if (!BikeRegistry::isAllowed(bikeId)) {
+        BikeRegistry::recordPendingVisit(bikeId);
+        Serial.printf("📝 Pending bike %s visited - data ignored (awaiting approval)\n", bikeId.c_str());
+        currentStatus = PAIRING_IDLE; // Pending é rápido
+        return;
+    }
+    
+    Serial.printf("📥 Data from %s\n", bikeId.c_str());
+    
+    // Parse para atualizar heartbeat
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, jsonData) == DeserializationError::Ok) {
+        if (doc["battery"] && doc["heap"]) {
+            BikeRegistry::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);
+        }
+    }
+    
+    // Processar dados via BufferManager
+    bufferManager.addBikeData(bikeId, jsonData);
+    
+    // Verificar se tem config nova para enviar
+    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+        currentStatus = PAIRING_SENDING_CONFIG;
+        lastActivity = millis();
+        
+        String config = BikeConfigManager::getConfigForBike(bikeId);
+        BLEServer::pushConfigToBike(bikeId, config);
+        BikeConfigManager::markConfigSent(bikeId);
+        
+        Serial.printf("⚙️ Config sent to %s - marked as busy\n", bikeId.c_str());
+    } else {
+        // Processamento completo, voltar para idle
+        currentStatus = PAIRING_IDLE;
+    }
+}
+
+void BLEServer::onConfigRequest(const String& bikeId, const String& request) {
+    // Marcar atividade de configuração
+    currentStatus = PAIRING_SENDING_CONFIG;
+    lastActivity = millis();
+    
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, request);
+    
+    if (error) {
+        Serial.printf("❌ Config request parse error: %s\n", error.c_str());
+        currentStatus = PAIRING_IDLE;
+        return;
+    }
+    
+    String type = doc["type"] | "";
+    
+    if (type == "config_request") {
+        Serial.printf("📝 Config request from %s\n", bikeId.c_str());
+        
+        if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+            String config = BikeConfigManager::getConfigForBike(bikeId);
+            BLEServer::pushConfigToBike(bikeId, config);
+            BikeConfigManager::markConfigSent(bikeId);
+            Serial.printf("⚙️ Config sent to %s\n", bikeId.c_str());
+        } else {
+            Serial.printf("📝 No config update for %s\n", bikeId.c_str());
+            currentStatus = PAIRING_IDLE; // Sem config = idle
+        }
+    } else if (type == "config_received") {
+        String status = doc["status"] | "";
+        Serial.printf("📋 Config confirmation from %s: %s\n", bikeId.c_str(), status.c_str());
+        currentStatus = PAIRING_IDLE; // Confirmação recebida = idle
+    }
+}
+
+// Funções auxiliares para heartbeat inteligente
+String BikePairing::calculateBikeStatus(const String& bikeId) {
+    uint32_t lastSeen = BikeRegistry::getLastSeen(bikeId);
+    uint32_t sleepInterval = BikeConfigManager::getSleepInterval(bikeId);
+    uint32_t now = millis() / 1000;
+    
+    if (BLEServer::isBikeConnected(bikeId)) return "connected";
+    if ((now - lastSeen) < sleepInterval) return "sleeping";
+    if ((now - lastSeen) < (sleepInterval * 1.5)) return "expected_soon";
+    return "overdue";
+}
+
+uint32_t BikePairing::calculateNextContact(const String& bikeId) {
+    uint32_t lastSeen = BikeRegistry::getLastSeen(bikeId);
+    uint32_t sleepInterval = BikeConfigManager::getSleepInterval(bikeId);
+    return lastSeen + sleepInterval;
+}
+
+bool BikePairing::isBikeOverdue(const String& bikeId) {
+    uint32_t nextExpected = calculateNextContact(bikeId);
+    uint32_t now = millis() / 1000;
+    return (now > nextExpected + 300); // 5min de tolerância
+}
+
+int BikePairing::countSleepingBikes() {
+    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
+    int count = 0;
+    for (const String& bikeId : knownBikes) {
+        if (calculateBikeStatus(bikeId) == "sleeping") count++;
+    }
+    return count;
+}
+
+int BikePairing::countOverdueBikes() {
+    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
+    int count = 0;
+    for (const String& bikeId : knownBikes) {
+        if (isBikeOverdue(bikeId)) count++;
+    }
+    return count;
 }

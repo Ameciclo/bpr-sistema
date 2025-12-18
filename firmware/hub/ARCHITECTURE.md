@@ -22,12 +22,12 @@ firmware/hub/
 │   │   ├── 📝 Form Handler       # Processamento de dados
 │   │   └── 🔄 WiFi Test          # Teste de conectividade
 │   │
-│   ├── 🚲 BIKE_PAIRING           # bike_pairing.cpp
-│   │   ├── 🔵 BLE Server         # Servidor BLE
-│   │   ├── 📥 Data Reception     # Recebimento de dados
-│   │   ├── 📤 Config Push        # Envio de configurações
-│   │   ├── 🔍 bike_registry.h    # Validação de bikes
-│   │   └── ⚙️ bike_config_manager.h # Configs pendentes
+│   ├── 🚲 BIKE_PAIRING           # bike_pairing.cpp (ORQUESTRADOR)
+│   │   ├── 🔵 ble_server.cpp     # Comunicação BLE pura
+│   │   ├── 📥 Data Processing    # Via buffer_manager.addBikeData()
+│   │   ├── 📤 Config Management  # Via bike_config_manager
+│   │   ├── 🔍 Bike Validation    # Via bike_registry
+│   │   └── 💡 LED Feedback       # Via led_controller
 │   │
 │   └── ☁️ CLOUD_SYNC             # cloud_sync.cpp
 │       ├── 📶 WiFi Connection    # Conexão WiFi
@@ -42,11 +42,19 @@ firmware/hub/
 │   │   ├── 🔥 Firebase URLs      # Construção de URLs
 │   │   └── ✅ Validation         # Validação de configs
 │   │
-│   ├── 💾 buffer_manager.cpp     # Gerenciamento de dados
-│   │   ├── 📦 Data Storage       # Armazenamento local
+│   ├── 💾 buffer_manager.cpp     # Gerenciamento + processamento de dados
+│   │   ├── 📦 addBikeData()      # Processa JSON + timestamps
+│   │   ├── 📦 addData()          # Armazenamento local
 │   │   ├── 🗜️ Compression        # Compressão (TODO)
 │   │   ├── 🔒 CRC32             # Integridade
 │   │   └── 💾 Backup System     # Sistema de backup
+│   │
+│   ├── 🔵 ble_server.cpp         # Comunicação BLE pura
+│   │   ├── 📡 BLE Advertising    # Descoberta de dispositivos
+│   │   ├── 🔗 Connection Mgmt    # Gerenciamento de conexões
+│   │   ├── 📥 Data Callbacks     # Recepção de dados
+│   │   ├── ⚙️ Config Callbacks   # Troca de configurações
+│   │   └── 📤 Push Notifications # Envio de configs
 │   │
 │   ├── 🚲 bike_registry.cpp      # Registro de bicicletas
 │   │   ├── ✅ Permissions        # allowed/pending/blocked
@@ -101,14 +109,21 @@ config_ap.cpp
 └── WebServer          # Interface de configuração
 ```
 
-### 🚲 BIKE_PAIRING (Estado)
+### 🚲 BIKE_PAIRING (Estado Orquestrador)
 ```cpp
 bike_pairing.cpp
+├── ble_server.h            # Comunicação BLE delegada
 ├── bike_registry.h         # Validação de permissões
 ├── bike_config_manager.h   # Configs pendentes
-├── buffer_manager.h        # Armazenar dados recebidos
-├── led_controller.h        # Indicação de conexões
-└── NimBLE                 # Comunicação BLE
+├── buffer_manager.h        # Processamento + armazenamento
+└── led_controller.h        # Indicação de conexões
+
+🎯 Funcionalidades Principais:
+├── 📱 Config na Conexão     # Envia config imediatamente se pendente
+├── 💓 Heartbeat Inteligente # Status baseado em sleep intervals
+├── 🛡️ Validação de Bikes   # Sistema allowed/pending/blocked
+├── 📊 Status Monitoring     # connected/sleeping/expected_soon/overdue
+└── 🔄 Event-Driven         # Sem timers desnecessários
 ```
 
 ### ☁️ CLOUD_SYNC (Estado)
@@ -133,14 +148,22 @@ cloud_sync.cpp
 
 ### 🔧 Nível 3: Serviços
 - **config_manager.cpp** - Persistência de configurações
-- **buffer_manager.cpp** - Gerenciamento de dados
+- **buffer_manager.cpp** - Processamento + gerenciamento de dados
+- **ble_server.cpp** - Comunicação BLE pura
 - **bike_registry.cpp** - Registro de bikes
+- **bike_config_manager.cpp** - Configurações de bikes
 - **led_controller.cpp** - Feedback visual
 
 ### 📋 Nível 4: Utilitários
 - **self_check.cpp** - Verificações
 - **sync_monitor.cpp** - Monitoramento
 - **constants.h** - Definições globais
+
+### 🎯 **Próximos Passos:**
+- [ ] Implementar métodos do `BikeConfigManager`
+- [ ] Adicionar testes unitários para cada módulo
+- [ ] Documentar APIs dos serviços
+- [ ] Otimizar performance do BLE Server
 
 ## 🔗 Regras de Dependência
 
@@ -158,3 +181,81 @@ cloud_sync.cpp
 - Apenas via **main.cpp** usando `changeState()`
 - Estados são **isolados** e **independentes**
 - Dados compartilhados via **Serviços globais**
+
+## 🔄 Refatoração Implementada
+
+### ✅ **Antes vs Depois:**
+
+#### ❌ **Antes (bike_pairing.cpp monolítico - 250+ linhas):**
+```cpp
+bike_pairing.cpp
+├── 150 linhas de código BLE (ServerCallbacks, DataCallbacks, etc.)
+├── 50 linhas de processamento JSON
+├── 30 linhas de validação
+├── 20 linhas de orquestração
+└── Responsabilidades misturadas
+```
+
+#### ✅ **Depois (separado e focado):**
+```cpp
+bike_pairing.cpp (90 linhas - ORQUESTRADOR)
+├── Coordena serviços
+├── Implementa callbacks de negócio
+├── Config imediata na conexão
+├── Heartbeat inteligente com sleep tracking
+└── Event-driven (sem timers desnecessários)
+
+ble_server.cpp (150 linhas - BLE PURO)
+├── Gerencia conexões BLE
+├── Callbacks de protocolo
+├── Advertising e descoberta
+└── Push de configurações
+
+buffer_manager.cpp (MELHORADO)
+├── addBikeData() - processa JSON + timestamps
+├── addData() - armazenamento original
+├── Integridade e backup
+└── Compressão (TODO)
+```
+
+### 🎯 **Benefícios Alcançados:**
+
+#### 📦 **Separação de Responsabilidades**
+- **BLE Server**: Só comunicação, sem lógica de negócio
+- **Bike Pairing**: Só orquestração, sem detalhes técnicos
+- **Buffer Manager**: Processamento + armazenamento unificado
+
+#### 🧪 **Testabilidade**
+- Cada módulo pode ser testado isoladamente
+- Mocks mais fáceis de criar
+- Bugs isolados por responsabilidade
+
+#### 🔄 **Reutilização**
+- `ble_server.cpp` pode ser usado em outros projetos
+- `buffer_manager.addBikeData()` pode processar dados de outras fontes
+- Módulos independentes de contexto
+
+#### 📚 **Manutenibilidade**
+- Arquivos menores e focados
+- Mudanças de protocolo BLE isoladas
+- Lógica de negócio separada da tecnologia
+
+### 🔗 **Fluxo de Dados Refatorado:**
+
+```mermaid
+sequenceDiagram
+    participant B as 🚲 Bike
+    participant BLE as 🔵 BLE Server
+    participant BP as 🚲 Bike Pairing
+    participant BM as 💾 Buffer Manager
+    participant BR as 📋 Bike Registry
+    
+    B->>BLE: JSON data via BLE
+    BLE->>BP: onBikeDataReceived(bikeId, json)
+    BP->>BR: canConnect(bikeId)?
+    BR->>BP: ✅ allowed
+    BP->>BM: addBikeData(bikeId, json)
+    BM->>BM: Add timestamps + CRC32
+    BM->>BM: Store in buffer
+    BP->>BLE: pushConfigToBike() if needed
+```

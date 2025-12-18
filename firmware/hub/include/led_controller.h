@@ -22,7 +22,7 @@ public:
     void setPattern(LEDPattern pattern);
     void bootPattern();
     void configPattern();
-    void bleReadyPattern();
+    void bikePairingPattern();
     void syncPattern();
     void errorPattern();
     void bikeArrivedPattern();

@@ -20,7 +20,9 @@ public:
     
     // Dados coletados
     bool addData(const String& bikeId, const uint8_t* data, size_t length);
+    bool addBikeData(const String& bikeId, const String& jsonData);
     bool needsSync();
+    bool isCriticallyFull();
     bool getDataForUpload(DynamicJsonDocument& doc);
     void markAsConfirmed();
     void rollbackUpload();

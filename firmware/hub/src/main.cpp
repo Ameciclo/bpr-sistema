@@ -24,12 +24,15 @@ bool firstSync = false;
 unsigned long lastHeartbeat = 0;
 bool isInitialConfigMode = false;
 
+// Controle de sync
+static uint32_t lastSyncCheck = 0;
+
 // Declarações de funções
 void printStatus();
-void sendHeartbeat();
 void changeState(SystemState newState);
 void handleSyncResult(SyncResult result);
 const char *getStateName(SystemState state);
+void checkPeriodicSync();
 
 void setup()
 {
@@ -83,6 +86,17 @@ void loop()
     // Atualizar módulos
     ledController.update();
 
+    // Verificar se precisa sync urgente (buffer crítico)
+    if (currentState == STATE_BIKE_PAIRING && bufferManager.isCriticallyFull())
+    {
+        Serial.println("🚨 Buffer crítico - sync urgente!");
+        changeState(STATE_CLOUD_SYNC);
+        return;
+    }
+
+    // Verificar timer de sync periódico
+    checkPeriodicSync();
+
     // Update do estado atual
     switch (currentState)
     {
@@ -95,7 +109,8 @@ void loop()
     case STATE_CLOUD_SYNC:
         CloudSync::update();
         // Check for timeout
-        if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000) {
+        if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000)
+        {
             Serial.println("⏰ Cloud sync timeout");
             handleSyncResult(SyncResult::FAILURE);
         }
@@ -117,20 +132,6 @@ void loop()
     {
         printStatus();
         lastStatusPrint = millis();
-    }
-
-    // DEBUG
-    sendHeartbeat();
-}
-
-void sendHeartbeat()
-{
-    if (millis() - lastHeartbeat > 60000)
-    { // 1 min
-        int bikes = (currentState == STATE_BIKE_PAIRING) ? BikePairing::getConnectedBikes() : 0;
-        Serial.printf("💓 Heartbeat - Bikes: %d, Heap: %d\n",
-                      bikes, ESP.getFreeHeap());
-        lastHeartbeat = millis();
     }
 }
 
@@ -171,11 +172,11 @@ void changeState(SystemState newState)
         BikePairing::enter();
         break;
     case STATE_CLOUD_SYNC:
-        {
-            SyncResult result = CloudSync::enter();
-            handleSyncResult(result);
-        }
-        break;
+    {
+        SyncResult result = CloudSync::enter();
+        handleSyncResult(result);
+    }
+    break;
     default:
         break;
     }
@@ -241,26 +242,54 @@ void printStatus()
     Serial.println("==================================================");
 }
 
-void handleSyncResult(SyncResult result) {
-    switch(result) {
-        case SyncResult::SUCCESS:
-            Serial.println("✅ Sync successful - transitioning to BIKE_PAIRING");
+void checkPeriodicSync()
+{
+    if (currentState != STATE_BIKE_PAIRING)
+        return;
+
+    if (millis() - lastSyncCheck <= configManager.getConfig().sync_interval_ms())
+        return;
+
+    lastSyncCheck = millis();
+
+    if (!bufferManager.needsSync())
+        return;
+
+    if (!BikePairing::isSafeToExit())
+    {
+        Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
+        return;
+    }
+
+    Serial.println("🔄 Tempo de sync - transitioning to CLOUD_SYNC");
+    changeState(STATE_CLOUD_SYNC);
+}
+
+void handleSyncResult(SyncResult result)
+{
+    switch (result)
+    {
+    case SyncResult::SUCCESS:
+        Serial.println("✅ Sync successful - transitioning to BIKE_PAIRING");
+        firstSync = false;
+        changeState(STATE_BIKE_PAIRING);
+        break;
+
+    case SyncResult::FAILURE:
+        if (firstSync)
+        {
+            Serial.println("🚨 ERRO CRÍTICO: Primeiro sync falhou!");
+            Serial.println("   - Não foi possível baixar configurações do Firebase");
+            Serial.println("   - Sistema não pode funcionar sem config válida");
+            Serial.println("   - Retornando ao modo CONFIG_AP para reconfigurar");
             firstSync = false;
+            changeState(STATE_CONFIG_AP);
+        }
+        else
+        {
+            Serial.println("⚠️ Sync falhou - continuando com última config válida");
             changeState(STATE_BIKE_PAIRING);
-            break;
-            
-        case SyncResult::FAILURE:
-            if (firstSync) {
-                Serial.println("🚨 ERRO CRÍTICO: Primeiro sync falhou!");
-                Serial.println("   - Não foi possível baixar configurações do Firebase");
-                Serial.println("   - Sistema não pode funcionar sem config válida");
-                Serial.println("   - Retornando ao modo CONFIG_AP para reconfigurar");
-                firstSync = false;
-                changeState(STATE_CONFIG_AP);
-            } else {
-                Serial.println("⚠️ Sync falhou - continuando com última config válida");
-                changeState(STATE_BIKE_PAIRING);
-            }
-            break;
+        }
+        break;
     }
 }

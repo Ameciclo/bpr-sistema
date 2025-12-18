@@ -104,7 +104,7 @@ void LEDController::configPattern() {
     setPattern(PATTERN_CONFIG);
 }
 
-void LEDController::bleReadyPattern() {
+void LEDController::bikePairingPattern() {
     setPattern(PATTERN_BLE_READY);
 }
 
