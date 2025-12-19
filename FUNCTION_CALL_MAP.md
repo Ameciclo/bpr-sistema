@@ -157,18 +157,21 @@ ConfigAP::exit() [config_ap.cpp]
 
 ```
 BikePairing::enter() [bike_pairing.cpp]
-├── BikeRegistry::init() [bike_registry.cpp]
-├── BikeConfigManager::init() [bike_config_manager.cpp]
+├── BikeManager::init() [bike_manager.cpp]
 ├── currentStatus = PAIRING_IDLE
 ├── lastActivity = millis()
 ├── BLEServer::start() [ble_server.cpp]
-│   ├── BLEDevice::init()
-│   ├── BLEDevice::createServer()
-│   ├── server->setCallbacks()
-│   ├── BLEService::createService()
-│   ├── BLECharacteristic::createCharacteristic()
-│   ├── characteristic->setCallbacks()
-│   └── BLEAdvertising::start()
+│   ├── NimBLEDevice::init(BLE_DEVICE_NAME)
+│   ├── NimBLEDevice::setPower(ESP_PWR_LVL_P3)
+│   ├── NimBLEDevice::createServer()
+│   ├── pServer->setCallbacks(new ServerCallbacks())
+│   ├── pService->createService(BLE_SERVICE_UUID)
+│   ├── pDataChar->createCharacteristic(BLE_CHAR_DATA_UUID)
+│   ├── pConfigChar->createCharacteristic(BLE_CHAR_CONFIG_UUID)
+│   ├── pDataChar->setCallbacks(new DataCallbacks())
+│   ├── pConfigChar->setCallbacks(new ConfigCallbacks())
+│   ├── pService->start()
+│   └── NimBLEDevice::startAdvertising()
 └── LEDController::bikePairingPattern()
 ```
 
@@ -183,10 +186,10 @@ BikePairing::update() [bike_pairing.cpp]
 ├── millis() - lastHeartbeat > HEARTBEAT_INTERVAL
 ├── BikePairing::sendHeartbeat()
 │   ├── DynamicJsonDocument heartbeat(1024)
-│   ├── BikeRegistry::populateHeartbeatData(bikes)
+│   ├── BikeManager::populateHeartbeatData(bikes)
 │   ├── BLEServer::getConnectedBikes()
-│   ├── BikeRegistry::getAllowedCount()
-│   ├── BikeRegistry::getPendingCount()
+│   ├── BikeManager::getAllowedCount()
+│   ├── BikeManager::getPendingCount()
 │   └── BufferManager::addHeartbeat()
 └── LEDController::countPattern(connectedBikes) [a cada 30s]
 ```
@@ -207,25 +210,25 @@ BikePairing::exit() [bike_pairing.cpp]
 ```
 BLEServer::onBikeConnected(bikeId) [bike_pairing.cpp]
 ├── LEDController::bikeArrivedPattern()
-├── BikeRegistry::canConnect(bikeId)
+├── BikeManager::canConnect(bikeId)
 ├── BLEServer::forceDisconnectBike(bikeId) [se blocked]
-├── BikeConfigManager::hasConfigUpdate(bikeId)
-├── BikeConfigManager::getConfigForBike(bikeId)
+├── BikeManager::hasConfigUpdate(bikeId)
+├── BikeManager::getConfigForBike(bikeId)
 ├── BLEServer::pushConfigToBike(bikeId, config)
-└── BikeConfigManager::markConfigSent(bikeId)
+└── BikeManager::markConfigSent(bikeId)
 
 BLEServer::onBikeDisconnected(bikeId) [bike_pairing.cpp]
 └── LEDController::bikeLeftPattern()
 
 BLEServer::onBikeDataReceived(bikeId, jsonData) [bike_pairing.cpp]
-├── BikeRegistry::canConnect(bikeId)
-├── BikeRegistry::isAllowed(bikeId)
-├── BikeRegistry::recordPendingVisit(bikeId)
+├── BikeManager::canConnect(bikeId)
+├── BikeManager::isAllowed(bikeId)
+├── BikeManager::recordPendingVisit(bikeId)
 ├── BikePairing::processDataFromBike(bikeId, jsonData)
 │   ├── deserializeJson(doc, jsonData)
-│   ├── BikeRegistry::updateHeartbeat(bikeId, battery, heap)
+│   ├── BikeManager::updateHeartbeat(bikeId, battery, heap)
 │   ├── BufferManager::addBikeData(bikeId, jsonData)
-│   ├── BikeConfigManager::hasConfigUpdate(bikeId)
+│   ├── BikeManager::hasConfigUpdate(bikeId)
 │   ├── BLEServer::pushConfigToBike(bikeId, config)
 │   └── BikePairing::finishCurrentBike()
 └── BikePairing::enqueueBike(bikeId, jsonData)
@@ -233,10 +236,10 @@ BLEServer::onBikeDataReceived(bikeId, jsonData) [bike_pairing.cpp]
 BLEServer::onConfigRequest(bikeId, request) [bike_pairing.cpp]
 ├── deserializeJson(doc, request)
 ├── type == "config_request"
-│   ├── BikeConfigManager::hasConfigUpdate(bikeId)
-│   ├── BikeConfigManager::getConfigForBike(bikeId)
+│   ├── BikeManager::hasConfigUpdate(bikeId)
+│   ├── BikeManager::getConfigForBike(bikeId)
 │   ├── BLEServer::pushConfigToBike(bikeId, config)
-│   └── BikeConfigManager::markConfigSent(bikeId)
+│   └── BikeManager::markConfigSent(bikeId)
 └── type == "config_received"
     └── currentStatus = PAIRING_IDLE
 ```
@@ -262,7 +265,7 @@ CloudSync::enter() [cloud_sync.cpp]
 │   ├── HTTPClient::GET()
 │   ├── ConfigManager::updateFromJson(payload)
 │   └── ConfigManager::isValidFirebaseConfig()
-├── CloudSync::downloadBikeConfigs()
+├── CloudSync::downloadBikeData()
 ├── CloudSync::uploadBufferData()
 │   ├── BufferManager::getDataForUpload(doc)
 │   ├── HTTPClient::begin(dataUrl)
@@ -273,8 +276,8 @@ CloudSync::enter() [cloud_sync.cpp]
 │   ├── DynamicJsonDocument heartbeat
 │   ├── HTTPClient::begin(heartbeatUrl)
 │   └── HTTPClient::PUT(jsonString)
-├── CloudSync::downloadBikeRegistry()
-├── CloudSync::uploadBikeRegistry()
+├── CloudSync::uploadBikeData()
+├── CloudSync::uploadWiFiConfig() [se firstSync]
 └── return SyncResult::SUCCESS | SyncResult::FAILURE
 ```
 
@@ -297,6 +300,54 @@ CloudSync::exit() [cloud_sync.cpp]
 ---
 
 ## 📊 Módulos de Suporte
+
+### BikeManager [bike_manager.cpp]
+
+```
+BikeManager::init()
+└── BikeManager::loadData()
+    ├── LittleFS.exists(BIKE_DATA_FILE)
+    ├── LittleFS.open(BIKE_DATA_FILE, "r")
+    ├── deserializeJson(bikes, file)
+    └── dataLoaded = true
+
+BikeManager::canConnect(bikeId)
+├── bikeId.startsWith("bpr-") && bikeId.length() == 10
+├── bikes.containsKey(bikeId)
+├── BikeManager::addPendingBike(bikeId) [se nova]
+└── status != "blocked"
+
+BikeManager::isAllowed(bikeId)
+├── bikeId.startsWith("bpr-") && bikeId.length() == 10
+├── bikes.containsKey(bikeId)
+└── status == "allowed"
+
+BikeManager::updateHeartbeat(bikeId, battery, heap)
+├── time(nullptr)
+├── getLocalTime(&timeinfo)
+├── strftime(dateStr, ...)
+├── bikes[bikeId]["last_heartbeat"]["timestamp"] = now
+├── bikes[bikeId]["last_heartbeat"]["battery"] = battery
+└── bikes[bikeId]["last_heartbeat"]["heap"] = heap
+
+BikeManager::downloadFromFirebase()
+├── HTTPClient::begin(bike_configs_url)
+├── HTTPClient::GET()
+├── deserializeJson(newConfigs, payload)
+├── bikes[bikeId]["config"] = bike.value()
+├── configChanged[bikeId] = true [se version mudou]
+└── BikeManager::saveData()
+
+BikeManager::hasConfigUpdate(bikeId)
+└── configChanged[bikeId] == true
+
+BikeManager::getConfigForBike(bikeId)
+├── bikes[bikeId]["config"].isNull() → generateDefaultConfig()
+├── response["type"] = "config_push"
+├── response["bike_id"] = bikeId
+├── response["config"] = bikes[bikeId]["config"]
+└── serializeJson(response, result)
+```
 
 ### ConfigManager [config_manager.cpp]
 
@@ -336,11 +387,21 @@ BufferManager::begin()
 └── BufferManager::cleanupOldBackups()
 
 BufferManager::addBikeData(bikeId, jsonData)
-├── strlen(jsonData.c_str())
-├── crc32() [cálculo de checksum]
-├── memcpy(buffer[dataCount].data, jsonData.c_str(), size)
-├── dataCount++
-└── BufferManager::saveBuffer()
+├── deserializeJson(doc, jsonData)
+├── time(nullptr)
+├── getLocalTime(&timeinfo)
+├── strftime(dateStr, ...)
+├── doc["central_receive_timestamp"] = now
+├── doc["central_receive_timestamp_human"] = dateStr
+├── serializeJson(doc, modifiedJson)
+└── BufferManager::addData(bikeId, modifiedJson.c_str(), length)
+    ├── CRC32::update(finalData, finalSize)
+    ├── buffer[dataCount].bikeId = bikeId
+    ├── buffer[dataCount].timestamp = time(nullptr)
+    ├── buffer[dataCount].crc32 = checksum
+    ├── memcpy(buffer[dataCount].data, finalData, finalSize)
+    ├── dataCount++
+    └── BufferManager::saveBuffer() [a cada 5 itens]
 
 BufferManager::needsSync()
 ├── dataCount > 0
@@ -354,8 +415,9 @@ BufferManager::getDataForUpload(doc)
 └── [Serialização de todos os itens]
 
 BufferManager::markAsConfirmed()
-├── for (int i = 0; i < dataCount; i++)
-├── buffer[i].confirmed = true
+├── BufferManager::createBackup()
+├── dataCount = 0
+├── lastSync = millis()
 └── BufferManager::saveBuffer()
 ```
 
