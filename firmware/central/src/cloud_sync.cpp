@@ -13,9 +13,10 @@ extern BufferManager bufferManager;
 extern LEDController ledController;
 extern SystemState currentState;
 extern bool firstSync;
-extern void recordSyncFailure();
-extern void recordSyncSuccess();
 
+// Static members
+bool CloudSync::syncInProgress = false;
+SyncResult CloudSync::currentResult = SyncResult::SUCCESS;
 static uint32_t syncStartTime = 0;
 
 SyncResult CloudSync::enter()
@@ -23,43 +24,56 @@ SyncResult CloudSync::enter()
     Serial.println("📡 Entering CLOUD_SYNC mode");
     syncStartTime = millis();
     ledController.syncPattern();
+    
+    syncInProgress = true;
+    currentResult = SyncResult::IN_PROGRESS;
+    
+    return SyncResult::IN_PROGRESS;
+}
 
-    // Early return se WiFi falhar
-    if (!connectWiFi())
-    {
-        Serial.println("❌ WiFi connection failed");
-        recordSyncFailure();
-        return SyncResult::FAILURE;
+SyncResult CloudSync::update()
+{
+    if (!syncInProgress) {
+        return currentResult;
     }
-
-    // WiFi conectado - executar sync
-    syncTime();
-
-    bool centralConfigOk = downloadCentralConfig();
-    bool bikeDataOk = downloadBikeData();
-
-    bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
-    bool bikeUploadOk = uploadBikeData();
-    bool bufferOk = uploadBufferData();
-    bool heartbeatOk = uploadHeartbeat();
-
-    bool syncSuccess = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
-
+    
+    // Executar sync completo
+    bool success = true;
+    
+    // WiFi
+    if (!connectWiFi()) {
+        Serial.println("❌ WiFi connection failed");
+        success = false;
+    }
+    
+    if (success) {
+        // Sync completo
+        syncTime();
+        
+        bool centralConfigOk = downloadCentralConfig();
+        bool bikeDataOk = downloadBikeData();
+        bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
+        bool bikeUploadOk = uploadBikeData();
+        bool bufferOk = uploadBufferData();
+        bool heartbeatOk = uploadHeartbeat();
+        
+        success = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
+    }
+    
     // Sempre desconectar WiFi
     WiFi.disconnect(true);
-
-    // Early return se sync falhar
-    if (!syncSuccess)
-    {
+    
+    // Finalizar sync
+    syncInProgress = false;
+    currentResult = success ? SyncResult::SUCCESS : SyncResult::FAILURE;
+    
+    if (success) {
+        Serial.println("✅ Sync complete");
+    } else {
         Serial.println("❌ Sync failed");
-        recordSyncFailure();
-        return SyncResult::FAILURE;
     }
-
-    // Sucesso
-    Serial.println("✅ Sync complete");
-    recordSyncSuccess();
-    return SyncResult::SUCCESS;
+    
+    return currentResult;
 }
 
 void CloudSync::exit()
@@ -205,7 +219,7 @@ bool CloudSync::uploadBufferData()
     }
 
     // Sucesso
-    bufferManager.markAsSent();
+    bufferManager.markAsConfirmed();
     Serial.printf("📤 Buffer data uploaded: %d bytes\n", jsonString.length());
     Serial.printf("   URL: /bases/%s/data\n", configManager.getConfig().base_id);
     http.end();
@@ -229,7 +243,7 @@ bool CloudSync::uploadHeartbeat()
     DynamicJsonDocument doc(512);
     doc["timestamp"] = now;
     doc["timestamp_human"] = dateStr;
-    doc["bikes_connected"] = bufferManager.getConnectedBikes();
+    doc["bikes_connected"] = BikeManager::getConnectedCount();
     doc["heap"] = ESP.getFreeHeap();
     doc["uptime"] = millis() / 1000;
 
@@ -246,7 +260,7 @@ bool CloudSync::uploadHeartbeat()
     if (success)
     {
         Serial.printf("💓 Heartbeat: %s | Bikes: %d | Heap: %d\n",
-                      dateStr, bufferManager.getConnectedBikes(), ESP.getFreeHeap());
+                      dateStr, BikeManager::getConnectedCount(), ESP.getFreeHeap());
     }
     else
     {

@@ -4,14 +4,19 @@
 
 enum class SyncResult {
     SUCCESS,
-    FAILURE
+    FAILURE,
+    IN_PROGRESS
 };
 
 class CloudSync {
 public:
     static SyncResult enter();
-    static void update();
+    static SyncResult update();
     static void exit();
+    
+private:
+    static bool syncInProgress;
+    static SyncResult currentResult;
     static bool connectWiFi();
     static void syncTime();
     static bool downloadCentralConfig();

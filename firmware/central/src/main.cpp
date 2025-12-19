@@ -107,7 +107,11 @@ void loop()
         BikePairing::update();
         break;
     case STATE_CLOUD_SYNC:
-        CloudSync::update();
+    {
+        SyncResult result = CloudSync::update();
+        if (result != SyncResult::IN_PROGRESS) {
+            handleSyncResult(result);
+        }
         // Check for timeout
         if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000)
         {
@@ -115,6 +119,7 @@ void loop()
             handleSyncResult(SyncResult::FAILURE);
         }
         break;
+    }
     default:
         break;
     }
@@ -172,11 +177,8 @@ void changeState(SystemState newState)
         BikePairing::enter();
         break;
     case STATE_CLOUD_SYNC:
-    {
-        SyncResult result = CloudSync::enter();
-        handleSyncResult(result);
-    }
-    break;
+        CloudSync::enter();
+        break;
     default:
         break;
     }

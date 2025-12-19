@@ -3,20 +3,24 @@
 #include <NimBLEDevice.h>
 #include <map>
 
-class BLEServer {
+class BPRBLEServer {
 public:
     static bool start();
     static void stop();
     static uint8_t getConnectedBikes();
     static void pushConfigToBike(const String& bikeId, const String& config);
+    static bool isBikeConnected(const String& bikeId);
+    static void forceDisconnectBike(const String& bikeId);
+    static void sendConfigToHandle(uint16_t handle, const String& bikeId, const String& config);
+    static void checkAndSendPendingConfig(const String& bikeId, uint16_t handle);
     
     // Callbacks implementados externamente no bike_pairing.cpp
     static void onBikeConnected(const String& bikeId);
     static void onBikeDisconnected(const String& bikeId);
     static void onBikeDataReceived(const String& bikeId, const String& jsonData);
     static void onConfigRequest(const String& bikeId, const String& request);
-
-private:
+    
+    // Static members - public para acesso das callbacks
     static NimBLEServer* pServer;
     static NimBLEService* pService;
     static NimBLECharacteristic* pDataChar;

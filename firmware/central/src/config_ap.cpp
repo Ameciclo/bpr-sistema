@@ -13,6 +13,8 @@ extern LEDController ledController;
 static WebServer server(80);
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
+static wifi_event_id_t wifiConnectEventId = 0;
+static wifi_event_id_t wifiDisconnectEventId = 0;
 
 void ConfigAP::enter(bool isInitialMode)
 {
@@ -33,20 +35,20 @@ void ConfigAP::enter(bool isInitialMode)
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    // Configurar callback para conexões
-    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
-                 {
-        if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
-            Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                         info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
-                         info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
-                         info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]);
-        } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
-            Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                         info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
-                         info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
-                         info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]);
-        } });
+    // Configurar callbacks para conexões
+    wifiConnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                     info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
+                     info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
+                     info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]);
+    }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
+    
+    wifiDisconnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                     info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
+                     info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
+                     info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]);
+    }, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
 
     setupWebServer();
     server.begin();
@@ -92,8 +94,18 @@ void ConfigAP::exit()
 {
     server.stop();
     WiFi.softAPdisconnect(true);
-    WiFi.removeEvent();  // Limpar callbacks WiFi
-    Serial.println("🔚 ConfigAP: Callbacks limpos, saindo do modo AP");
+    
+    // Remover callbacks WiFi específicos
+    if (wifiConnectEventId != 0) {
+        WiFi.removeEvent(wifiConnectEventId);
+        wifiConnectEventId = 0;
+    }
+    if (wifiDisconnectEventId != 0) {
+        WiFi.removeEvent(wifiDisconnectEventId);
+        wifiDisconnectEventId = 0;
+    }
+    
+    Serial.println("🔚 ConfigAP: Callbacks WiFi removidos, saindo do modo AP");
 }
 
 bool ConfigAP::tryUpdateWiFiInFirebase()

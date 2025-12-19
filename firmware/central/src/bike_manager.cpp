@@ -327,7 +327,7 @@ void BikeManager::populateHeartbeatData(JsonArray& bikes_array) {
 // Funções de configuração (ex-BikeConfigManager)
 bool BikeManager::downloadFromFirebase() {
     HTTPClient http;
-    const HubConfig& config = configManager.getConfig();
+    const CentralConfig& config = configManager.getConfig();
     
     String url = String(config.firebase.database_url) + 
                 "/bike_configs.json?auth=" + config.firebase.api_key;

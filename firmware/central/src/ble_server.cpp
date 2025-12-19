@@ -2,15 +2,15 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include "constants.h"
-#include "bike_config_manager.h"
+#include "bike_manager.h"
 
 // Static members
-NimBLEServer *BLEServer::pServer = nullptr;
-NimBLEService *BLEServer::pService = nullptr;
-NimBLECharacteristic *BLEServer::pDataChar = nullptr;
-NimBLECharacteristic *BLEServer::pConfigChar = nullptr;
-uint8_t BLEServer::connectedBikes = 0;
-std::map<uint16_t, String> BLEServer::connectedDevices;
+NimBLEServer *BPRBLEServer::pServer = nullptr;
+NimBLEService *BPRBLEServer::pService = nullptr;
+NimBLECharacteristic *BPRBLEServer::pDataChar = nullptr;
+NimBLECharacteristic *BPRBLEServer::pConfigChar = nullptr;
+uint8_t BPRBLEServer::connectedBikes = 0;
+std::map<uint16_t, String> BPRBLEServer::connectedDevices;
 
 class ServerCallbacks : public NimBLEServerCallbacks
 {
@@ -19,30 +19,31 @@ class ServerCallbacks : public NimBLEServerCallbacks
         uint16_t conn_handle = desc->conn_handle;
         NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
 
-        BLEServer::connectedBikes++;
+        BPRBLEServer::connectedBikes++;
         Serial.printf("🔵 BLE CONNECT: %s | Handle: %d | Total: %d\n",
-                      addr.toString().c_str(), conn_handle, BLEServer::connectedBikes);
+                      addr.toString().c_str(), conn_handle, BPRBLEServer::connectedBikes);
         NimBLEDevice::startAdvertising();
 
-        BLEServer::connectedDevices[conn_handle] = "";
+        BPRBLEServer::connectedDevices[conn_handle] = "";
         Serial.printf("📝 Stored connection handle %d\n", conn_handle);
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
     {
-        if (BLEServer::connectedBikes > 0)
-            BLEServer::connectedBikes--;
+        if (BPRBLEServer::connectedBikes > 0)
+            BPRBLEServer::connectedBikes--;
 
         uint16_t conn_handle = desc->conn_handle;
-        if (BLEServer::connectedDevices.find(conn_handle) != BLEServer::connectedDevices.end())
+        String bikeId = "";
+        if (BPRBLEServer::connectedDevices.find(conn_handle) != BPRBLEServer::connectedDevices.end())
         {
-            String bikeId = BLEServer::connectedDevices[conn_handle];
-            BLEServer::connectedDevices.erase(conn_handle);
-            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), BLEServer::connectedBikes);
+            bikeId = BPRBLEServer::connectedDevices[conn_handle];
+            BPRBLEServer::connectedDevices.erase(conn_handle);
+            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), BPRBLEServer::connectedBikes);
         }
         else
         {
-            Serial.printf("🔵 Device disconnected (%d total)\n", BLEServer::connectedBikes);
+            Serial.printf("🔵 Device disconnected (%d total)\n", BPRBLEServer::connectedBikes);
         }
 
         NimBLEDevice::startAdvertising();
@@ -50,7 +51,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
         // Notificar bike_pairing sobre desconexão (só se conhece a bike)
         if (!bikeId.isEmpty())
         {
-            BLEServer::onBikeDisconnected(bikeId);
+            BPRBLEServer::onBikeDisconnected(bikeId);
         }
     }
 };
@@ -71,7 +72,7 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
                 
                 // Encontrar handle desta conexão
                 uint16_t conn_handle = 0;
-                for (auto &pair : BLEServer::connectedDevices) {
+                for (auto &pair : BPRBLEServer::connectedDevices) {
                     if (pair.second.isEmpty()) {
                         conn_handle = pair.first;
                         break;
@@ -80,17 +81,17 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
                 
                 if (conn_handle != 0) {
                     // Armazenar bike_id para esta conexão específica
-                    BLEServer::connectedDevices[conn_handle] = bikeId;
+                    BPRBLEServer::connectedDevices[conn_handle] = bikeId;
                     Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
 
                     // Verificar se tem config pendente e enviar imediatamente
-                    BLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
+                    BPRBLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
                 } else {
                     Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
                 }
 
                 // Delegar processamento para bike_pairing
-                BLEServer::onBikeDataReceived(bikeId, String(value.c_str()));
+                BPRBLEServer::onBikeDataReceived(bikeId, String(value.c_str()));
             }
             else
             {
@@ -113,13 +114,13 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks
             if (!error && doc["bike_id"])
             {
                 String bikeId = doc["bike_id"];
-                BLEServer::onConfigRequest(bikeId, String(value.c_str()));
+                BPRBLEServer::onConfigRequest(bikeId, String(value.c_str()));
             }
         }
     }
 };
 
-bool BLEServer::start()
+bool BPRBLEServer::start()
 {
     Serial.println("🔵 Starting BLE Server");
 
@@ -153,7 +154,7 @@ bool BLEServer::start()
     return true;
 }
 
-void BLEServer::stop()
+void BPRBLEServer::stop()
 {
     if (pServer)
     {
@@ -169,12 +170,12 @@ void BLEServer::stop()
     Serial.println("🔚 BLE Server stopped");
 }
 
-uint8_t BLEServer::getConnectedBikes()
+uint8_t BPRBLEServer::getConnectedBikes()
 {
     return connectedBikes;
 }
 
-bool BLEServer::isBikeConnected(const String &bikeId)
+bool BPRBLEServer::isBikeConnected(const String &bikeId)
 {
     for (auto &pair : connectedDevices) {
         if (pair.second == bikeId) {
@@ -184,7 +185,7 @@ bool BLEServer::isBikeConnected(const String &bikeId)
     return false;
 }
 
-void BLEServer::pushConfigToBike(const String &bikeId, const String &config)
+void BPRBLEServer::pushConfigToBike(const String &bikeId, const String &config)
 {
     if (!pConfigChar) return;
     
@@ -206,7 +207,7 @@ void BLEServer::pushConfigToBike(const String &bikeId, const String &config)
     sendConfigToHandle(targetHandle, bikeId, config);
 }
 
-void BLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const String &config)
+void BPRBLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const String &config)
 {
     if (!pConfigChar) return;
     
@@ -233,16 +234,37 @@ void BLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const 
     Serial.printf("📤 Config sent to %s (handle %d) with target filter\n", bikeId.c_str(), handle);
 }
 
-void BLEServer::checkAndSendPendingConfig(const String &bikeId, uint16_t handle)
+void BPRBLEServer::checkAndSendPendingConfig(const String &bikeId, uint16_t handle)
 {
     // Verificar se tem config pendente via bike_pairing
-    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
-        String config = BikeConfigManager::getConfigForBike(bikeId);
+    if (BikeManager::hasConfigUpdate(bikeId)) {
+        String config = BikeManager::getConfigForBike(bikeId);
         sendConfigToHandle(handle, bikeId, config);
-        BikeConfigManager::markConfigSent(bikeId);
+        BikeManager::markConfigSent(bikeId);
         
         Serial.printf("⚡ Immediate config sent to %s on connection\n", bikeId.c_str());
     } else {
         Serial.printf("📝 No pending config for %s\n", bikeId.c_str());
+    }
+}
+
+void BPRBLEServer::forceDisconnectBike(const String &bikeId)
+{
+    if (!pServer) return;
+    
+    // Encontrar handle da bike específica
+    uint16_t targetHandle = 0;
+    for (auto &pair : connectedDevices) {
+        if (pair.second == bikeId) {
+            targetHandle = pair.first;
+            break;
+        }
+    }
+    
+    if (targetHandle != 0) {
+        pServer->disconnect(targetHandle);
+        Serial.printf("🚫 Forced disconnect of bike %s (handle %d)\n", bikeId.c_str(), targetHandle);
+    } else {
+        Serial.printf("❌ Cannot disconnect %s - not found\n", bikeId.c_str());
     }
 }

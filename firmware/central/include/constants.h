@@ -7,6 +7,7 @@
 #define CONFIG_FILE "/config.json"
 #define BUFFER_FILE "/buffer.json"
 #define BIKE_REGISTRY_FILE "/bike_registry.json"
+#define BIKE_DATA_FILE "/bike_data.json"
 #define BIKE_CONFIG_CACHE_FILE "/bike_config_versions.json"
 #define BIKE_CONFIGS_FILE "/bike_configs.json"
 

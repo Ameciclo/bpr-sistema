@@ -34,7 +34,7 @@ void BikePairing::enter()
     lastActivity = millis();
     
     // Start BLE server
-    if (!BLEServer::start()) {
+    if (!BPRBLEServer::start()) {
         Serial.println("❌ Failed to start BLE Server");
         return;
     }
@@ -63,7 +63,7 @@ void BikePairing::update()
     if (now - lastLedUpdate > ledInterval)
     {
         lastLedUpdate = now;
-        ledController.countPattern(BLEServer::getConnectedBikes());
+        ledController.countPattern(BPRBLEServer::getConnectedBikes());
     }
 }
 
@@ -76,14 +76,14 @@ void BikePairing::exit()
     currentBike = "";
     requestTimeout = 0;
     
-    BLEServer::stop();
+    BPRBLEServer::stop();
     currentStatus = PAIRING_IDLE;
     Serial.println("🔚 Exiting BIKE_PAIRING mode");
 }
 
 uint8_t BikePairing::getConnectedBikes()
 {
-    return BLEServer::getConnectedBikes();
+    return BPRBLEServer::getConnectedBikes();
 }
 
 void BikePairing::sendHeartbeat()
@@ -101,13 +101,13 @@ void BikePairing::sendHeartbeat()
     
     // Estatísticas calculadas
     heartbeat["total_bikes"] = bikes.size();
-    heartbeat["bikes_connected_now"] = BLEServer::getConnectedBikes();
+    heartbeat["bikes_connected_now"] = BPRBLEServer::getConnectedBikes();
     heartbeat["bikes_allowed"] = BikeManager::getAllowedCount();
     heartbeat["bikes_pending"] = BikeManager::getPendingCount();
     heartbeat["bikes_with_recent_contact"] = BikeManager::getConnectedCount();
     
     // Salvar no LittleFS
-    bufferManager.addHeartbeat(heartbeat.as<String>());
+    bufferManager.addBikeData("heartbeat", heartbeat.as<String>());
     
     Serial.printf("💓 Heartbeat: %d total, %d allowed, %d pending, %d recent\n", 
                   (int)bikes.size(), BikeManager::getAllowedCount(), 
@@ -132,14 +132,14 @@ bool BikePairing::isSafeToExit()
 }
 
 // Implementação dos callbacks do BLE Server
-void BLEServer::onBikeConnected(const String& bikeId) {
+void BPRBLEServer::onBikeConnected(const String& bikeId) {
     ledController.bikeArrivedPattern();
     Serial.printf("🚲 Bike %s connected\n", bikeId.c_str());
     
     // Verificar se bike pode conectar (não blocked)
     if (!BikeManager::canConnect(bikeId)) {
         Serial.printf("❌ Blocked bike %s - disconnecting\n", bikeId.c_str());
-        BLEServer::forceDisconnectBike(bikeId);
+        BPRBLEServer::forceDisconnectBike(bikeId);
         return;
     }
     
@@ -149,7 +149,7 @@ void BLEServer::onBikeConnected(const String& bikeId) {
         lastActivity = millis();
         
         String config = BikeManager::getConfigForBike(bikeId);
-        BLEServer::pushConfigToBike(bikeId, config);
+        BPRBLEServer::pushConfigToBike(bikeId, config);
         BikeManager::markConfigSent(bikeId);
         
         Serial.printf("⚙️ Config sent to %s on connection\n", bikeId.c_str());
@@ -158,7 +158,7 @@ void BLEServer::onBikeConnected(const String& bikeId) {
     }
 }
 
-void BLEServer::onBikeDisconnected(const String& bikeId) {
+void BPRBLEServer::onBikeDisconnected(const String& bikeId) {
     ledController.bikeLeftPattern();
     if (!bikeId.isEmpty()) {
         Serial.printf("🚲 Bike %s disconnected - LED pattern triggered\n", bikeId.c_str());
@@ -167,7 +167,7 @@ void BLEServer::onBikeDisconnected(const String& bikeId) {
     }
 }
 
-void BLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData) {
+void BPRBLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData) {
     // Validações rápidas primeiro
     if (!BikeManager::canConnect(bikeId)) {
         Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
@@ -194,7 +194,7 @@ void BLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData)
     }
 }
 
-void BLEServer::onConfigRequest(const String& bikeId, const String& request) {
+void BPRBLEServer::onConfigRequest(const String& bikeId, const String& request) {
     // Marcar atividade de configuração
     currentStatus = PAIRING_SENDING_CONFIG;
     lastActivity = millis();
@@ -215,7 +215,7 @@ void BLEServer::onConfigRequest(const String& bikeId, const String& request) {
         
         if (BikeManager::hasConfigUpdate(bikeId)) {
             String config = BikeManager::getConfigForBike(bikeId);
-            BLEServer::pushConfigToBike(bikeId, config);
+            BPRBLEServer::pushConfigToBike(bikeId, config);
             BikeManager::markConfigSent(bikeId);
             Serial.printf("⚙️ Config sent to %s\n", bikeId.c_str());
         } else {
@@ -264,7 +264,7 @@ void BikePairing::requestDataFromBike(const String& bikeId) {
     
     String cmdStr;
     serializeJson(cmd, cmdStr);
-    BLEServer::pushConfigToBike(bikeId, cmdStr);
+    BPRBLEServer::pushConfigToBike(bikeId, cmdStr);
     
     Serial.printf("📤 Data request sent to %s\n", bikeId.c_str());
 }
@@ -293,7 +293,7 @@ void BikePairing::processDataFromBike(const String& bikeId, const String& jsonDa
         currentStatus = PAIRING_SENDING_CONFIG;
         
         String config = BikeManager::getConfigForBike(bikeId);
-        BLEServer::pushConfigToBike(bikeId, config);
+        BPRBLEServer::pushConfigToBike(bikeId, config);
         BikeManager::markConfigSent(bikeId);
         
         Serial.printf("⚙️ Config sent to %s\n", bikeId.c_str());

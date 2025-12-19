@@ -24,4 +24,11 @@ public:
     static bool isBikeOverdue(const String& bikeId);
     static int countSleepingBikes();
     static int countOverdueBikes();
+    
+    // Métodos de processamento de dados
+    static void processDataQueue();
+    static void requestDataFromBike(const String& bikeId);
+    static void processDataFromBike(const String& bikeId, const String& jsonData);
+    static void enqueueBike(const String& bikeId, const String& jsonData);
+    static void finishCurrentBike();
 };

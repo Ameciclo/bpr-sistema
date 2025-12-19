@@ -4,8 +4,6 @@
 #include <vector>
 #include <ArduinoJson.h>
 
-#define BIKE_DATA_FILE "/bikes.json"
-
 class BikeManager {
 public:
     // Inicialização e cache
