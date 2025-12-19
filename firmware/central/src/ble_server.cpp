@@ -61,42 +61,44 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
     void onWrite(NimBLECharacteristic *pChar)
     {
         std::string value = pChar->getValue();
-        if (value.length() > 0)
+        if (value.length() == 0 || value.length() > 2048) {
+            Serial.printf("⚠️ Invalid data length: %d\n", value.length());
+            return;
+        }
+        
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, value.c_str());
+
+        if (!error && doc["bike_id"])
         {
-            DynamicJsonDocument doc(512);
-            DeserializationError error = deserializeJson(doc, value.c_str());
-
-            if (!error && doc["bike_id"])
-            {
-                String bikeId = doc["bike_id"];
-                
-                // Encontrar handle desta conexão
-                uint16_t conn_handle = 0;
-                for (auto &pair : BPRBLEServer::connectedDevices) {
-                    if (pair.second.isEmpty()) {
-                        conn_handle = pair.first;
-                        break;
-                    }
+            String bikeId = doc["bike_id"];
+            
+            // Find first available handle (simpler approach)
+            uint16_t conn_handle = 0;
+            for (auto &pair : BPRBLEServer::connectedDevices) {
+                if (pair.second.isEmpty() || pair.second == bikeId) {
+                    conn_handle = pair.first;
+                    break;
                 }
-                
-                if (conn_handle != 0) {
-                    // Armazenar bike_id para esta conexão específica
-                    BPRBLEServer::connectedDevices[conn_handle] = bikeId;
-                    Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
-
-                    // Verificar se tem config pendente e enviar imediatamente
-                    BPRBLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
-                } else {
-                    Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
-                }
-
-                // Delegar processamento para bike_pairing
-                BPRBLEServer::onBikeDataReceived(bikeId, String(value.c_str()));
             }
-            else
-            {
-                Serial.printf("⚠️ Data without bike_id: %s\n", value.c_str());
+            
+            if (conn_handle != 0) {
+                // Map bike to this connection handle
+                BPRBLEServer::connectedDevices[conn_handle] = bikeId;
+                Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
+
+                // Check for pending config and send immediately
+                BPRBLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
+            } else {
+                Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
             }
+
+            // Delegate processing to bike_pairing
+            BPRBLEServer::onBikeDataReceived(bikeId, String(value.c_str()));
+        }
+        else
+        {
+            Serial.printf("⚠️ Invalid JSON or missing bike_id: %s\n", value.c_str());
         }
     }
 };
@@ -106,16 +108,22 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks
     void onWrite(NimBLECharacteristic *pChar)
     {
         std::string value = pChar->getValue();
-        if (value.length() > 0)
-        {
-            DynamicJsonDocument doc(256);
-            DeserializationError error = deserializeJson(doc, value.c_str());
+        if (value.length() == 0 || value.length() > 512) {
+            Serial.printf("⚠️ Invalid config request length: %d\n", value.length());
+            return;
+        }
+        
+        DynamicJsonDocument doc(512);
+        DeserializationError error = deserializeJson(doc, value.c_str());
 
-            if (!error && doc["bike_id"])
-            {
-                String bikeId = doc["bike_id"];
-                BPRBLEServer::onConfigRequest(bikeId, String(value.c_str()));
-            }
+        if (!error && doc["bike_id"])
+        {
+            String bikeId = doc["bike_id"];
+            BPRBLEServer::onConfigRequest(bikeId, String(value.c_str()));
+        }
+        else
+        {
+            Serial.printf("⚠️ Invalid config request JSON: %s\n", value.c_str());
         }
     }
 };
@@ -209,29 +217,22 @@ void BPRBLEServer::pushConfigToBike(const String &bikeId, const String &config)
 
 void BPRBLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const String &config)
 {
-    if (!pConfigChar) return;
-    
-    // Incluir target no JSON para segurança extra
-    DynamicJsonDocument wrapper(1024);
-    wrapper["target_bike"] = bikeId;
-    wrapper["timestamp"] = millis();
-    
-    // Parse config original
-    DynamicJsonDocument originalConfig(512);
-    if (deserializeJson(originalConfig, config) == DeserializationError::Ok) {
-        wrapper["config"] = originalConfig;
-    } else {
-        wrapper["config"] = config;
+    if (!pConfigChar || handle == 0) {
+        Serial.printf("❌ Invalid config char or handle for %s\n", bikeId.c_str());
+        return;
     }
     
-    String wrappedConfig;
-    serializeJson(wrapper, wrappedConfig);
+    // Validate config size
+    if (config.length() > 800) {
+        Serial.printf("⚠️ Config too large for %s: %d bytes\n", bikeId.c_str(), config.length());
+        return;
+    }
     
-    pConfigChar->setValue(wrappedConfig.c_str());
-    
-    // Por enquanto usar broadcast com target (mais compatível)
+    // Send config directly without wrapper to avoid corruption
+    pConfigChar->setValue(config.c_str());
     pConfigChar->notify();
-    Serial.printf("📤 Config sent to %s (handle %d) with target filter\n", bikeId.c_str(), handle);
+    
+    Serial.printf("📤 Config sent to %s (handle %d): %d bytes\n", bikeId.c_str(), handle, config.length());
 }
 
 void BPRBLEServer::checkAndSendPendingConfig(const String &bikeId, uint16_t handle)

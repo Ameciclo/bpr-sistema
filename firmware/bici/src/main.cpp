@@ -3,11 +3,23 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include "constants.h"
 
 // Hardware pins
 #define LED_PIN 8
 #define BUTTON_PIN 9
 #define BATTERY_PIN A0
+
+// Forward declarations
+void onBLEDisconnected();
+
+// BLE Client Callbacks class
+class ClientCallbacks : public NimBLEClientCallbacks {
+public:
+    void onDisconnect(NimBLEClient* pClient) {
+        onBLEDisconnected();
+    }
+};
 
 // States
 enum State { BOOT, CONFIG_REQUEST, SCANNING, AT_BASE, SLEEP };
@@ -15,13 +27,17 @@ State currentState = BOOT;
 
 // BLE
 NimBLEClient* pClient = nullptr;
+NimBLERemoteCharacteristic* pDataChar = nullptr;
+NimBLERemoteCharacteristic* pConfigChar = nullptr;
 bool bleConnected = false;
 
 // WiFi buffer
 struct WiFiRecord {
     uint32_t timestamp;
+    char ssid[33];
     uint8_t bssid[6];
     int8_t rssi;
+    uint8_t channel;
 };
 WiFiRecord wifiBuffer[50];
 int bufferCount = 0;
@@ -31,7 +47,7 @@ struct Config {
     // Basic
     char bike_id[32] = "";        // ID único gerado (bpr-1xaos912)
     char bike_name[32] = "";      // Nome dado pela base
-    char base_ble_name[32] = "BPR Hub Station";
+    char base_ble_name[32] = CENTRAL_BLE_NAME;
     int version = 1;
     bool dev_mode = true;
     
@@ -83,6 +99,8 @@ String getChipID();
 void generateUniqueID();
 void handleConfigRequest();
 bool requestConfigFromBase();
+void processConfigUpdate(const String& configJson);
+void onBLEDisconnected();
 
 void setup() {
     Serial.begin(115200);
@@ -181,19 +199,30 @@ void handleScanning() {
         
         // WiFi scan
         int networks = WiFi.scanNetworks();
-        for (int i = 0; i < networks && bufferCount < config.max_wifi_records; i++) {
+        int savedCount = 0;
+        for (int i = 0; i < networks && bufferCount < config.max_wifi_records && savedCount < config.wifi_max_networks; i++) {
             if (WiFi.RSSI(i) > config.wifi_rssi_threshold) {
                 WiFiRecord record;
                 record.timestamp = millis() / 1000;
+                
+                // Copy SSID (truncate if too long)
+                String ssid = WiFi.SSID(i);
+                strncpy(record.ssid, ssid.c_str(), sizeof(record.ssid) - 1);
+                record.ssid[sizeof(record.ssid) - 1] = '\0';
+                
+                // Copy BSSID
                 memcpy(record.bssid, WiFi.BSSID(i), 6);
                 record.rssi = WiFi.RSSI(i);
+                record.channel = WiFi.channel(i);
+                
                 wifiBuffer[bufferCount++] = record;
+                savedCount++;
             }
         }
         WiFi.scanDelete();
         
         Serial.printf("📶 Found %d networks, saved %d (buffer: %d/%d)\n", 
-                      networks, bufferCount, bufferCount, config.max_wifi_records);
+                      networks, savedCount, bufferCount, config.max_wifi_records);
         
         // Radio coordination delay
         Serial.printf("⏱️ Radio coordination delay: %dms\n", config.radio_coordination_delay_ms);
@@ -232,8 +261,8 @@ void handleAtBase() {
     delay(5000);
     
     // Check connection
-    if (pClient && !pClient->isConnected()) {
-        bleConnected = false;
+    if (!pClient || !pClient->isConnected()) {
+        onBLEDisconnected();
         currentState = SCANNING;
     }
 }
@@ -278,8 +307,68 @@ bool connectToBase(NimBLEAdvertisedDevice* device) {
     
     Serial.printf("🔗 Attempting BLE connection (timeout: %dms)...\n", config.ble_connection_timeout_ms);
     if (pClient->connect(device)) {
-        bleConnected = true;
         Serial.println("✅ BLE connection established");
+        
+        // Get service and characteristics with retry
+        Serial.printf("🔍 Looking for service: %s\n", BLE_SERVICE_UUID);
+        NimBLERemoteService* pService = pClient->getService(BLE_SERVICE_UUID);
+        if (!pService) {
+            Serial.println("❌ Service not found - listing available services:");
+            std::vector<NimBLERemoteService*>* services = pClient->getServices(true);
+            for (auto service : *services) {
+                Serial.printf("   Available: %s\n", service->getUUID().toString().c_str());
+            }
+            pClient->disconnect();
+            return false;
+        }
+        
+        // Try to get characteristics with retries
+        for (int retry = 0; retry < 3; retry++) {
+            pDataChar = pService->getCharacteristic(BLE_CHAR_DATA_UUID);
+            pConfigChar = pService->getCharacteristic(BLE_CHAR_CONFIG_UUID);
+            
+            if (pDataChar && pConfigChar) {
+                break; // Success
+            }
+            
+            Serial.printf("⏳ Characteristics not ready, retry %d/3...\n", retry + 1);
+            if (retry == 2) {
+                Serial.println("🔍 Listing available characteristics:");
+                std::vector<NimBLERemoteCharacteristic*>* chars = pService->getCharacteristics(true);
+                for (auto ch : *chars) {
+                    Serial.printf("   Available: %s\n", ch->getUUID().toString().c_str());
+                }
+                Serial.printf("   Looking for Data: %s\n", BLE_CHAR_DATA_UUID);
+                Serial.printf("   Looking for Config: %s\n", BLE_CHAR_CONFIG_UUID);
+            }
+            delay(2000);
+        }
+        
+        if (!pDataChar) {
+            Serial.println("❌ Data characteristic not found after retries");
+            pClient->disconnect();
+            return false;
+        }
+        
+        if (!pConfigChar) {
+            Serial.println("❌ Config characteristic not found after retries");
+            pClient->disconnect();
+            return false;
+        }
+        
+        bleConnected = true;
+        
+        // Setup config notifications
+        if (pConfigChar->canNotify()) {
+            pConfigChar->subscribe(true, [](NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
+                String config = String((char*)pData, length);
+                Serial.printf("📥 Config received: %s\n", config.c_str());
+                processConfigUpdate(config);
+            });
+        }
+        
+        // Setup disconnect callback
+        pClient->setClientCallbacks(new ClientCallbacks());
         
         // Always request config on first connection
         if (currentState == CONFIG_REQUEST) {
@@ -299,30 +388,36 @@ bool connectToBase(NimBLEAdvertisedDevice* device) {
 }
 
 void sendStatus() {
-    if (!pClient || !bleConnected) return;
+    if (!pClient || !bleConnected || !pDataChar) return;
     
     DynamicJsonDocument doc(256);
     doc["bike_id"] = config.bike_id;
     doc["battery"] = getBatteryVoltage();
     doc["records"] = bufferCount;
     doc["timestamp"] = millis() / 1000;
+    doc["heap"] = ESP.getFreeHeap();
     
     String json;
     serializeJson(doc, json);
     
-    // Find and write to characteristic (simplified)
+    pDataChar->writeValue(json.c_str());
     Serial.printf("📤 Status: %s\n", json.c_str());
 }
 
 void sendWiFiData() {
-    if (!pClient || !bleConnected || bufferCount == 0) return;
+    if (!pClient || !bleConnected || !pDataChar || bufferCount == 0) return;
     
     DynamicJsonDocument doc(2048);
-    JsonArray scans = doc.createNestedArray("scans");
+    doc["bike_id"] = config.bike_id;
+    doc["battery"] = getBatteryVoltage();
+    doc["records"] = bufferCount;
+    doc["timestamp"] = millis() / 1000;
+    
+    JsonArray scans = doc.createNestedArray("wifi_scans");
     
     for (int i = 0; i < bufferCount; i++) {
         JsonObject scan = scans.createNestedObject();
-        scan["ts"] = wifiBuffer[i].timestamp;
+        scan["ssid"] = wifiBuffer[i].ssid;
         
         char bssid[18];
         sprintf(bssid, "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -330,12 +425,14 @@ void sendWiFiData() {
                 wifiBuffer[i].bssid[3], wifiBuffer[i].bssid[4], wifiBuffer[i].bssid[5]);
         scan["bssid"] = bssid;
         scan["rssi"] = wifiBuffer[i].rssi;
+        scan["channel"] = wifiBuffer[i].channel;
     }
     
     String json;
     serializeJson(doc, json);
     
-    Serial.printf("📡 WiFi data: %d records\n", bufferCount);
+    pDataChar->writeValue(json.c_str());
+    Serial.printf("📡 WiFi data: %d records sent\n", bufferCount);
 }
 
 float getBatteryVoltage() {
@@ -513,25 +610,12 @@ void saveConfig() {
 }
 
 bool requestConfigFromBase() {
-    if (!pClient || !bleConnected) {
+    if (!pClient || !bleConnected || !pConfigChar) {
         Serial.println("❌ No BLE connection to request config");
         return false;
     }
     
     Serial.println("📡 Requesting configuration from base...");
-    
-    // Find config characteristic
-    NimBLERemoteService* pService = pClient->getService("12345678-1234-1234-1234-123456789abc");
-    if (!pService) {
-        Serial.println("❌ Service not found");
-        return false;
-    }
-    
-    NimBLERemoteCharacteristic* pConfigChar = pService->getCharacteristic("11111111-2222-3333-4444-555555555555");
-    if (!pConfigChar) {
-        Serial.println("❌ Config characteristic not found");
-        return false;
-    }
     
     // Send config request
     DynamicJsonDocument request(256);
@@ -544,67 +628,16 @@ bool requestConfigFromBase() {
     Serial.printf("📤 Config request: %s\n", requestStr.c_str());
     pConfigChar->writeValue(requestStr.c_str());
     
-    // Wait for response
-    delay(2000);
-    std::string response = pConfigChar->readValue();
+    // Wait for response via notification (handled in callback)
+    delay(3000);
     
-    if (response.length() > 0) {
-        Serial.printf("📥 Config response: %s\n", response.c_str());
-        
-        DynamicJsonDocument doc(1024);
-        if (deserializeJson(doc, response) == DeserializationError::Ok) {
-            if (doc["error"]) {
-                Serial.printf("❌ Config error: %s\n", doc["error"].as<String>().c_str());
-                return false;
-            }
-            
-            // Update config from response
-            if (doc["bike_name"]) strcpy(config.bike_name, doc["bike_name"]);
-            if (doc["version"]) config.version = doc["version"];
-            if (doc["dev_mode"]) config.dev_mode = doc["dev_mode"];
-            
-            if (doc["wifi"]["scan_interval_sec"]) {
-                config.scan_interval_sec = doc["wifi"]["scan_interval_sec"];
-            }
-            if (doc["wifi"]["scan_timeout_ms"]) {
-                config.wifi_scan_timeout_ms = doc["wifi"]["scan_timeout_ms"];
-            }
-            
-            if (doc["ble"]["base_name"]) {
-                strcpy(config.base_ble_name, doc["ble"]["base_name"]);
-            }
-            if (doc["ble"]["scan_time_sec"]) {
-                config.ble_scan_time_sec = doc["ble"]["scan_time_sec"];
-            }
-            
-            if (doc["power"]["deep_sleep_duration_sec"]) {
-                config.deep_sleep_sec = doc["power"]["deep_sleep_duration_sec"];
-            }
-            
-            if (doc["battery"]["critical_voltage"]) {
-                config.battery_critical_voltage = doc["battery"]["critical_voltage"];
-            }
-            if (doc["battery"]["low_voltage"]) {
-                config.min_battery_voltage = doc["battery"]["low_voltage"];
-            }
-            
-            // Send confirmation
-            DynamicJsonDocument confirm(128);
-            confirm["type"] = "config_received";
-            confirm["bike_id"] = config.bike_id;
-            confirm["status"] = "ok";
-            
-            String confirmStr;
-            serializeJson(confirm, confirmStr);
-            pConfigChar->writeValue(confirmStr.c_str());
-            
-            Serial.printf("✅ Config updated: %s v%d\n", config.bike_name, config.version);
-            saveConfig();
-            return true;
-        }
+    Serial.println("⏳ Config request sent, waiting for notification...");
+    
+    // If we're in CONFIG_REQUEST state, we got some response
+    if (currentState == CONFIG_REQUEST) {
+        return true;
     }
     
-    Serial.println("❌ No config response received");
     return false;
 }
 
@@ -657,4 +690,121 @@ String getChipID() {
     char chipStr[9];
     snprintf(chipStr, sizeof(chipStr), "%08x", (uint32_t)(chipid & 0xFFFFFFFF));
     return String(chipStr).substring(0, 6); // Primeiros 6 caracteres
+}
+
+void processConfigUpdate(const String& configJson) {
+    Serial.printf("⚙️ Processing config update: %s\n", configJson.c_str());
+    
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, configJson) != DeserializationError::Ok) {
+        Serial.println("❌ Invalid config JSON");
+        return;
+    }
+    
+    // Check if this config is for us
+    if (doc["target_bike"] && doc["target_bike"] != config.bike_id) {
+        Serial.printf("🚫 Config not for us (target: %s, us: %s)\n", 
+                      doc["target_bike"].as<String>().c_str(), config.bike_id);
+        return;
+    }
+    
+    JsonObject configData = doc["config"];
+    if (!configData) {
+        Serial.println("❌ No config data found");
+        return;
+    }
+    
+    bool configChanged = false;
+    
+    // Update basic config
+    if (configData["bike_name"]) {
+        strcpy(config.bike_name, configData["bike_name"]);
+        configChanged = true;
+    }
+    if (configData["version"]) {
+        config.version = configData["version"];
+        configChanged = true;
+    }
+    if (configData["dev_mode"]) {
+        config.dev_mode = configData["dev_mode"];
+        configChanged = true;
+    }
+    
+    // Update WiFi config
+    if (configData["wifi"]["scan_interval_sec"]) {
+        config.scan_interval_sec = configData["wifi"]["scan_interval_sec"];
+        configChanged = true;
+    }
+    if (configData["wifi"]["scan_timeout_ms"]) {
+        config.wifi_scan_timeout_ms = configData["wifi"]["scan_timeout_ms"];
+        configChanged = true;
+    }
+    if (configData["wifi"]["max_networks"]) {
+        config.wifi_max_networks = configData["wifi"]["max_networks"];
+        configChanged = true;
+    }
+    if (configData["wifi"]["rssi_threshold"]) {
+        config.wifi_rssi_threshold = configData["wifi"]["rssi_threshold"];
+        configChanged = true;
+    }
+    
+    // Update BLE config
+    if (configData["ble"]["base_name"]) {
+        strcpy(config.base_ble_name, configData["ble"]["base_name"]);
+        configChanged = true;
+    }
+    if (configData["ble"]["scan_time_sec"]) {
+        config.ble_scan_time_sec = configData["ble"]["scan_time_sec"];
+        configChanged = true;
+    }
+    
+    // Update power config
+    if (configData["power"]["deep_sleep_duration_sec"]) {
+        config.deep_sleep_sec = configData["power"]["deep_sleep_duration_sec"];
+        configChanged = true;
+    }
+    if (configData["power"]["radio_coordination_delay_ms"]) {
+        config.radio_coordination_delay_ms = configData["power"]["radio_coordination_delay_ms"];
+        configChanged = true;
+    }
+    
+    // Update battery config
+    if (configData["battery"]["critical_voltage"]) {
+        config.battery_critical_voltage = configData["battery"]["critical_voltage"];
+        configChanged = true;
+    }
+    if (configData["battery"]["low_voltage"]) {
+        config.min_battery_voltage = configData["battery"]["low_voltage"];
+        configChanged = true;
+    }
+    
+    if (configChanged) {
+        Serial.printf("✅ Config updated: %s v%d\n", config.bike_name, config.version);
+        saveConfig();
+        
+        // Send confirmation
+        if (pConfigChar) {
+            DynamicJsonDocument confirm(128);
+            confirm["type"] = "config_received";
+            confirm["bike_id"] = config.bike_id;
+            confirm["status"] = "ok";
+            
+            String confirmStr;
+            serializeJson(confirm, confirmStr);
+            pConfigChar->writeValue(confirmStr.c_str());
+            Serial.println("✅ Config confirmation sent");
+        }
+    } else {
+        Serial.println("📝 No config changes detected");
+    }
+}
+
+void onBLEDisconnected() {
+    Serial.println("🔴 BLE disconnected");
+    bleConnected = false;
+    pDataChar = nullptr;
+    pConfigChar = nullptr;
+    if (pClient) {
+        pClient = nullptr;
+    }
 }

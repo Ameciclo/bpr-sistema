@@ -114,6 +114,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
     doc["timestamp"] = time(nullptr);
     doc["base_id"] = configManager.getBaseId();
     doc["data_count"] = dataCount;
+    doc["hub_id"] = "hub_default";
 
     JsonArray dataArray = doc.createNestedArray("data");
 
@@ -126,6 +127,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
         item["crc32"] = String(buffer[i].crc32, HEX);
         item["compressed"] = buffer[i].compressed;
 
+        // Convert hex data back to readable JSON
         String hexData = "";
         for (size_t j = 0; j < buffer[i].size; j++)
         {
@@ -133,7 +135,23 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
             sprintf(hex, "%02X", buffer[i].data[j]);
             hexData += hex;
         }
-        item["data"] = hexData;
+        
+        // Try to decode hex back to JSON for readability
+        String decodedData = "";
+        for (size_t j = 0; j < hexData.length(); j += 2) {
+            String byteString = hexData.substring(j, j + 2);
+            char byte = strtol(byteString.c_str(), NULL, 16);
+            decodedData += byte;
+        }
+        
+        // Test if decoded data is valid JSON
+        DynamicJsonDocument testDoc(512);
+        if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok) {
+            item["data_decoded"] = testDoc;
+            Serial.printf("📋 Decoded data for %s: %s\n", buffer[i].bikeId.c_str(), decodedData.c_str());
+        } else {
+            item["data"] = hexData; // Fallback to hex if not JSON
+        }
         
         // Marcar como enviado
         buffer[i].uploaded = true;

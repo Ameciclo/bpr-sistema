@@ -1,6 +1,6 @@
-# 🗺️ Mapa de Chamadas de Funções - Hub Firmware
+# 🗺️ Mapa de Chamadas de Funções - Central Firmware
 
-Este documento mapeia todas as chamadas de funções no firmware do hub, partindo da função `main()` e traçando a trajetória completa de execução.
+Este documento mapeia todas as chamadas de funções no firmware da central, partindo da função `main()` e traçando a trajetória completa de execução.
 
 ## 📋 Estrutura Geral
 
@@ -540,4 +540,4 @@ ConfigAP::enter() → setupWebServer() → server.handleClient() → saveConfig(
 - **Configuração Dinâmica**: Parâmetros podem ser atualizados via Firebase
 - **LED Feedback**: Padrões visuais indicam o estado atual do sistema
 
-Este mapa fornece uma visão completa de como as funções se relacionam e são chamadas no firmware do hub, facilitando debugging e desenvolvimento de novas funcionalidades.
+Este mapa fornece uma visão completa de como as funções se relacionam e são chamadas no firmware da central, facilitando debugging e desenvolvimento de novas funcionalidades.

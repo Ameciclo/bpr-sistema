@@ -162,7 +162,7 @@ void ConfigAP::setupWebServer()
 {
     server.on("/", HTTP_GET, []()
               {
-        String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>BPR Hub Config</title>";
+        String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>BPR Central Config</title>";
         html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
         html += ".container{background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);max-width:500px}";
         html += "h1{color:#2c3e50;margin-bottom:20px}input{width:100%;padding:10px;margin:8px 0;border:1px solid #ddd;border-radius:4px;box-sizing:border-box}";
@@ -208,9 +208,9 @@ void ConfigAP::setupWebServer()
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
         if (isInitialConfigMode) {
-            html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Sem limite de tempo.</div>";
+            html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Sem limite de tempo.</div>";
         } else {
-            html += "<div class='warning'>⚠️ O hub reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
+            html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
         }
         
         // JavaScript para alternar tabs
@@ -276,7 +276,7 @@ void ConfigAP::setupWebServer()
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
-            html += "<div class='success'><h1>✅ Configuração Salva!</h1><p>🔄 O hub está reiniciando...</p>";
+            html += "<div class='success'><h1>✅ Configuração Salva!</h1><p>🔄 A Central está reiniciando...</p>";
             html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
             server.send(200, "text/html", html);
             delay(2000);
@@ -391,7 +391,7 @@ void ConfigAP::setupWebServer()
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>JSON Salvo</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
-            html += "<div class='success'><h1>✅ JSON Processado!</h1><p>🔄 O hub está reiniciando...</p>";
+            html += "<div class='success'><h1>✅ JSON Processado!</h1><p>🔄 A Central está reiniciando...</p>";
             html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
             server.send(200, "text/html", html);
             delay(2000);

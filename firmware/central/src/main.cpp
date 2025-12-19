@@ -76,7 +76,7 @@ void setup()
         changeState(STATE_CLOUD_SYNC);
     }
 
-    Serial.println("✅ Hub inicializado");
+    Serial.println("✅ Central inicializado");
 }
 
 void loop()
@@ -212,7 +212,7 @@ void printStatus()
     if (currentState == STATE_CONFIG_AP)
     {
         Serial.println("📱 Modo Configuração Ativo:");
-        Serial.println("   WiFi: BPR_Hub_Config (senha: botaprarodar)");
+        Serial.println("   WiFi: BPR Central (senha: botaprarodar)");
         Serial.println("   URL: http://192.168.4.1");
     }
     else
@@ -254,13 +254,16 @@ void checkPeriodicSync()
 
     lastSyncCheck = millis();
 
-    if (!bufferManager.needsSync())
-        return;
-
     if (!BikePairing::isSafeToExit())
     {
         Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
         return;
+    }
+
+    // Add memory check before sync
+    if (ESP.getFreeHeap() < 50000) {
+        Serial.printf("⚠️ Low memory before sync: %d bytes - forcing GC\n", ESP.getFreeHeap());
+        delay(100); // Allow cleanup
     }
 
     Serial.println("🔄 Tempo de sync - transitioning to CLOUD_SYNC");

@@ -39,7 +39,6 @@ void BikePairing::enter()
         return;
     }
     
-    Serial.println("📡 BLE Server started successfully");
     ledController.bikePairingPattern();
 }
 

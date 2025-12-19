@@ -3,7 +3,7 @@
 ## 📁 Estrutura de Arquivos e Dependências
 
 ```
-firmware/hub/
+firmware/central/
 ├── 🚀 main.cpp                    # Ponto de entrada e orquestrador
 │   ├── 📋 constants.h             # Estados e configurações
 │   ├── ⚙️ config_manager.h        # Gerenciamento de configurações

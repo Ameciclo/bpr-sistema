@@ -1,10 +1,37 @@
 {
-  "bike_id": "bici_001",
-  "base_ble_name": "BPR",
+  "bike_id": "",
+  "bike_name": "",
   "version": 1,
-  "scan_interval_sec": 300,
-  "scan_interval_low_batt_sec": 900,
-  "deep_sleep_sec": 3600,
-  "min_battery_voltage": 3.45,
+  "dev_mode": true,
+  "wifi": {
+    "scan_interval_sec": 300,
+    "scan_interval_low_batt_sec": 900,
+    "scan_timeout_ms": 5000,
+    "max_networks": 20,
+    "rssi_threshold": -90
+  },
+  "ble": {
+    "base_name": "BPR Central",
+    "scan_time_sec": 5,
+    "connection_timeout_ms": 10000
+  },
+  "power": {
+    "radio_coordination_delay_ms": 300,
+    "light_sleep_duration_ms": 1000,
+    "deep_sleep_duration_sec": 3600,
+    "max_time_without_base_sec": 7200
+  },
+  "battery": {
+    "critical_voltage": 3.2,
+    "low_voltage": 3.45,
+    "full_voltage": 4.2
+  },
+  "timing": {
+    "status_report_interval_ms": 30000,
+    "emergency_button_hold_ms": 3000
+  },
+  "buffers": {
+    "max_wifi_records": 100
+  },
   "timestamp": 0
 }

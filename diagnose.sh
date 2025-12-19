@@ -77,5 +77,5 @@ echo "🚀 7. Comandos Úteis:"
 echo "   - Listar dispositivos: pio device list"
 echo "   - Monitor serial: pio device monitor --baud 115200"
 echo "   - Upload bike: cd firmware/bike && ./upload.sh"
-echo "   - Upload hub: cd firmware/hub && pio run --target upload"
+echo "   - Upload Central: cd firmware/central && pio run --target upload"
 echo

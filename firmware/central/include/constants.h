@@ -29,13 +29,13 @@
 #define MAX_BIKES 10
 
 // BLE Configuration
-#define BLE_DEVICE_NAME "BPR Central Station"
+#define BLE_DEVICE_NAME "BPR Central"
 #define BLE_SERVICE_UUID "12345678-1234-1234-1234-123456789abc"
 #define BLE_CHAR_DATA_UUID "87654321-4321-4321-4321-cba987654321"
 #define BLE_CHAR_CONFIG_UUID "11111111-2222-3333-4444-555555555555"
 
 // Config AP
-#define AP_SSID "BPR_Central_Config"
+#define AP_SSID "BPR Central"
 #define AP_PASSWORD "botaprarodar"
 #define CONFIG_TIMEOUT_MS 900000  // 15 minutos
 

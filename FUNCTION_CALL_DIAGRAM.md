@@ -1,4 +1,4 @@
-# 📊 Diagrama de Blocos de Chamadas de Funções - Hub Firmware
+# 📊 Diagrama de Blocos de Chamadas de Funções - Central Firmware
 
 ## 🔄 Fluxo Principal
 

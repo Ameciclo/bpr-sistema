@@ -1,6 +1,6 @@
-# 🚲 Protocolo BLE para Bicicletas - BPR Hub
+# 🚲 Protocolo BLE para Bicicletas - BPR Central
 
-Documentação técnica para desenvolvimento de firmware de bicicletas compatível com o BPR Hub.
+Documentação técnica para desenvolvimento de firmware de bicicletas compatível com o BPR Central.
 
 ## 📋 Requisitos Obrigatórios
 
@@ -13,25 +13,25 @@ Documentação técnica para desenvolvimento de firmware de bicicletas compatív
 
 **Modo de operação:**
 - Bicicleta = **Cliente BLE** (escaneia e conecta)
-- Hub = **Servidor BLE** (aguarda conexões)
+- Central = **Servidor BLE** (aguarda conexões)
 
-### 🔍 Descoberta do Hub
+### 🔍 Descoberta da central
 
 **Escanear por:**
-- Nome do serviço: `BPR Hub Station`
+- Nome do serviço: `BPR Central`
 - Service UUID: `12345678-1234-1234-1234-123456789abc`
 
 **Exemplo de código:**
 ```cpp
-// Escanear por hubs BPR
+// Escanear por Centrals BPR
 NimBLEScan* pScan = NimBLEDevice::getScan();
 NimBLEScanResults results = pScan->start(10);
 
 for (int i = 0; i < results.getCount(); i++) {
     NimBLEAdvertisedDevice device = results.getDevice(i);
-    if (device.getName() == "BPR Hub Station") {
-        // Hub encontrado - conectar
-        connectToHub(device.getAddress());
+    if (device.getName() == "BPR Central") {
+        // Central encontrado - conectar
+        connectToCentral(device.getAddress());
         break;
     }
 }
@@ -47,7 +47,7 @@ for (int i = 0; i < results.getCount(); i++) {
 ### ⚙️ Config Characteristic (Configurações)
 - **UUID:** `11111111-2222-3333-4444-555555555555`
 - **Propriedades:** READ | WRITE | NOTIFY
-- **Uso:** Receber configurações do hub
+- **Uso:** Receber configurações da central
 
 ## 📋 Formato de Dados JSON
 
@@ -104,10 +104,10 @@ for (int i = 0; i < results.getCount(); i++) {
 ### 1️⃣ Conexão Inicial
 
 ```cpp
-// 1. Escanear e encontrar hub
-// 2. Conectar ao hub
+// 1. Escanear e encontrar Central
+// 2. Conectar ao Central
 NimBLEClient* pClient = NimBLEDevice::createClient();
-pClient->connect(hubAddress);
+pClient->connect(CentralAddress);
 
 // 3. Obter service e characteristics
 NimBLERemoteService* pService = pClient->getService("12345678-1234-1234-1234-123456789abc");
@@ -137,7 +137,7 @@ void sendStatus() {
 ### 3️⃣ Recebimento de Configurações
 
 ```cpp
-// Callback para receber configs do hub
+// Callback para receber configs da central
 class ConfigCallbacks : public NimBLECharacteristicCallbacks {
     void onNotify(NimBLERemoteCharacteristic* pChar) {
         std::string value = pChar->getValue();
@@ -164,7 +164,7 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks {
 **🟡 PENDING (Inicial):**
 - Bike nova, primeira conexão
 - Pode conectar no BLE
-- ❌ Dados são ignorados pelo hub
+- ❌ Dados são ignorados pelo Central
 - Aguarda aprovação do administrador
 
 **✅ ALLOWED (Aprovada):**
@@ -181,7 +181,7 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks {
 
 1. **Primeira conexão:** Bike vira PENDING automaticamente
 2. **Admin aprova:** Via dashboard ou Firebase
-3. **Próximo sync:** Hub baixa aprovação
+3. **Próximo sync:** Central baixa aprovação
 4. **Bike aprovada:** Pode enviar dados normalmente
 
 ## ⚠️ Comportamentos Esperados
@@ -191,7 +191,7 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks {
 ```cpp
 void loop() {
     if (!pClient->isConnected()) {
-        Serial.println("🔄 Reconectando ao hub...");
+        Serial.println("🔄 Reconectando ao Central...");
         scanAndConnect();
     }
     
@@ -207,7 +207,7 @@ void loop() {
 
 ### 📡 Gerenciamento de Desconexão
 
-- **Hub entra em WiFi sync:** BLE desliga temporariamente
+- **Central entra em WiFi sync:** BLE desliga temporariamente
 - **Bike perde conexão:** Deve tentar reconectar automaticamente
 - **Timeout:** Se não reconectar em 30s, voltar ao modo scan
 
@@ -245,14 +245,14 @@ public:
         
         for (int i = 0; i < results.getCount(); i++) {
             NimBLEAdvertisedDevice device = results.getDevice(i);
-            if (device.getName() == "BPR Hub Station") {
-                return connectToHub(device.getAddress());
+            if (device.getName() == "BPR Central") {
+                return connectToCentral(device.getAddress());
             }
         }
         return false;
     }
     
-    bool connectToHub(NimBLEAddress address) {
+    bool connectToCentral(NimBLEAddress address) {
         pClient = NimBLEDevice::createClient();
         
         if (!pClient->connect(address)) {
@@ -310,7 +310,7 @@ void setup() {
     
     Serial.println("🚲 Iniciando cliente BLE...");
     if (bike.scanAndConnect()) {
-        Serial.println("✅ Conectado ao hub!");
+        Serial.println("✅ Conectado ao Central!");
     }
 }
 
@@ -331,7 +331,7 @@ void loop() {
 ### ❌ Bike não conecta
 - Verificar nome do dispositivo (formato `bpr-XXXXXX`)
 - Confirmar UUIDs das características
-- Hub pode estar em modo WiFi sync
+- Central pode estar em modo WiFi sync
 
 ### ❌ Dados não aparecem no Firebase
 - Bike pode estar com status PENDING
@@ -345,6 +345,6 @@ void loop() {
 
 ## 📚 Referências
 
-- **Hub firmware:** `/firmware/hub/src/ble_only.cpp`
-- **Configurações:** `/firmware/hub/include/constants.h`
+- **Central firmware:** `/firmware/Central/src/ble_only.cpp`
+- **Configurações:** `/firmware/Central/include/constants.h`
 - **Firebase structure:** Documentação do projeto BPR

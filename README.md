@@ -8,7 +8,7 @@ Sistema completo de monitoramento de bicicletas com WiFi scanning, bot Telegram 
 bpr-sistema/
 ├── firmware/           # Códigos para ESP8266/ESP32
 │   ├── bici/          # Firmware da bicicleta v2.0 (WiFi scanner)
-│   ├── hub/           # Firmware do hub/central redesenhado
+│   ├── central/           # Firmware da central/central redesenhado
 │   └── bike/          # Firmware legado da bicicleta
 ├── bot/               # Bot do Telegram (@prarodarbot)
 ├── web/               # Site em Remix (botaprarodar)
@@ -629,7 +629,7 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
 bpr-sistema/
 ├── 🚲 firmware/           # Códigos ESP8266/ESP32
 │   ├── bici/              # Firmware bicicleta v2.0 (máquina de estados)
-│   ├── hub/               # Firmware hub redesenhado (modular)
+│   ├── central/               # Firmware central redesenhado (modular)
 │   └── bike/              # Firmware legado da bicicleta
 ├── 🤖 bot/                # Bot Telegram (@prarodarbot)
 │   ├── src/               # Código principal organizado
@@ -860,7 +860,7 @@ stateDiagram-v2
 
 ### 🛠️ Como Contribuir
 1. **Fork** o projeto
-2. **Clone** seu fork: `git clone https://github.com/seu-usuario/bpr-sistema.git`
+2. **Clone** seu fork: `git clone https://gitcentral.com/seu-usuario/bpr-sistema.git`
 3. **Crie uma branch**: `git checkout -b feature/nova-funcionalidade`
 4. **Faça suas mudanças** seguindo os padrões do projeto
 5. **Teste** suas alterações: `npm test` (bot) ou `pio test` (firmware)
@@ -875,7 +875,7 @@ stateDiagram-v2
 - **Documentação**: Sempre atualizar README.md relevante
 
 ### 🐛 Reportar Bugs
-1. Verifique se o bug já foi reportado nas [Issues](https://github.com/projeto/bpr-sistema/issues)
+1. Verifique se o bug já foi reportado nas [Issues](https://gitcentral.com/projeto/bpr-sistema/issues)
 2. Crie uma nova issue com:
    - Descrição clara do problema
    - Passos para reproduzir
@@ -888,7 +888,7 @@ stateDiagram-v2
 **MIT License** - veja o arquivo [LICENSE](LICENSE) para detalhes.
 
 ### 📞 Contato e Suporte
-- **Issues**: [GitHub Issues](https://github.com/projeto/bpr-sistema/issues)
-- **Discussões**: [GitHub Discussions](https://github.com/projeto/bpr-sistema/discussions)
+- **Issues**: [Gitcentral Issues](https://gitcentral.com/projeto/bpr-sistema/issues)
+- **Discussões**: [Gitcentral Discussions](https://gitcentral.com/projeto/bpr-sistema/discussions)
 - **Email**: contato@prarodar.org
 - **Telegram**: [@prarodarbot](https://t.me/prarodarbot)

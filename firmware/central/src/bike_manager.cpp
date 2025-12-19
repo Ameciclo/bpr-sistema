@@ -174,13 +174,22 @@ bool BikeManager::uploadToFirebase(DynamicJsonDocument& doc) {
     
     doc.clear();
     
-    // Só enviar bikes que tiveram heartbeat atualizado
+    // Só enviar bikes NOVAS (que não existem no Firebase)
     JsonObject obj = bikes.as<JsonObject>();
     for (JsonPair bike : obj) {
         String bikeId = bike.key().c_str();
-        if (bike.value()["last_heartbeat"].isNull()) continue;
+        String status = bike.value()["status"] | "";
         
-        doc[bikeId] = bike.value();
+        // Só incluir se é pending E foi adicionada recentemente (first_seen)
+        if (status == "pending" && bike.value()["first_seen"]) {
+            uint32_t firstSeen = bike.value()["first_seen"] | 0;
+            uint32_t now = time(nullptr);
+            
+            // Só enviar se foi vista pela primeira vez há menos de 5 minutos
+            if ((now - firstSeen) < 300) {
+                doc[bikeId] = bike.value();
+            }
+        }
     }
     
     return doc.size() > 0;
@@ -329,20 +338,41 @@ bool BikeManager::downloadFromFirebase() {
     HTTPClient http;
     const CentralConfig& config = configManager.getConfig();
     
-    String url = String(config.firebase.database_url) + 
-                "/bike_configs.json?auth=" + config.firebase.api_key;
+    // Baixar dados das bikes (registry)
+    String bikeUrl = String(config.firebase.database_url) + 
+                    "/bases/" + config.base_id + "/bikes.json?auth=" + config.firebase.api_key;
+    
+    Serial.println("🔄 Downloading bike registry from Firebase...");
+    
+    http.begin(bikeUrl);
+    int httpCode = http.GET();
+    
+    if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        
+        if (payload != "null" && payload.length() > 10) {
+            DynamicJsonDocument firebaseData(4096);
+            if (deserializeJson(firebaseData, payload) == DeserializationError::Ok) {
+                updateFromFirebase(firebaseData);
+            }
+        }
+    }
+    http.end();
+    
+    // Baixar configs das bikes
+    String configUrl = String(config.firebase.database_url) + 
+                      "/bike_configs.json?auth=" + config.firebase.api_key;
     
     Serial.println("🔄 Downloading bike configs from Firebase...");
     
-    http.begin(url);
-    int httpCode = http.GET();
+    http.begin(configUrl);
+    httpCode = http.GET();
     
     if (httpCode == HTTP_CODE_OK) {
         String payload = http.getString();
         
         if (payload == "null" || payload.length() < 10) {
             Serial.println("📝 No bike configs in Firebase");
-            http.end();
             return true;
         }
         
@@ -369,7 +399,6 @@ bool BikeManager::downloadFromFirebase() {
             
             saveData();
             Serial.printf("✅ Downloaded configs for %d bikes\n", newConfigs.size());
-            http.end();
             return true;
         } else {
             Serial.println("❌ Failed to parse bike configs");
@@ -420,7 +449,7 @@ String BikeManager::generateDefaultConfig(const String& bikeId) {
     response["config"]["wifi"]["scan_interval_sec"] = 300;
     response["config"]["wifi"]["scan_timeout_ms"] = 5000;
     
-    response["config"]["ble"]["base_name"] = "BPR Hub Station";
+    response["config"]["ble"]["base_name"] = "BPR Central";
     response["config"]["ble"]["scan_time_sec"] = 5;
     
     response["config"]["power"]["deep_sleep_duration_sec"] = 3600;

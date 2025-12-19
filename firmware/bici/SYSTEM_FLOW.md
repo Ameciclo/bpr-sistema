@@ -328,7 +328,7 @@ graph TB
         C --> D[Base Detection]
     end
     
-    subgraph "🏠 Base/Hub (ESP32)"
+    subgraph "🏠 Base/central (ESP32)"
         E[BLE Server] --> F[Bike Manager]
         F --> G[Firebase Sync]
     end
@@ -367,7 +367,7 @@ graph TB
 
 ## 🚀 Próximos Passos
 
-- [ ] **Integração com Hub**: Implementar servidor BLE na base
+- [ ] **Integração com central**: Implementar servidor BLE na base
 - [ ] **Testes de Campo**: Validar autonomia e confiabilidade
 - [ ] **Otimização**: Reduzir ainda mais o consumo energético
 - [ ] **Segurança**: Implementar autenticação BLE
