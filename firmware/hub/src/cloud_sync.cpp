@@ -6,8 +6,7 @@
 #include "config_manager.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
-#include "bike_registry.h"
-#include "bike_config_manager.h"
+#include "bike_manager.h"
 
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
@@ -37,15 +36,14 @@ SyncResult CloudSync::enter()
     syncTime();
 
     bool centralConfigOk = downloadCentralConfig();
-    bool bikeRegistryOk = downloadBikeRegistry();
-    bool bikeConfigsOk = downloadBikeConfigs();
+    bool bikeDataOk = downloadBikeData();
 
     bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
-    bool registryOk = uploadBikeRegistry();
+    bool bikeUploadOk = uploadBikeData();
     bool bufferOk = uploadBufferData();
     bool heartbeatOk = uploadHeartbeat();
 
-    bool syncSuccess = centralConfigOk && bikeRegistryOk && bikeConfigsOk && wifiConfigOk && registryOk && bufferOk && heartbeatOk;
+    bool syncSuccess = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
 
     // Sempre desconectar WiFi
     WiFi.disconnect(true);
@@ -159,18 +157,18 @@ bool CloudSync::downloadCentralConfig()
     return true;
 }
 
-bool CloudSync::downloadBikeConfigs()
+bool CloudSync::downloadBikeData()
 {
-    Serial.println("🔄 Downloading bike configs...");
+    Serial.println("🔄 Downloading bike data (registry + configs)...");
 
-    if (BikeConfigManager::downloadConfigsFromFirebase())
+    if (BikeManager::downloadFromFirebase())
     {
-        Serial.println("✅ Bike configs downloaded successfully");
+        Serial.println("✅ Bike data downloaded successfully");
         return true;
     }
     else
     {
-        Serial.println("🚨 Bike configs download failed!");
+        Serial.println("🚨 Bike data download failed!");
         return false;
     }
 }
@@ -293,58 +291,16 @@ bool CloudSync::uploadWiFiConfig()
     return true;
 }
 
-bool CloudSync::downloadBikeRegistry()
+
+
+bool CloudSync::uploadBikeData()
 {
-    HTTPClient http;
-
-    String url = configManager.getBikeRegistryUrl();
-
-    Serial.printf("📝 Downloading bike registry...\n");
-
-    http.begin(url);
-    int httpCode = http.GET();
-
-    // Early return se HTTP falhar
-    if (httpCode != HTTP_CODE_OK)
-    {
-        Serial.printf("⚠️ Bike registry download failed: HTTP %d\n", httpCode);
-        http.end();
-        return false;
-    }
-
-    String payload = http.getString();
-    http.end();
-
-    // Early return se não há dados
-    if (payload == "null" || payload.length() < 10)
-    {
-        Serial.println("📝 No bikes registered yet");
-        return true;
-    }
-
-    DynamicJsonDocument doc(2048);
-
-    // Early return se parse falhar
-    if (deserializeJson(doc, payload) != DeserializationError::Ok)
-    {
-        Serial.println("❌ Failed to parse bike registry");
-        return false;
-    }
-
-    // Sucesso
-    BikeRegistry::updateFromFirebase(doc);
-    Serial.printf("✅ Bike registry updated\n");
-    return true;
-}
-
-bool CloudSync::uploadBikeRegistry()
-{
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(4096);
 
     // Early return se não há atualizações
-    if (!BikeRegistry::getRegistryForUpload(doc))
+    if (!BikeManager::uploadToFirebase(doc))
     {
-        Serial.println("📝 No bike registry updates to send");
+        Serial.println("📝 No bike data updates to send");
         return true;
     }
 
@@ -363,11 +319,11 @@ bool CloudSync::uploadBikeRegistry()
     // Early return se falhar
     if (httpCode != HTTP_CODE_OK)
     {
-        Serial.printf("❌ Failed to upload bike registry: HTTP %d\n", httpCode);
+        Serial.printf("❌ Failed to upload bike data: HTTP %d\n", httpCode);
         return false;
     }
 
     // Sucesso
-    Serial.printf("📤 Bike registry uploaded: %d bikes\n", doc.size());
+    Serial.printf("📤 Bike data uploaded: %d bikes\n", doc.size());
     return true;
 }

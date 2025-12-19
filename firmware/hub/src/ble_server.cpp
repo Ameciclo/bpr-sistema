@@ -2,6 +2,7 @@
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include "constants.h"
+#include "bike_config_manager.h"
 
 // Static members
 NimBLEServer *BLEServer::pServer = nullptr;
@@ -25,9 +26,6 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
         BLEServer::connectedDevices[conn_handle] = "";
         Serial.printf("📝 Stored connection handle %d\n", conn_handle);
-        
-        // Notificar bike_pairing sobre conexão
-        BLEServer::onBikeConnected("");
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -48,9 +46,12 @@ class ServerCallbacks : public NimBLEServerCallbacks
         }
 
         NimBLEDevice::startAdvertising();
-        
-        // Notificar bike_pairing sobre desconexão
-        BLEServer::onBikeDisconnected(bikeId);
+
+        // Notificar bike_pairing sobre desconexão (só se conhece a bike)
+        if (!bikeId.isEmpty())
+        {
+            BLEServer::onBikeDisconnected(bikeId);
+        }
     }
 };
 
@@ -67,15 +68,25 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
             if (!error && doc["bike_id"])
             {
                 String bikeId = doc["bike_id"];
-
-                // Armazenar bike_id para esta conexão
-                for (auto &pair : BLEServer::connectedDevices)
-                {
-                    if (pair.second.isEmpty())
-                    {
-                        pair.second = bikeId;
+                
+                // Encontrar handle desta conexão
+                uint16_t conn_handle = 0;
+                for (auto &pair : BLEServer::connectedDevices) {
+                    if (pair.second.isEmpty()) {
+                        conn_handle = pair.first;
                         break;
                     }
+                }
+                
+                if (conn_handle != 0) {
+                    // Armazenar bike_id para esta conexão específica
+                    BLEServer::connectedDevices[conn_handle] = bikeId;
+                    Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
+
+                    // Verificar se tem config pendente e enviar imediatamente
+                    BLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
+                } else {
+                    Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
                 }
 
                 // Delegar processamento para bike_pairing
@@ -163,13 +174,75 @@ uint8_t BLEServer::getConnectedBikes()
     return connectedBikes;
 }
 
-void BLEServer::pushConfigToBike(const String &bikeId, const String &config)
+bool BLEServer::isBikeConnected(const String &bikeId)
 {
-    if (pConfigChar)
-    {
-        pConfigChar->setValue(config.c_str());
-        pConfigChar->notify();
-        Serial.printf("📤 Config pushed to %s: %s\n", bikeId.c_str(), config.c_str());
+    for (auto &pair : connectedDevices) {
+        if (pair.second == bikeId) {
+            return true;
+        }
     }
+    return false;
 }
 
+void BLEServer::pushConfigToBike(const String &bikeId, const String &config)
+{
+    if (!pConfigChar) return;
+    
+    // Encontrar handle da bike específica
+    uint16_t targetHandle = 0;
+    for (auto &pair : connectedDevices) {
+        if (pair.second == bikeId) {
+            targetHandle = pair.first;
+            break;
+        }
+    }
+    
+    if (targetHandle == 0) {
+        Serial.printf("❌ Bike %s not connected, cannot send config\n", bikeId.c_str());
+        return;
+    }
+    
+    // Enviar config direcionada
+    sendConfigToHandle(targetHandle, bikeId, config);
+}
+
+void BLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const String &config)
+{
+    if (!pConfigChar) return;
+    
+    // Incluir target no JSON para segurança extra
+    DynamicJsonDocument wrapper(1024);
+    wrapper["target_bike"] = bikeId;
+    wrapper["timestamp"] = millis();
+    
+    // Parse config original
+    DynamicJsonDocument originalConfig(512);
+    if (deserializeJson(originalConfig, config) == DeserializationError::Ok) {
+        wrapper["config"] = originalConfig;
+    } else {
+        wrapper["config"] = config;
+    }
+    
+    String wrappedConfig;
+    serializeJson(wrapper, wrappedConfig);
+    
+    pConfigChar->setValue(wrappedConfig.c_str());
+    
+    // Por enquanto usar broadcast com target (mais compatível)
+    pConfigChar->notify();
+    Serial.printf("📤 Config sent to %s (handle %d) with target filter\n", bikeId.c_str(), handle);
+}
+
+void BLEServer::checkAndSendPendingConfig(const String &bikeId, uint16_t handle)
+{
+    // Verificar se tem config pendente via bike_pairing
+    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+        String config = BikeConfigManager::getConfigForBike(bikeId);
+        sendConfigToHandle(handle, bikeId, config);
+        BikeConfigManager::markConfigSent(bikeId);
+        
+        Serial.printf("⚡ Immediate config sent to %s on connection\n", bikeId.c_str());
+    } else {
+        Serial.printf("📝 No pending config for %s\n", bikeId.c_str());
+    }
+}

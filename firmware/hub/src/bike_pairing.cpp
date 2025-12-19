@@ -1,10 +1,10 @@
 #include "bike_pairing.h"
 #include <ArduinoJson.h>
+#include <queue>
 #include "constants.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
-#include "bike_registry.h"
-#include "bike_config_manager.h"
+#include "bike_manager.h"
 #include "ble_server.h"
 
 extern BufferManager bufferManager;
@@ -16,13 +16,22 @@ static PairingStatus currentStatus = PAIRING_IDLE;
 static uint32_t lastActivity = 0;
 static uint32_t busyTimeout = 10000; // 10 segundos para considerar idle
 
+// Sistema de fila sequencial
+static std::queue<String> dataQueue;
+static String currentBike = "";
+static uint32_t requestTimeout = 0;
+static const uint32_t BIKE_TIMEOUT_MS = 30000; // 30s timeout por bike
+
 void BikePairing::enter()
 {
     Serial.println("🔵 Entering BIKE_PAIRING mode");
 
-    // Initialize services
-    BikeRegistry::init();
-    BikeConfigManager::init();
+    // Initialize bike manager
+    BikeManager::init();
+    
+    // Reset status to idle
+    currentStatus = PAIRING_IDLE;
+    lastActivity = millis();
     
     // Start BLE server
     if (!BLEServer::start()) {
@@ -37,6 +46,9 @@ void BikePairing::enter()
 void BikePairing::update()
 {
     uint32_t now = millis();
+
+    // Processar fila de dados sequencialmente
+    processDataQueue();
 
     // Heartbeat local (só para debug de bikes conectadas)
     if (now - lastHeartbeat > HEARTBEAT_INTERVAL)
@@ -57,7 +69,15 @@ void BikePairing::update()
 
 void BikePairing::exit()
 {
+    // Limpar fila ao sair
+    while (!dataQueue.empty()) {
+        dataQueue.pop();
+    }
+    currentBike = "";
+    requestTimeout = 0;
+    
     BLEServer::stop();
+    currentStatus = PAIRING_IDLE;
     Serial.println("🔚 Exiting BIKE_PAIRING mode");
 }
 
@@ -69,38 +89,29 @@ uint8_t BikePairing::getConnectedBikes()
 void BikePairing::sendHeartbeat()
 {
     DynamicJsonDocument heartbeat(1024);
+    
+    // Dados da central
     heartbeat["timestamp"] = millis() / 1000;
     heartbeat["uptime_sec"] = millis() / 1000;
     heartbeat["heap_free"] = ESP.getFreeHeap();
     
-    // Array detalhado de cada bike
+    // Pedir ao bike manager para popular dados das bikes
     JsonArray bikes = heartbeat.createNestedArray("bikes");
+    BikeManager::populateHeartbeatData(bikes);
     
-    // Iterar por todas as bikes conhecidas
-    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
-    
-    for (const String& bikeId : knownBikes) {
-        JsonObject bike = bikes.createNestedObject();
-        bike["id"] = bikeId;
-        bike["last_seen"] = BikeRegistry::getLastSeen(bikeId);
-        bike["status"] = calculateBikeStatus(bikeId);
-        bike["sleep_interval_sec"] = BikeConfigManager::getSleepInterval(bikeId);
-        bike["next_expected_contact"] = calculateNextContact(bikeId);
-        bike["battery_last"] = BikeRegistry::getLastBattery(bikeId);
-        bike["is_overdue"] = isBikeOverdue(bikeId);
-    }
-    
-    // Resumo geral
-    heartbeat["total_bikes"] = knownBikes.size();
+    // Estatísticas calculadas
+    heartbeat["total_bikes"] = bikes.size();
     heartbeat["bikes_connected_now"] = BLEServer::getConnectedBikes();
-    heartbeat["bikes_sleeping"] = countSleepingBikes();
-    heartbeat["bikes_overdue"] = countOverdueBikes();
+    heartbeat["bikes_allowed"] = BikeManager::getAllowedCount();
+    heartbeat["bikes_pending"] = BikeManager::getPendingCount();
+    heartbeat["bikes_with_recent_contact"] = BikeManager::getConnectedCount();
     
     // Salvar no LittleFS
     bufferManager.addHeartbeat(heartbeat.as<String>());
     
-    Serial.printf("💓 Heartbeat: %d total, %d sleeping, %d overdue\n", 
-                  (int)knownBikes.size(), countSleepingBikes(), countOverdueBikes());
+    Serial.printf("💓 Heartbeat: %d total, %d allowed, %d pending, %d recent\n", 
+                  (int)bikes.size(), BikeManager::getAllowedCount(), 
+                  BikeManager::getPendingCount(), BikeManager::getConnectedCount());
 }
 
 PairingStatus BikePairing::getStatus()
@@ -126,20 +137,20 @@ void BLEServer::onBikeConnected(const String& bikeId) {
     Serial.printf("🚲 Bike %s connected\n", bikeId.c_str());
     
     // Verificar se bike pode conectar (não blocked)
-    if (!BikeRegistry::canConnect(bikeId)) {
+    if (!BikeManager::canConnect(bikeId)) {
         Serial.printf("❌ Blocked bike %s - disconnecting\n", bikeId.c_str());
         BLEServer::forceDisconnectBike(bikeId);
         return;
     }
     
     // Se tem config pendente, enviar imediatamente
-    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
+    if (BikeManager::hasConfigUpdate(bikeId)) {
         currentStatus = PAIRING_SENDING_CONFIG;
         lastActivity = millis();
         
-        String config = BikeConfigManager::getConfigForBike(bikeId);
+        String config = BikeManager::getConfigForBike(bikeId);
         BLEServer::pushConfigToBike(bikeId, config);
-        BikeConfigManager::markConfigSent(bikeId);
+        BikeManager::markConfigSent(bikeId);
         
         Serial.printf("⚙️ Config sent to %s on connection\n", bikeId.c_str());
     } else {
@@ -157,55 +168,29 @@ void BLEServer::onBikeDisconnected(const String& bikeId) {
 }
 
 void BLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData) {
-    // Marcar atividade de recepção de dados
-    currentStatus = PAIRING_RECEIVING_DATA;
-    lastActivity = millis();
-    
-    Serial.printf("🔍 Processing data from bike: %s\n", bikeId.c_str());
-    
-    // Validar se bike pode se conectar (não blocked)
-    if (!BikeRegistry::canConnect(bikeId)) {
+    // Validações rápidas primeiro
+    if (!BikeManager::canConnect(bikeId)) {
         Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
-        currentStatus = PAIRING_IDLE; // Rejeição é rápida
         return;
     }
     
-    Serial.printf("✅ Bike %s can connect\n", bikeId.c_str());
-    
-    // Validar se pode enviar dados (só allowed)
-    if (!BikeRegistry::isAllowed(bikeId)) {
-        BikeRegistry::recordPendingVisit(bikeId);
+    if (!BikeManager::isAllowed(bikeId)) {
+        BikeManager::recordPendingVisit(bikeId);
         Serial.printf("📝 Pending bike %s visited - data ignored (awaiting approval)\n", bikeId.c_str());
-        currentStatus = PAIRING_IDLE; // Pending é rápido
         return;
     }
     
-    Serial.printf("📥 Data from %s\n", bikeId.c_str());
-    
-    // Parse para atualizar heartbeat
-    DynamicJsonDocument doc(512);
-    if (deserializeJson(doc, jsonData) == DeserializationError::Ok) {
-        if (doc["battery"] && doc["heap"]) {
-            BikeRegistry::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);
-        }
-    }
-    
-    // Processar dados via BufferManager
-    bufferManager.addBikeData(bikeId, jsonData);
-    
-    // Verificar se tem config nova para enviar
-    if (BikeConfigManager::hasConfigUpdate(bikeId)) {
-        currentStatus = PAIRING_SENDING_CONFIG;
-        lastActivity = millis();
-        
-        String config = BikeConfigManager::getConfigForBike(bikeId);
-        BLEServer::pushConfigToBike(bikeId, config);
-        BikeConfigManager::markConfigSent(bikeId);
-        
-        Serial.printf("⚙️ Config sent to %s - marked as busy\n", bikeId.c_str());
+    // Sistema de fila sequencial
+    if (currentBike.isEmpty()) {
+        // Nenhuma bike processando - processar imediatamente
+        BikePairing::processDataFromBike(bikeId, jsonData);
+    } else if (currentBike == bikeId) {
+        // Bike atual enviando mais dados - processar
+        BikePairing::processDataFromBike(bikeId, jsonData);
     } else {
-        // Processamento completo, voltar para idle
-        currentStatus = PAIRING_IDLE;
+        // Outra bike tentando enviar - enfileirar
+        Serial.printf("📋 Bike %s enqueued (current: %s)\n", bikeId.c_str(), currentBike.c_str());
+        BikePairing::enqueueBike(bikeId, jsonData);
     }
 }
 
@@ -228,10 +213,10 @@ void BLEServer::onConfigRequest(const String& bikeId, const String& request) {
     if (type == "config_request") {
         Serial.printf("📝 Config request from %s\n", bikeId.c_str());
         
-        if (BikeConfigManager::hasConfigUpdate(bikeId)) {
-            String config = BikeConfigManager::getConfigForBike(bikeId);
+        if (BikeManager::hasConfigUpdate(bikeId)) {
+            String config = BikeManager::getConfigForBike(bikeId);
             BLEServer::pushConfigToBike(bikeId, config);
-            BikeConfigManager::markConfigSent(bikeId);
+            BikeManager::markConfigSent(bikeId);
             Serial.printf("⚙️ Config sent to %s\n", bikeId.c_str());
         } else {
             Serial.printf("📝 No config update for %s\n", bikeId.c_str());
@@ -244,44 +229,103 @@ void BLEServer::onConfigRequest(const String& bikeId, const String& request) {
     }
 }
 
-// Funções auxiliares para heartbeat inteligente
-String BikePairing::calculateBikeStatus(const String& bikeId) {
-    uint32_t lastSeen = BikeRegistry::getLastSeen(bikeId);
-    uint32_t sleepInterval = BikeConfigManager::getSleepInterval(bikeId);
-    uint32_t now = millis() / 1000;
+// Funções auxiliares removidas - dados vêm do BikeRegistry::populateHeartbeatData()
+
+// Funções da fila sequencial
+void BikePairing::processDataQueue() {
+    uint32_t now = millis();
     
-    if (BLEServer::isBikeConnected(bikeId)) return "connected";
-    if ((now - lastSeen) < sleepInterval) return "sleeping";
-    if ((now - lastSeen) < (sleepInterval * 1.5)) return "expected_soon";
-    return "overdue";
-}
-
-uint32_t BikePairing::calculateNextContact(const String& bikeId) {
-    uint32_t lastSeen = BikeRegistry::getLastSeen(bikeId);
-    uint32_t sleepInterval = BikeConfigManager::getSleepInterval(bikeId);
-    return lastSeen + sleepInterval;
-}
-
-bool BikePairing::isBikeOverdue(const String& bikeId) {
-    uint32_t nextExpected = calculateNextContact(bikeId);
-    uint32_t now = millis() / 1000;
-    return (now > nextExpected + 300); // 5min de tolerância
-}
-
-int BikePairing::countSleepingBikes() {
-    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
-    int count = 0;
-    for (const String& bikeId : knownBikes) {
-        if (calculateBikeStatus(bikeId) == "sleeping") count++;
+    // Verificar timeout da bike atual
+    if (!currentBike.isEmpty() && (now - requestTimeout) > BIKE_TIMEOUT_MS) {
+        Serial.printf("⏰ Timeout for bike %s - processing next\n", currentBike.c_str());
+        finishCurrentBike();
     }
-    return count;
+    
+    // Se não há bike atual e há fila, processar próxima
+    if (currentBike.isEmpty() && !dataQueue.empty()) {
+        String nextBike = dataQueue.front();
+        dataQueue.pop();
+        
+        Serial.printf("🎯 Processing next bike from queue: %s\n", nextBike.c_str());
+        requestDataFromBike(nextBike);
+    }
 }
 
-int BikePairing::countOverdueBikes() {
-    std::vector<String> knownBikes = BikeRegistry::getAllKnownBikes();
-    int count = 0;
-    for (const String& bikeId : knownBikes) {
-        if (isBikeOverdue(bikeId)) count++;
-    }
-    return count;
+void BikePairing::requestDataFromBike(const String& bikeId) {
+    currentBike = bikeId;
+    requestTimeout = millis();
+    currentStatus = PAIRING_RECEIVING_DATA;
+    lastActivity = millis();
+    
+    // Enviar comando para bike enviar dados
+    DynamicJsonDocument cmd(256);
+    cmd["type"] = "data_request";
+    cmd["bike_id"] = bikeId;
+    
+    String cmdStr;
+    serializeJson(cmd, cmdStr);
+    BLEServer::pushConfigToBike(bikeId, cmdStr);
+    
+    Serial.printf("📤 Data request sent to %s\n", bikeId.c_str());
 }
+
+void BikePairing::processDataFromBike(const String& bikeId, const String& jsonData) {
+    currentBike = bikeId;
+    requestTimeout = millis();
+    currentStatus = PAIRING_RECEIVING_DATA;
+    lastActivity = millis();
+    
+    Serial.printf("📥 Processing data from %s\n", bikeId.c_str());
+    
+    // Parse para atualizar heartbeat
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, jsonData) == DeserializationError::Ok) {
+        if (doc["battery"] && doc["heap"]) {
+            BikeManager::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);
+        }
+    }
+    
+    // Processar dados via BufferManager
+    bufferManager.addBikeData(bikeId, jsonData);
+    
+    // Verificar se tem config nova para enviar
+    if (BikeManager::hasConfigUpdate(bikeId)) {
+        currentStatus = PAIRING_SENDING_CONFIG;
+        
+        String config = BikeManager::getConfigForBike(bikeId);
+        BLEServer::pushConfigToBike(bikeId, config);
+        BikeManager::markConfigSent(bikeId);
+        
+        Serial.printf("⚙️ Config sent to %s\n", bikeId.c_str());
+    }
+    
+    // Finalizar processamento desta bike
+    finishCurrentBike();
+}
+
+void BikePairing::enqueueBike(const String& bikeId, const String& jsonData) {
+    // Verificar se bike já está na fila
+    std::queue<String> tempQueue = dataQueue;
+    while (!tempQueue.empty()) {
+        if (tempQueue.front() == bikeId) {
+            Serial.printf("📋 Bike %s already in queue\n", bikeId.c_str());
+            return;
+        }
+        tempQueue.pop();
+    }
+    
+    // Adicionar à fila
+    dataQueue.push(bikeId);
+    Serial.printf("📋 Bike %s added to queue (size: %d)\n", bikeId.c_str(), (int)dataQueue.size());
+}
+
+void BikePairing::finishCurrentBike() {
+    if (!currentBike.isEmpty()) {
+        Serial.printf("✅ Finished processing bike %s\n", currentBike.c_str());
+        currentBike = "";
+        requestTimeout = 0;
+        currentStatus = PAIRING_IDLE;
+    }
+}
+
+// Funções auxiliares removidas - lógica consolidada no BikeRegistry

@@ -15,11 +15,10 @@ public:
     static bool connectWiFi();
     static void syncTime();
     static bool downloadCentralConfig();
-    static bool downloadBikeConfigs();
+    static bool downloadBikeData();
     static bool uploadBufferData();
     static bool uploadHeartbeat();
     static bool uploadWiFiConfig();
-    static bool downloadBikeRegistry();
-    static bool uploadBikeRegistry();
+    static bool uploadBikeData();
 
 };
