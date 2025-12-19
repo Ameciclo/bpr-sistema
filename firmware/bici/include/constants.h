@@ -1,16 +1,13 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include "../common/bpr_protocol.h"
+#include "../common/bpr_types.h"
+
 // Hardware Configuration
 #define LED_PIN 8
 #define BUTTON_PIN 9
 #define BATTERY_PIN A0
-
-// BLE Configuration
-#define BLE_SCAN_TIME 5
-#define BLE_SCAN_INTERVAL 1349
-#define BLE_SCAN_WINDOW 449
-#define BLE_CONNECTION_TIMEOUT 10000
 
 // WiFi Configuration
 #define WIFI_SCAN_TIMEOUT 5000
@@ -28,14 +25,12 @@
 #define BATTERY_FULL_VOLTAGE 4.2
 
 // Timing Constants
-#define STATUS_REPORT_INTERVAL 30000
 #define EMERGENCY_BUTTON_HOLD_TIME 3000
 #define MAX_TIME_WITHOUT_BASE 7200000 // 2 hours
 
 // Buffer Sizes
 #define MAX_WIFI_RECORDS 100
 #define CONFIG_JSON_SIZE 1024
-#define BLE_CHARACTERISTIC_SIZE 512
 
 // State Machine
 enum BikeState {
@@ -45,13 +40,5 @@ enum BikeState {
     STATE_LOW_POWER = 3,
     STATE_DEEP_SLEEP = 4
 };
-
-// BLE Service UUIDs (compatível com central)
-#define BLE_SERVICE_UUID "12345678-1234-1234-1234-123456789abc"
-#define BLE_CHAR_DATA_UUID "87654321-4321-4321-4321-cba987654321"
-#define BLE_CHAR_CONFIG_UUID "11111111-2222-3333-4444-555555555555"
-
-// Central BLE Device Name
-#define CENTRAL_BLE_NAME "BPR Central"
 
 #endif
