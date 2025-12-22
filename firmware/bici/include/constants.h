@@ -35,7 +35,11 @@ enum BikeState {
     STATE_AT_BASE = 2,
     STATE_SCANNING = 3,
     STATE_LOST = 4,
-    STATE_SLEEP = 5
+    STATE_SLEEP = 5,
+    STATE_SLEEPING = 6,      // Deep sleep na base (4min50s)
+    STATE_WAKE_CHECK = 7,    // Acorda, verifica se está na base
+    STATE_DATA_UPLOAD = 8,   // Voltou na base, upload dados
+    STATE_LOW_BATTERY = 9    // Bateria crítica - modo emergência
 };
 
 // WiFi Record Structure

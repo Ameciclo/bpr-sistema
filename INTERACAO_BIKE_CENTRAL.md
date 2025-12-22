@@ -318,34 +318,61 @@ void setup() {
 }
 ```
 
-#### **2. at_base.cpp - Protocolo "Dar Oi"**
+#### **2. at_base.cpp - Leitura de Advertising BUSY**
 ```cpp
-// MODIFICAR: sendStatus() → sendHeartbeat()
-void AtBaseState::sendHeartbeat() {
-    doc["type"] = "heartbeat";
-    doc["battery_percent"] = getBatteryPercent(); // não voltage
-    doc["has_data"] = !bufferManager.isEmpty();
-    doc["config_version"] = configManager.getVersion();
-}
-
-// ADICIONAR: processHeartbeatResponse()
-void AtBaseState::processHeartbeatResponse(String response) {
-    if (response.contains("config_update")) {
-        // Aplicar nova config
-    }
-    if (response.contains("next_checkin_sec")) {
-        // Ajustar próximo "dar oi"
-    }
-}
-
-// MODIFICAR: Retry com advertising check
+// MODIFICAR: Retry inteligente com advertising check
 bool AtBaseState::scanForBase() {
-    // Ler advertising data para status
-    if (advertisingData.contains("BUSY:")) {
-        int waitTime = extractWaitTime(advertisingData);
-        Serial.printf("Central busy, waiting %ds\n", waitTime);
-        return false; // Volta a dormir com delay extra
+    Config& config = configManager.getConfig();
+    Serial.printf("🔍 Scanning for BLE base '%s*' (timeout: %ds)...\n", 
+                  config.base_ble_name, config.ble_scan_time_sec);
+    
+    NimBLEScan* pScan = NimBLEDevice::getScan();
+    pScan->setActiveScan(true);
+    NimBLEScanResults results = pScan->start(config.ble_scan_time_sec, false);
+    
+    for (int i = 0; i < results.getCount(); i++) {
+        NimBLEAdvertisedDevice device = results.getDevice(i);
+        
+        if (device.getName().find(config.base_ble_name) != std::string::npos) {
+            Serial.printf("🔍 Found base: %s\n", device.getName().c_str());
+            
+            // Verificar manufacturer data para status
+            std::string manufacturerData = device.getManufacturerData();
+            String status = String(manufacturerData.c_str());
+            
+            if (status.startsWith("BUSY:")) {
+                int waitTime = extractWaitTime(status);  // "BUSY:240" → 240s
+                Serial.printf("🚫 Central busy for %ds, sleeping extra\n", waitTime);
+                
+                // Dormir tempo sugerido + margem de segurança
+                uint32_t sleepTime = waitTime + config.busy_retry_delay_sec;
+                powerManager.enterDeepSleep(sleepTime);
+                
+                pScan->clearResults();
+                return false;  // Não conectar agora
+            }
+            
+            // Status "AVAILABLE" ou sem status → conectar normalmente
+            if (connectToBase(&device)) {
+                pScan->clearResults();
+                return true;
+            }
+        }
     }
+    
+    pScan->clearResults();
+    Serial.println("❌ No BLE base found");
+    return false;
+}
+
+// ADICIONAR: Função para extrair tempo do status BUSY
+int AtBaseState::extractWaitTime(const String& status) {
+    // "BUSY:240" → 240
+    int colonPos = status.indexOf(':');
+    if (colonPos > 0 && colonPos < status.length() - 1) {
+        return status.substring(colonPos + 1).toInt();
+    }
+    return 60; // Default 1min se não conseguir parsear
 }
 ```
 
@@ -533,30 +560,64 @@ bool ConfigManager::isValid() {
 }
 ```
 
-### 🏢 **CENTRAL (firmware/central/src/)**
-
-#### **1. ble_server.cpp - Advertising com Status**
+#### **5. config_manager.cpp - URL de Presença**
 ```cpp
-// MODIFICAR: Advertising dinâmico
-void BPRBLEServer::updateAdvertisingData() {
-    String status = "AVAILABLE";
-    if (currentState == STATE_CLOUD_SYNC) {
-        uint32_t remaining = getSyncTimeRemaining();
-        status = "BUSY:" + String(remaining);
-    } else if (dataQueue.size() > 0) {
-        uint32_t estimated = dataQueue.size() * 30; // 30s por bike
-        status = "BUSY:" + String(estimated);
+// ADICIONAR: URL para dados de presença
+String ConfigManager::getPresenceDataUrl() const {
+    return String(config.firebase.database_url) + 
+           "/bases/" + config.base_id + "/presence.json?auth=" + 
+           config.firebase.api_key;
+}
+```
+
+#### **1. ble_server.cpp - Advertising com Status + Modo BUSY**
+```cpp
+// MODIFICAR: Advertising dinâmico + modo BUSY
+class BPRBLEServer {
+public:
+    static void setAdvertisingOnly(String status);           // Só advertising, sem conexões
+    static void updateAdvertisingData(String status);        // Atualizar status atual
+    static void stopAcceptingConnections();                 // Parar aceitar conexões
+    static void startAcceptingConnections();                // Voltar a aceitar conexões
+};
+
+// Implementação do modo BUSY
+void BPRBLEServer::setAdvertisingOnly(String status) {
+    // Parar aceitar novas conexões
+    if (pServer) {
+        pServer->getAdvertising()->stop();
     }
     
-    // Atualizar manufacturer data
+    // Configurar advertising com status
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
+    
+    // Adicionar status no manufacturer data
     pAdvertising->setManufacturerData(0xFFFF, status);
+    pAdvertising->setScanResponse(true);
+    
+    // Iniciar APENAS advertising (sem aceitar conexões)
     pAdvertising->start();
+    
+    Serial.printf("📡 Advertising only: %s\n", status.c_str());
 }
 
-// ADICIONAR: Continuar advertising durante WiFi
-void BPRBLEServer::maintainAdvertisingDuringSync() {
-    // Não parar advertising quando WiFi conecta
-    // Só atualizar status para "BUSY:tempo"
+void BPRBLEServer::stopAcceptingConnections() {
+    // Desconectar bikes já conectadas
+    if (pServer && connectedBikes > 0) {
+        pServer->disconnect(0xFF);  // Disconnect all
+        connectedBikes = 0;
+        connectedDevices.clear();
+        Serial.println("🚫 Stopped accepting BLE connections");
+    }
+}
+
+void BPRBLEServer::startAcceptingConnections() {
+    // Voltar a aceitar conexões normalmente
+    if (pServer) {
+        pServer->startAdvertising();
+        Serial.println("✅ Started accepting BLE connections");
+    }
 }
 ```
 
@@ -592,52 +653,110 @@ void BikePairing::processDataUpload(const String& bikeId, JsonDocument& data) {
 }
 ```
 
-#### **3. cloud_sync.cpp - Coexistência BLE**
+#### **4. cloud_sync.cpp - Upload de Presença**
 ```cpp
-// MODIFICAR: Não parar BLE durante sync
+// ADICIONAR: Upload de dados de presença durante sync
+bool CloudSync::uploadPresenceData() {
+    DynamicJsonDocument doc(4096);
+    
+    // Early return se não há dados de presença
+    if (!BikeManager::uploadPresenceToFirebase(doc)) {
+        Serial.println("📝 No presence data to upload");
+        return true; // Não ter dados não é erro
+    }
+    
+    HTTPClient http;
+    String url = configManager.getPresenceDataUrl(); // /bases/{base_id}/presence.json
+    
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    int httpCode = http.PUT(jsonString); // PUT substitui dados completos
+    
+    // Early return se falhar
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("❌ Presence upload failed: HTTP %d\n", httpCode);
+        http.end();
+        return false;
+    }
+    
+    // Sucesso
+    Serial.printf("📤 Presence data uploaded: %d bikes\n", doc.size());
+    http.end();
+    return true;
+}
+
+// MODIFICAR: Incluir upload de presença no sync
+bool CloudSync::performSync() {
+    bool success = true;
+    
+    // Sync normal
+    success &= downloadCentralConfig();
+    success &= downloadBikeData();
+    success &= uploadBikeData();
+    success &= uploadBufferData();
+    success &= uploadHeartbeat();
+    
+    // ADICIONAR: Upload de presença
+    success &= uploadPresenceData();
+    
+    return success;
+}
+```
+```cpp
+// MODIFICAR: Manter APENAS advertising durante sync
 SyncResult CloudSync::enter() {
-    // NÃO fazer: BPRBLEServer::stop();
+    Serial.println("📡 Entering CLOUD_SYNC mode");
     
-    // Atualizar advertising para "BUSY"
-    BPRBLEServer::updateAdvertisingData();
+    // Calcular tempo estimado de sync
+    uint32_t estimatedSyncTime = configManager.getConfig().wifi_timeout_sec;
     
-    // Continuar processando heartbeats durante sync
+    // Manter APENAS advertising com status "BUSY"
+    BPRBLEServer::setAdvertisingOnly("BUSY:" + String(estimatedSyncTime));
+    
+    // PARAR processamento de conexões BLE
+    BPRBLEServer::stopAcceptingConnections();
+    
+    // Foco total no WiFi sync
     ledController.syncPattern();
+    syncStartTime = millis();
+    
     return SyncResult::IN_PROGRESS;
 }
 
 SyncResult CloudSync::update() {
-    // Durante sync, ainda processar heartbeats rápidos
-    BikePairing::processHeartbeatsOnly();
+    // Atualizar advertising com tempo restante
+    uint32_t elapsed = (millis() - syncStartTime) / 1000;
+    uint32_t remaining = configManager.getConfig().wifi_timeout_sec - elapsed;
     
-    // Fazer sync normal
+    if (remaining > 0) {
+        BPRBLEServer::updateAdvertisingData("BUSY:" + String(remaining));
+    }
+    
+    // Fazer sync SEM processar BLE
     bool success = performSync();
     
     return success ? SyncResult::SUCCESS : SyncResult::FAILURE;
 }
-```
 
-#### **4. main.cpp - Timing Inteligente**
-```cpp
-// MODIFICAR: Intervalos "primos entre si"
-void checkPeriodicSync() {
-    static uint32_t syncInterval = 240000; // 4min (vs 5min das bikes)
+void CloudSync::exit() {
+    // Voltar advertising para "AVAILABLE"
+    BPRBLEServer::setAdvertisingOnly("AVAILABLE");
     
-    if (millis() - lastSyncCheck <= syncInterval) return;
+    // Reativar processamento de conexões BLE
+    BPRBLEServer::startAcceptingConnections();
     
-    // Verificar se é seguro fazer sync
-    if (!BikePairing::isSafeToExit()) {
-        Serial.println("Sync delayed - bikes active");
-        return;
-    }
-    
-    changeState(STATE_CLOUD_SYNC);
+    WiFi.disconnect(true);
+    Serial.println("🔚 Exiting CLOUD_SYNC mode");
 }
 ```
 
-#### **5. bike_manager.cpp - Heartbeat Tracking**
+#### **5. bike_manager.cpp - Heartbeat Tracking Local**
 ```cpp
-// ADICIONAR: Rastreamento de heartbeats
+// ADICIONAR: Rastreamento de heartbeats (salvo localmente)
 struct BikePresence {
     String bike_id;
     uint32_t last_heartbeat;
@@ -646,15 +765,58 @@ struct BikePresence {
     uint32_t config_version;
 };
 
-// MODIFICAR: Salvar heartbeats no Firebase
+// MODIFICAR: Salvar heartbeats no LittleFS (NÃO direto no Firebase)
 void BikeManager::updateHeartbeat(const String& bikeId, JsonDocument& heartbeat) {
-    // Salvar em /bases/{base_id}/presence/{bike_id}
-    // Para o bot monitorar
-    
     time_t now = time(nullptr);
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+    
+    char dateStr[64];
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+    
+    // Atualizar dados locais
     bikes[bikeId]["last_heartbeat"] = now;
+    bikes[bikeId]["last_heartbeat_human"] = dateStr;
     bikes[bikeId]["battery_percent"] = heartbeat["battery_percent"];
     bikes[bikeId]["status"] = "present";
+    bikes[bikeId]["has_pending_data"] = heartbeat["has_data"] | false;
+    bikes[bikeId]["config_version"] = heartbeat["config_version"] | 1;
+    
+    // Salvar no LittleFS (não Firebase!)
+    saveData(); // Salva bikes.json local
+    
+    Serial.printf("💓 Heartbeat local: %s (bat:%d%%, data:%s)\n", 
+                  bikeId.c_str(), 
+                  (int)heartbeat["battery_percent"],
+                  heartbeat["has_data"] ? "yes" : "no");
+}
+
+// ADICIONAR: Upload de presença durante CLOUD_SYNC
+bool BikeManager::uploadPresenceToFirebase(DynamicJsonDocument& doc) {
+    if (!dataLoaded) return false;
+    
+    doc.clear();
+    
+    // Montar dados de presença para upload
+    JsonObject obj = bikes.as<JsonObject>();
+    for (JsonPair bike : obj) {
+        String bikeId = bike.key().c_str();
+        
+        // Só incluir bikes que deram "oi" recentemente
+        uint32_t lastHeartbeat = bike.value()["last_heartbeat"] | 0;
+        if (lastHeartbeat > 0) {
+            JsonObject presence = doc.createNestedObject(bikeId);
+            presence["last_heartbeat"] = lastHeartbeat;
+            presence["last_heartbeat_human"] = bike.value()["last_heartbeat_human"];
+            presence["battery_percent"] = bike.value()["battery_percent"];
+            presence["status"] = bike.value()["status"];
+            presence["has_pending_data"] = bike.value()["has_pending_data"];
+            presence["config_version"] = bike.value()["config_version"];
+        }
+    }
+    
+    Serial.printf("📤 Presence data ready: %d bikes\n", doc.size());
+    return doc.size() > 0;
 }
 ```
 

@@ -17,9 +17,27 @@ bool AtBaseState::scanForBase() {
     
     for (int i = 0; i < results.getCount(); i++) {
         NimBLEAdvertisedDevice device = results.getDevice(i);
+        
         if (device.getName().find(config.base_ble_name) != std::string::npos) {
             Serial.printf("🔍 Found base: %s\n", device.getName().c_str());
             
+            // Verificar manufacturer data para status
+            std::string manufacturerData = device.getManufacturerData();
+            String status = String(manufacturerData.c_str());
+            
+            if (status.startsWith("BUSY:")) {
+                int waitTime = extractWaitTime(status);  // "BUSY:240" → 240s
+                Serial.printf("🚫 Central busy for %ds, sleeping extra\n", waitTime);
+                
+                // Dormir tempo sugerido + margem de segurança
+                uint32_t sleepTime = waitTime + config.busy_retry_delay_sec;
+                // powerManager.enterDeepSleep(sleepTime); // Seria chamado externamente
+                
+                pScan->clearResults();
+                return false;  // Não conectar agora
+            }
+            
+            // Status "AVAILABLE" ou sem status → conectar normalmente
             if (connectToBase(&device)) {
                 pScan->clearResults();
                 return true;
@@ -73,9 +91,9 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
         // Setup config notifications
         if (pConfigChar->canNotify()) {
             pConfigChar->subscribe(true, [this](NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
-                String config = String((char*)pData, length);
-                Serial.printf("📥 Config received: %s\n", config.c_str());
-                configManager.processUpdate(config);
+                String response = String((char*)pData, length);
+                Serial.printf("📥 Config response: %s\n", response.c_str());
+                processHeartbeatResponse(response);
             });
         }
         
@@ -94,9 +112,11 @@ void AtBaseState::sendStatus() {
     
     Config& config = configManager.getConfig();
     DynamicJsonDocument doc(256);
+    doc["type"] = "heartbeat";
     doc["bike_id"] = config.bike_id;
-    doc["battery"] = getBatteryVoltage();
-    doc["records"] = bufferManager.getCount();
+    doc["battery_percent"] = getBatteryPercent(); // não voltage
+    doc["has_data"] = !bufferManager.isEmpty();
+    doc["config_version"] = config.version;
     doc["timestamp"] = millis() / 1000;
     doc["heap"] = ESP.getFreeHeap();
     
@@ -104,7 +124,7 @@ void AtBaseState::sendStatus() {
     serializeJson(doc, json);
     
     pDataChar->writeValue(json.c_str());
-    Serial.printf("📤 Status: %s\n", json.c_str());
+    Serial.printf("📤 Heartbeat: %s\n", json.c_str());
 }
 
 void AtBaseState::sendWiFiData() {
@@ -219,6 +239,47 @@ float AtBaseState::getBatteryVoltage() {
     
     lastVoltage = (adc / 4095.0) * 3.3 * 2.0;
     return lastVoltage;
+}
+
+uint8_t AtBaseState::getBatteryPercent() {
+    float voltage = getBatteryVoltage();
+    
+    // USB power detection
+    if (voltage >= 3.9) {
+        return 100;
+    }
+    
+    // Convert voltage to percentage (3.2V = 0%, 4.2V = 100%)
+    float percent = ((voltage - 3.2) / (4.2 - 3.2)) * 100.0;
+    
+    // Clamp to 0-100%
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    
+    return (uint8_t)percent;
+}
+
+// ADICIONAR: Função para extrair tempo do status BUSY
+int AtBaseState::extractWaitTime(const String& status) {
+    // "BUSY:240" → 240
+    int colonPos = status.indexOf(':');
+    if (colonPos > 0 && colonPos < status.length() - 1) {
+        return status.substring(colonPos + 1).toInt();
+    }
+    return 60; // Default 1min se não conseguir parsear
+}
+
+// ADICIONAR: processHeartbeatResponse()
+void AtBaseState::processHeartbeatResponse(String response) {
+    if (response.contains("config_update")) {
+        // Aplicar nova config
+        Serial.println("⚙️ Config update received");
+        configManager.processUpdate(response);
+    }
+    if (response.contains("next_checkin_sec")) {
+        // Ajustar próximo "dar oi"
+        Serial.println("⏰ Next checkin time adjusted");
+    }
 }
 
 bool AtBaseState::isConnected() const {

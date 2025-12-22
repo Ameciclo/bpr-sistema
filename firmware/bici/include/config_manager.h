@@ -40,6 +40,31 @@ struct Config {
     
     // Buffers
     int max_wifi_records;
+    
+    // === NEW FIELDS FROM INTERACAO_BIKE_CENTRAL.md ===
+    // Battery percentages
+    uint8_t battery_critical_percent;     // 15% - Entra em LOW_BATTERY
+    uint8_t battery_low_percent;          // 25% - Reduz frequência de scans
+    uint8_t battery_recovery_percent;     // 30% - Sai de LOW_BATTERY (hysteresis)
+    
+    // Intervals
+    uint32_t checkin_interval_sec;        // "dar oi" a cada 5min
+    uint32_t scan_interval_normal_sec;    // WiFi scan a cada 25s
+    uint32_t scan_interval_low_battery_sec;  // 2min (economia)
+    uint32_t scan_interval_critical_sec;  // 5min+ (economia extrema)
+    uint32_t checkin_low_battery_sec;     // 10min (esporádico)
+    
+    // Sleep durations
+    uint32_t deep_sleep_duration_sec;     // 1h (normal)
+    uint32_t deep_sleep_critical_sec;     // 2h (economia extrema)
+    
+    // Timeouts
+    uint32_t max_time_without_base_sec;   // timeout para modo LOST
+    uint32_t busy_retry_delay_sec;        // delay extra quando central busy
+    
+    // States
+    bool enable_low_battery_mode;
+    bool enable_emergency_upload;
 };
 
 class ConfigManager {
@@ -52,6 +77,7 @@ public:
     void save();
     void generateUniqueId();
     bool processUpdate(const String& configJson);
+    bool isValid();
     Config& getConfig();
 };
 

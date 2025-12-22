@@ -132,7 +132,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
 
     HTTPClient http;
     String url = String(config.firebase.database_url) +
-                 "/bases/" + config.base_id + "configs/wifi.json?auth=" +
+                 "/bases/" + config.base_id + "/configs/wifi.json?auth=" +
                  config.firebase.api_key;
 
     DynamicJsonDocument doc(256);

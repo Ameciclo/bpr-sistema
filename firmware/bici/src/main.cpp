@@ -5,6 +5,7 @@
 #include "constants.h"
 #include "config_manager.h"
 #include "buffer_manager.h"
+#include "power_manager.h"
 #include "at_base.h"
 #include "scanning.h"
 #include "lost.h"
@@ -12,6 +13,7 @@
 // Global managers
 ConfigManager configManager;
 BufferManager bufferManager;
+PowerManager powerManager;
 
 // State handlers
 AtBaseState* atBaseState = nullptr;
@@ -21,11 +23,21 @@ LostState* lostState = nullptr;
 // Current state
 BikeState currentState = STATE_BOOT;
 
+// Timers from config.json (loaded at initialization)
+// Default values if config.json doesn't exist:
+uint32_t checkin_interval_sec = 300;        // "dar oi" a cada 5min
+uint32_t scan_interval_sec = 25;            // WiFi scan a cada 25s
+uint32_t low_battery_scan_interval_sec = 120; // Scan mais lento se bateria baixa
+uint8_t battery_critical_percent = 15;      // Entra em LOW_BATTERY
+uint8_t battery_low_percent = 25;           // Reduz frequência de scans
+
 // Function declarations
 void handleBoot();
 void handleConfigRequest();
 void handleSleep();
-float getBatteryVoltage();
+void handleWakeCheck();
+void handleLowBattery();
+void loadTimersFromConfig();
 
 void setup() {
     Serial.begin(115200);
@@ -47,14 +59,16 @@ void setup() {
     // Initialize BLE with the bike_id
     NimBLEDevice::init(configManager.getConfig().bike_id);
     
-    // Load config
-    if (!configManager.load()) {
-        Serial.println("⚙️ No config found - entering CONFIG_REQUEST");
+    // Fluxo de inicialização:
+    if (!configManager.load() || !configManager.isValid()) {
+        // Qualquer bike sem config válida (nova OU corrompida)
         currentState = STATE_CONFIG_REQUEST;
     } else {
+        // Carregar timers do config.json
+        loadTimersFromConfig();
         // Load saved buffer if exists
         bufferManager.load();
-        currentState = STATE_BOOT;
+        currentState = STATE_WAKE_CHECK;
     }
     
     // Initialize state handlers
@@ -69,6 +83,9 @@ void setup() {
 void loop() {
     BikeState nextState = currentState;
     
+    // Check battery state first
+    nextState = powerManager.checkBatteryState(currentState, configManager.getConfig());
+    
     switch (currentState) {
         case STATE_BOOT:
             handleBoot();
@@ -76,6 +93,10 @@ void loop() {
             
         case STATE_CONFIG_REQUEST:
             handleConfigRequest();
+            break;
+            
+        case STATE_WAKE_CHECK:
+            handleWakeCheck();
             break;
             
         case STATE_AT_BASE:
@@ -87,8 +108,25 @@ void loop() {
             
             // Check if base is available
             if (atBaseState->scanForBase()) {
-                nextState = STATE_AT_BASE;
+                nextState = STATE_DATA_UPLOAD;
             }
+            break;
+            
+        case STATE_DATA_UPLOAD:
+            nextState = atBaseState->update();
+            if (nextState == STATE_AT_BASE) {
+                // Data uploaded successfully, can sleep
+                nextState = STATE_SLEEPING;
+            }
+            break;
+            
+        case STATE_LOW_BATTERY:
+            handleLowBattery();
+            break;
+            
+        case STATE_SLEEPING:
+            // This should trigger deep sleep
+            powerManager.enterDeepSleep(powerManager.getSleepDuration(configManager.getConfig()));
             break;
             
         case STATE_LOST:
@@ -123,23 +161,54 @@ void handleBoot() {
     Serial.printf("   🛠️ Dev Mode: %s\n", config.dev_mode ? "ON" : "OFF");
     
     // Check battery
-    float voltage = getBatteryVoltage();
-    Serial.printf("🔋 Battery: %.2fV (min=%.2fV)\n", voltage, config.battery_critical_voltage);
+    powerManager.logBatteryStatus();
     
-    if (voltage < config.battery_critical_voltage && !config.dev_mode) {
-        Serial.println("🔋 Bateria crítica - sleep");
-        currentState = STATE_SLEEP;
+    if (powerManager.isCriticalBattery(config) && !config.dev_mode) {
+        Serial.println("🔋 Bateria crítica - entering LOW_BATTERY state");
+        currentState = STATE_LOW_BATTERY;
         return;
-    } else if (voltage < config.battery_critical_voltage && config.dev_mode) {
+    } else if (powerManager.isCriticalBattery(config) && config.dev_mode) {
         Serial.println("🛠️ DEV MODE: Ignoring low battery");
     }
     
+    currentState = STATE_WAKE_CHECK;
+}
+
+void handleWakeCheck() {
+    Serial.println("🔄 WAKE_CHECK - Verifying if at base");
+    
     // Try to find base
     if (atBaseState->scanForBase()) {
-        currentState = STATE_AT_BASE;
+        currentState = STATE_DATA_UPLOAD;
     } else {
         currentState = STATE_SCANNING;
     }
+}
+
+void handleLowBattery() {
+    Serial.println("😨 LOW_BATTERY - Emergency mode");
+    
+    BikeState nextState = powerManager.handleLowBatteryState(configManager.getConfig());
+    if (nextState != STATE_LOW_BATTERY) {
+        currentState = nextState;
+    }
+}
+
+void loadTimersFromConfig() {
+    Config& config = configManager.getConfig();
+    
+    // Load intervals from config
+    checkin_interval_sec = config.checkin_interval_sec;
+    scan_interval_sec = config.scan_interval_normal_sec;
+    low_battery_scan_interval_sec = config.scan_interval_low_battery_sec;
+    battery_critical_percent = config.battery_critical_percent;
+    battery_low_percent = config.battery_low_percent;
+    
+    Serial.println("⚙️ Timers loaded from config:");
+    Serial.printf("   Checkin: %ds, Scan: %ds, Low battery scan: %ds\n", 
+                  checkin_interval_sec, scan_interval_sec, low_battery_scan_interval_sec);
+    Serial.printf("   Battery thresholds: %d%% critical, %d%% low\n", 
+                  battery_critical_percent, battery_low_percent);
 }
 
 void handleConfigRequest() {
@@ -176,35 +245,11 @@ void handleConfigRequest() {
 }
 
 void handleSleep() {
-    Serial.println("💤 Deep sleep for 1 hour");
+    Serial.println("💤 Deep sleep for configured duration");
     
     // Save buffer
     bufferManager.save();
     
-    // Deep sleep
-    esp_sleep_enable_timer_wakeup(3600 * 1000000ULL); // 1 hour
-    esp_deep_sleep_start();
-}
-
-float getBatteryVoltage() {
-    static unsigned long lastRead = 0;
-    static float lastVoltage = 4.0;
-    
-    if (millis() - lastRead < 5000) {
-        return lastVoltage;
-    }
-    
-    int adc = analogRead(BATTERY_PIN);
-    lastRead = millis();
-    
-    if (adc < 1500) {
-        if (lastVoltage != 4.0) {
-            Serial.printf("⚠️ ADC=%d - USB power (4.0V)\n", adc);
-        }
-        lastVoltage = 4.0;
-        return 4.0;
-    }
-    
-    lastVoltage = (adc / 4095.0) * 3.3 * 2.0;
-    return lastVoltage;
+    // Use power manager for sleep
+    powerManager.enterDeepSleep(powerManager.getSleepDuration(configManager.getConfig()));
 }

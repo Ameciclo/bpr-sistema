@@ -32,6 +32,9 @@ private:
     void sendStatus();
     void sendWiFiData();
     float getBatteryVoltage();
+    uint8_t getBatteryPercent();
+    int extractWaitTime(const String& status);
+    void processHeartbeatResponse(String response);
 
 public:
     AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr);
