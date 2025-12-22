@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../common/bpr_protocol.h"
-#include "../common/bpr_types.h"
+#include "bpr_protocol.h"
+#include "bpr_types.h"
 
 // Hardware pins
 #define LED_PIN 8
