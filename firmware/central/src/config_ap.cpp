@@ -4,11 +4,9 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 #include "config_manager.h"
-#include "led_controller.h"
 #include <HTTPClient.h>
 
 extern ConfigManager configManager;
-extern LEDController ledController;
 
 static WebServer server(80);
 static uint32_t apStartTime = 0;
@@ -53,7 +51,6 @@ void ConfigAP::enter(bool isInitialMode)
     setupWebServer();
     server.begin();
     apStartTime = millis();
-    ledController.configPattern();
 }
 
 void ConfigAP::update()
@@ -106,6 +103,13 @@ void ConfigAP::exit()
     }
     
     Serial.println("🔚 ConfigAP: Callbacks WiFi removidos, saindo do modo AP");
+}
+
+void ConfigAP::printStatus()
+{
+    Serial.println("📱 Modo Configuração Ativo:");
+    Serial.println("   WiFi: BPR Central (senha: botaprarodar)");
+    Serial.println("   URL: http://192.168.4.1");
 }
 
 bool ConfigAP::tryUpdateWiFiInFirebase()

@@ -13,6 +13,7 @@ public:
     static SyncResult enter();
     static SyncResult update();
     static void exit();
+    static void printStatus();
     
 private:
     static bool syncInProgress;
@@ -22,6 +23,7 @@ private:
     static bool downloadCentralConfig();
     static bool downloadBikeData();
     static bool uploadBufferData();
+    static bool uploadPresenceData();
     static bool uploadHeartbeat();
     static bool uploadWiFiConfig();
     static bool uploadBikeData();

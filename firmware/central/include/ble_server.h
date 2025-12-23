@@ -14,6 +14,11 @@ public:
     static void sendConfigToHandle(uint16_t handle, const String& bikeId, const String& config);
     static void checkAndSendPendingConfig(const String& bikeId, uint16_t handle);
     
+    // === ADVERTISING STATUS MANAGEMENT ===
+    static void setBusyStatus(bool busy, uint32_t durationSeconds = 300);
+    static void updateAdvertisingStatus();
+    static bool isCentralBusy();
+    
     // Callbacks implementados externamente no bike_pairing.cpp
     static void onBikeConnected(const String& bikeId);
     static void onBikeDisconnected(const String& bikeId);
@@ -27,4 +32,8 @@ public:
     static NimBLECharacteristic* pConfigChar;
     static uint8_t connectedBikes;
     static std::map<uint16_t, String> connectedDevices;
+    
+    // BUSY status tracking
+    static bool isBusy;
+    static uint32_t busyUntil;
 };

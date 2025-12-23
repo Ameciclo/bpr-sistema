@@ -38,4 +38,8 @@ public:
     
     // Logs e eventos
     static void logConfigEvent(const String& bikeId, const String& event, bool success);
+    
+    // === HEARTBEAT RESPONSE MANAGEMENT ===
+    static String processHeartbeat(const String& bikeId, const JsonObject& heartbeatData);
+    static String confirmDataUpload(const String& bikeId);
 };

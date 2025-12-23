@@ -34,26 +34,48 @@
 // Config AP
 #define AP_SSID "BPR Central"
 #define AP_PASSWORD "botaprarodar"
-#define CONFIG_TIMEOUT_MS 900000  // 15 minutos
+#define CONFIG_TIMEOUT_MS 900000 // 15 minutos
 
 // NTP Configuration (constants)
 #define NTP_SERVER "pool.ntp.org"
-#define TIMEZONE_OFFSET -10800  // UTC-3
+#define TIMEZONE_OFFSET -10800 // UTC-3
 
 // Fallback to AP thresholds
 #define MAX_SYNC_FAILURES 5
-#define SYNC_FAILURE_TIMEOUT_MS 1800000  // 30 minutos
+#define SYNC_FAILURE_TIMEOUT_MS 1800000 // 30 minutos
 
 // System States
-enum SystemState {
+enum SystemState
+{
     STATE_BOOT,
     STATE_CONFIG_AP,
+    STATE_INITIAL_SYNC,
     STATE_BIKE_PAIRING,
     STATE_CLOUD_SYNC
 };
 
+inline const char *getStateName(SystemState state)
+{
+    switch (state)
+    {
+    case STATE_BOOT:
+        return "BOOT";
+    case STATE_CONFIG_AP:
+        return "CONFIG_AP";
+    case STATE_INITIAL_SYNC:
+        return "INITIAL_SYNC";
+    case STATE_BIKE_PAIRING:
+        return "BIKE_PAIRING";
+    case STATE_CLOUD_SYNC:
+        return "CLOUD_SYNC";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 // Events
-enum SystemEvent {
+enum SystemEvent
+{
     EVENT_CONFIG_COMPLETE,
     EVENT_SYNC_TRIGGER,
     EVENT_SYNC_COMPLETE,

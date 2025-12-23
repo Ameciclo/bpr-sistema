@@ -162,14 +162,11 @@ void ConfigManager::save() {
 }
 
 void ConfigManager::generateUniqueId() {
-    if (strlen(config.bike_id) == 0) {
-        String bikeId = generateBikeId();
-        strcpy(config.bike_id, bikeId.c_str());
-        Serial.printf("🆔 Generated unique ID: %s\n", config.bike_id);
-        save();
-    } else {
-        Serial.printf("🆔 Using existing ID: %s\n", config.bike_id);
-    }
+    // Always generate unique ID based on chip MAC
+    String bikeId = generateBikeId();
+    strcpy(config.bike_id, bikeId.c_str());
+    Serial.printf("🆔 Generated bike ID: %s\n", config.bike_id);
+    save();
 }
 
 bool ConfigManager::processUpdate(const String& configJson) {
@@ -266,6 +263,13 @@ bool ConfigManager::processUpdate(const String& configJson) {
         Serial.println("📝 No config changes detected");
         return false;
     }
+}
+
+bool ConfigManager::isValid() {
+    return (strlen(config.bike_id) > 0 && 
+            config.version > 0 &&
+            config.scan_interval_sec > 0 &&
+            config.wifi_scan_timeout_ms > 0);
 }
 
 Config& ConfigManager::getConfig() {

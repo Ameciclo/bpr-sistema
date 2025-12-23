@@ -1,5 +1,8 @@
 #include "at_base.h"
 #include <ArduinoJson.h>
+#include "power_manager.h"
+
+extern PowerManager powerManager;
 
 AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr) 
     : configManager(configMgr), bufferManager(bufferMgr), 
@@ -31,7 +34,7 @@ bool AtBaseState::scanForBase() {
                 
                 // Dormir tempo sugerido + margem de segurança
                 uint32_t sleepTime = waitTime + config.busy_retry_delay_sec;
-                // powerManager.enterDeepSleep(sleepTime); // Seria chamado externamente
+                powerManager.enterDeepSleep(sleepTime);
                 
                 pScan->clearResults();
                 return false;  // Não conectar agora
@@ -68,16 +71,18 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
         }
         
         // Try to get characteristics with retries
-        for (int retry = 0; retry < 3; retry++) {
+        for (int retry = 0; retry < 5; retry++) {
+            delay(1000); // Wait before each attempt
+            
             pDataChar = pService->getCharacteristic(BLE_CHAR_DATA_UUID);
             pConfigChar = pService->getCharacteristic(BLE_CHAR_CONFIG_UUID);
             
             if (pDataChar && pConfigChar) {
+                Serial.println("✅ Characteristics found successfully");
                 break; // Success
             }
             
-            Serial.printf("⏳ Characteristics not ready, retry %d/3...\n", retry + 1);
-            delay(2000);
+            Serial.printf("⏳ Characteristics not ready, retry %d/5...\n", retry + 1);
         }
         
         if (!pDataChar || !pConfigChar) {
@@ -271,12 +276,12 @@ int AtBaseState::extractWaitTime(const String& status) {
 
 // ADICIONAR: processHeartbeatResponse()
 void AtBaseState::processHeartbeatResponse(String response) {
-    if (response.contains("config_update")) {
+    if (response.indexOf("config_update") >= 0) {
         // Aplicar nova config
         Serial.println("⚙️ Config update received");
         configManager.processUpdate(response);
     }
-    if (response.contains("next_checkin_sec")) {
+    if (response.indexOf("next_checkin_sec") >= 0) {
         // Ajustar próximo "dar oi"
         Serial.println("⏰ Next checkin time adjusted");
     }

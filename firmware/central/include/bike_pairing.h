@@ -13,6 +13,7 @@ public:
     static void enter();
     static void update();
     static void exit();
+    static void printStatus();
     static uint8_t getConnectedBikes();
     static PairingStatus getStatus();
     static bool isSafeToExit();

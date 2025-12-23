@@ -7,14 +7,16 @@
 
 extern ConfigManager configManager;
 
-// Dados unificados das bikes (registry + configs)
-static DynamicJsonDocument bikes(8192); // 8KB para registry + configs
-static DynamicJsonDocument configVersions(1024);
+// TESTE: Comentar buffers globais para identificar problema
+// static DynamicJsonDocument bikes(1024);
+// static DynamicJsonDocument configVersions(256);
 static std::map<String, bool> configChanged;
 static bool dataLoaded = false;
 
 bool BikeManager::init() {
-    return loadData();
+    Serial.println("💾 BikeManager::init() - DISABLED FOR TEST");
+    dataLoaded = true;
+    return true;
 }
 
 bool BikeManager::loadData() {
@@ -462,12 +464,61 @@ String BikeManager::generateDefaultConfig(const String& bikeId) {
     return result;
 }
 
-std::vector<String> BikeManager::getBikesWithUpdates() {
-    std::vector<String> bikes_list;
-    for (auto& pair : configChanged) {
-        if (pair.second) {
-            bikes_list.push_back(pair.first);
-        }
+// === HEARTBEAT RESPONSE MANAGEMENT ===
+String BikeManager::processHeartbeat(const String& bikeId, const JsonObject& heartbeatData) {
+    if (!dataLoaded) return "";
+    
+    // Extract heartbeat data
+    int batteryPercent = heartbeatData["battery_percent"] | 0;
+    int heap = heartbeatData["heap"] | 0;
+    bool hasData = heartbeatData["has_data"] | false;
+    int configVersion = heartbeatData["config_version"] | 0;
+    
+    // Update heartbeat
+    updateHeartbeat(bikeId, batteryPercent, heap);
+    
+    // Prepare response
+    DynamicJsonDocument response(512);
+    response["type"] = "heartbeat_response";
+    response["bike_id"] = bikeId;
+    response["timestamp"] = time(nullptr);
+    
+    // Check if config update needed
+    if (hasConfigUpdate(bikeId)) {
+        response["config_update"] = true;
+        Serial.printf("⚙️ Config update available for %s\n", bikeId.c_str());
     }
-    return bikes_list;
+    
+    // Suggest next checkin interval based on battery
+    uint32_t nextCheckin = 300; // Default 5min
+    if (batteryPercent <= 15) {
+        nextCheckin = 1200; // 20min for critical battery
+    } else if (batteryPercent <= 25) {
+        nextCheckin = 600;  // 10min for low battery
+    }
+    response["next_checkin_sec"] = nextCheckin;
+    
+    // Data upload confirmation
+    if (hasData) {
+        response["ready_for_upload"] = true;
+        Serial.printf("📤 %s ready for data upload\n", bikeId.c_str());
+    }
+    
+    String result;
+    serializeJson(response, result);
+    return result;
+}
+
+String BikeManager::confirmDataUpload(const String& bikeId) {
+    DynamicJsonDocument response(256);
+    response["type"] = "upload_confirmed";
+    response["bike_id"] = bikeId;
+    response["timestamp"] = time(nullptr);
+    response["can_clear_buffer"] = true;
+    
+    String result;
+    serializeJson(response, result);
+    
+    Serial.printf("✅ Data upload confirmed for %s - can clear buffer\n", bikeId.c_str());
+    return result;
 }

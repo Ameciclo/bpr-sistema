@@ -6,10 +6,13 @@
 #include "led_controller.h"
 #include "bike_manager.h"
 #include "ble_server.h"
+#include "config_manager.h"
 
 extern BufferManager bufferManager;
 extern LEDController ledController;
 extern SystemState currentState;
+extern uint32_t stateStartTime;
+extern ConfigManager configManager;
 
 static uint32_t lastHeartbeat = 0;
 static PairingStatus currentStatus = PAIRING_IDLE;
@@ -39,12 +42,16 @@ void BikePairing::enter()
         return;
     }
     
-    ledController.bikePairingPattern();
-}
+    // Set BLE to ready status
+    BPRBLEServer::setBusyStatus(false);
+    }
 
 void BikePairing::update()
 {
     uint32_t now = millis();
+
+    // Atualizar status do BLE (verificar se busy expirou)
+    BPRBLEServer::updateAdvertisingStatus();
 
     // Processar fila de dados sequencialmente
     processDataQueue();
@@ -75,9 +82,28 @@ void BikePairing::exit()
     currentBike = "";
     requestTimeout = 0;
     
-    BPRBLEServer::stop();
+    // NÃO parar BLE - apenas marcar como busy
+    BPRBLEServer::setBusyStatus(true, 60); // 60s busy para sync
+    
     currentStatus = PAIRING_IDLE;
-    Serial.println("🔚 Exiting BIKE_PAIRING mode");
+    Serial.println("🔚 Exiting BIKE_PAIRING mode - BLE marked as BUSY");
+}
+
+void BikePairing::printStatus()
+{
+    int bikes = BikePairing::getConnectedBikes();
+    Serial.printf("😲 Bikes conectadas: %d | 💾 Heap: %d bytes\n", bikes, ESP.getFreeHeap());
+
+    uint32_t stateTime = millis() - stateStartTime;
+    uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
+    uint32_t nextSync = (syncInterval - stateTime) / 1000;
+
+    if (stateTime < syncInterval)
+    {
+        Serial.printf("🔄 Próxima sync em: %lus\n", nextSync);
+        return;
+    }
+    Serial.println("🔄 Sync pendente...");
 }
 
 uint8_t BikePairing::getConnectedBikes()
@@ -167,19 +193,66 @@ void BPRBLEServer::onBikeDisconnected(const String& bikeId) {
 }
 
 void BPRBLEServer::onBikeDataReceived(const String& bikeId, const String& jsonData) {
+    // Rejeitar dados se central está busy
+    if (BPRBLEServer::isCentralBusy()) {
+        Serial.printf("⚠️ Data rejected from %s - Central is BUSY\n", bikeId.c_str());
+        
+        // Enviar resposta informando que está busy
+        DynamicJsonDocument busyResponse(256);
+        busyResponse["type"] = "busy";
+        busyResponse["message"] = "Central busy - try again later";
+        busyResponse["retry_after_sec"] = 30;
+        
+        String response;
+        serializeJson(busyResponse, response);
+        BPRBLEServer::pushConfigToBike(bikeId, response);
+        return;
+    }
+    
     // Validações rápidas primeiro
     if (!BikeManager::canConnect(bikeId)) {
         Serial.printf("❌ Data rejected from blocked bike: %s\n", bikeId.c_str());
         return;
     }
     
+    // Parse JSON para verificar tipo
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, jsonData);
+    
+    if (error) {
+        Serial.printf("❌ JSON parse error: %s\n", error.c_str());
+        return;
+    }
+    
+    String type = doc["type"] | "data";
+    
+    if (type == "heartbeat") {
+        // Processar heartbeat rapidamente
+        if (BikeManager::isAllowed(bikeId)) {
+            int batteryPercent = doc["battery_percent"] | 0;
+            int heap = doc["heap"] | 0;
+            BikeManager::updateHeartbeat(bikeId, batteryPercent, heap);
+            
+            // Resposta rápida de heartbeat
+            String response = BikeManager::processHeartbeat(bikeId, doc.as<JsonObject>());
+            if (!response.isEmpty()) {
+                BPRBLEServer::pushConfigToBike(bikeId, response);
+            }
+        } else {
+            BikeManager::recordPendingVisit(bikeId);
+            Serial.printf("📝 Pending bike %s heartbeat - awaiting approval\n", bikeId.c_str());
+        }
+        return;
+    }
+    
+    // Processar dados normais (upload de scans WiFi)
     if (!BikeManager::isAllowed(bikeId)) {
         BikeManager::recordPendingVisit(bikeId);
         Serial.printf("📝 Pending bike %s visited - data ignored (awaiting approval)\n", bikeId.c_str());
         return;
     }
     
-    // Sistema de fila sequencial
+    // Sistema de fila sequencial para uploads de dados
     if (currentBike.isEmpty()) {
         // Nenhuma bike processando - processar imediatamente
         BikePairing::processDataFromBike(bikeId, jsonData);

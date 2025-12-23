@@ -106,9 +106,11 @@ void loop() {
         case STATE_SCANNING:
             nextState = scanningState->update();
             
-            // Check if base is available
             if (atBaseState->scanForBase()) {
                 nextState = STATE_DATA_UPLOAD;
+            } else {
+                // Se não encontrou base ou central ocupada, continuar scanning
+                nextState = STATE_SCANNING;
             }
             break;
             

@@ -7,10 +7,10 @@
 #include "buffer_manager.h"
 #include "led_controller.h"
 #include "bike_manager.h"
+#include "ble_server.h"
 
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
-extern LEDController ledController;
 extern SystemState currentState;
 extern bool firstSync;
 
@@ -23,63 +23,80 @@ SyncResult CloudSync::enter()
 {
     Serial.println("📡 Entering CLOUD_SYNC mode");
     syncStartTime = millis();
-    ledController.syncPattern();
-    
+
+    // BLE já está marcado como BUSY pelo bike_pairing::exit()
+    // Não precisamos parar o BLE
+
     syncInProgress = true;
     currentResult = SyncResult::IN_PROGRESS;
-    
+
     return SyncResult::IN_PROGRESS;
 }
 
 SyncResult CloudSync::update()
 {
-    if (!syncInProgress) {
+    if (!syncInProgress)
+    {
         return currentResult;
     }
-    
+
     // Executar sync completo
     bool success = true;
-    
+
     // WiFi
-    if (!connectWiFi()) {
+    if (!connectWiFi())
+    {
         Serial.println("❌ WiFi connection failed");
         success = false;
     }
-    
-    if (success) {
+
+    if (success)
+    {
         // Sync completo
         syncTime();
-        
+
         bool centralConfigOk = downloadCentralConfig();
         bool bikeDataOk = downloadBikeData();
         bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
         bool bikeUploadOk = uploadBikeData();
         bool bufferOk = uploadBufferData();
         bool heartbeatOk = uploadHeartbeat();
-        
+
         success = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
     }
-    
+
     // Sempre desconectar WiFi
     WiFi.disconnect(true);
-    
+
     // Finalizar sync
     syncInProgress = false;
     currentResult = success ? SyncResult::SUCCESS : SyncResult::FAILURE;
-    
-    if (success) {
+
+    if (success)
+    {
         Serial.println("✅ Sync complete");
-    } else {
+    }
+    else
+    {
         Serial.println("❌ Sync failed");
     }
-    
+
     return currentResult;
 }
 
 void CloudSync::exit()
 {
     WiFi.disconnect(true);
-    Serial.println("🔚 Exiting CLOUD_SYNC mode");
+
+    // Voltar BLE para status READY
+    BPRBLEServer::setBusyStatus(false);
+
+    Serial.println("🔚 Exiting CLOUD_SYNC mode - BLE back to READY");
+}
+
+void CloudSync::printStatus()
+{
+    Serial.printf("😲 Bikes conectadas: 0 | 💾 Heap: %d bytes\n", ESP.getFreeHeap());
 }
 
 bool CloudSync::connectWiFi()
@@ -304,8 +321,6 @@ bool CloudSync::uploadWiFiConfig()
     Serial.printf("📶 WiFi config updated in Firebase: %s\n", config.wifi.ssid);
     return true;
 }
-
-
 
 bool CloudSync::uploadBikeData()
 {

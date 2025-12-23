@@ -59,7 +59,6 @@ struct Config {
     uint32_t deep_sleep_critical_sec;     // 2h (economia extrema)
     
     // Timeouts
-    uint32_t max_time_without_base_sec;   // timeout para modo LOST
     uint32_t busy_retry_delay_sec;        // delay extra quando central busy
     
     // States

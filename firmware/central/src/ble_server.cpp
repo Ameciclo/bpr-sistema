@@ -12,6 +12,10 @@ NimBLECharacteristic *BPRBLEServer::pConfigChar = nullptr;
 uint8_t BPRBLEServer::connectedBikes = 0;
 std::map<uint16_t, String> BPRBLEServer::connectedDevices;
 
+// BUSY status tracking
+bool BPRBLEServer::isBusy = false;
+uint32_t BPRBLEServer::busyUntil = 0;
+
 class ServerCallbacks : public NimBLEServerCallbacks
 {
     void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -24,8 +28,14 @@ class ServerCallbacks : public NimBLEServerCallbacks
                       addr.toString().c_str(), conn_handle, BPRBLEServer::connectedBikes);
         NimBLEDevice::startAdvertising();
 
-        BPRBLEServer::connectedDevices[conn_handle] = "";
-        Serial.printf("📝 Stored connection handle %d\n", conn_handle);
+        // Generate potential bike_id from MAC for logging
+        std::string macStr = addr.toString();
+        String potentialBikeId = "bpr-" + String(macStr.c_str()).substring(9, 17);
+        potentialBikeId.replace(":", "");
+        potentialBikeId.toLowerCase();
+        
+        BPRBLEServer::connectedDevices[conn_handle] = potentialBikeId;
+        Serial.printf("📝 Potential bike ID: %s (from MAC)\n", potentialBikeId.c_str());
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -174,6 +184,8 @@ void BPRBLEServer::stop()
         pConfigChar = nullptr;
         connectedBikes = 0;
         connectedDevices.clear();
+        isBusy = false;
+        busyUntil = 0;
     }
     Serial.println("🔚 BLE Server stopped");
 }
@@ -268,4 +280,48 @@ void BPRBLEServer::forceDisconnectBike(const String &bikeId)
     } else {
         Serial.printf("❌ Cannot disconnect %s - not found\n", bikeId.c_str());
     }
+}
+
+void BPRBLEServer::setBusyStatus(bool busy, uint32_t durationSeconds) {
+    isBusy = busy;
+    if (busy) {
+        busyUntil = millis() + (durationSeconds * 1000);
+        Serial.printf("🔵 BLE Status: BUSY for %d seconds\n", durationSeconds);
+    } else {
+        busyUntil = 0;
+        Serial.println("🔵 BLE Status: READY");
+    }
+    updateAdvertisingStatus();
+}
+
+void BPRBLEServer::updateAdvertisingStatus() {
+    if (!pServer) return;
+    
+    // Check if busy period expired
+    if (isBusy && millis() > busyUntil) {
+        isBusy = false;
+        Serial.println("🔵 BLE BUSY period expired - back to READY");
+    }
+    
+    // Update device name based on status
+    String deviceName = isBusy ? "BPR Central BUSY" : "BPR Central";
+    
+    // Stop current advertising
+    pServer->getAdvertising()->stop();
+    
+    // Restart advertising with updated name
+    NimBLEAdvertising *pAdvertising = pServer->getAdvertising();
+    pAdvertising->setName(deviceName.c_str());
+    pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->start();
+    
+    Serial.printf("📡 BLE Advertising updated: %s\n", deviceName.c_str());
+}
+
+bool BPRBLEServer::isCentralBusy() {
+    if (isBusy && millis() > busyUntil) {
+        isBusy = false;
+    }
+    return isBusy;
 }
