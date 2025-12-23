@@ -21,10 +21,11 @@ uint32_t stateStartTime = 0;
 
 // Variáveis globais
 unsigned long lastHeartbeat = 0;
-bool isInitialConfigMode = false;
 
 // Controle de sync
 static uint32_t lastSyncCheck = 0;
+static uint8_t syncFailureCount = 0;
+static uint32_t tempConfigApStartTime = 0;
 
 void changeState(SystemState newState)
 {
@@ -36,7 +37,8 @@ void changeState(SystemState newState)
     // Exit current state
     switch (currentState)
     {
-    case STATE_CONFIG_AP:
+    case STATE_INITIAL_CONFIG_AP:
+    case STATE_TEMP_CONFIG_AP:
         ConfigAP::exit();
         break;
     case STATE_BIKE_PAIRING:
@@ -56,10 +58,16 @@ void changeState(SystemState newState)
     // Enter new state
     switch (newState)
     {
-    case STATE_CONFIG_AP:
+    case STATE_INITIAL_CONFIG_AP:
         ledController.configPattern();
         SyncMonitor::reset();
-        ConfigAP::enter(isInitialConfigMode);
+        ConfigAP::enter(true);  // Modo obrigatório
+        break;
+    case STATE_TEMP_CONFIG_AP:
+        ledController.configPattern();
+        SyncMonitor::reset();
+        ConfigAP::enter(false); // Modo temporário
+        tempConfigApStartTime = millis();
         break;
     case STATE_BIKE_PAIRING:
         ledController.pairingPattern();
@@ -88,7 +96,8 @@ void printStatus()
     case STATE_BOOT:
         Serial.printf("💾 Heap: %d bytes\n", ESP.getFreeHeap());
         break;
-    case STATE_CONFIG_AP:
+    case STATE_INITIAL_CONFIG_AP:
+    case STATE_TEMP_CONFIG_AP:
         ConfigAP::printStatus();
         break;
     case STATE_BIKE_PAIRING:
@@ -97,6 +106,9 @@ void printStatus()
     case STATE_INITIAL_SYNC:
     case STATE_CLOUD_SYNC:
         CloudSync::printStatus();
+        break;
+    default:
+        Serial.printf("⚠️ Estado desconhecido: %d\n", currentState);
         break;
     }
 
@@ -135,7 +147,7 @@ void setup()
     SelfCheck selfCheck;
     if (!selfCheck.systemCheck())
     {
-        Serial.println("⚠️ Falha no system check. Inciando mesom assim");
+        Serial.println("⚠️ Falha no system check. Iniciando mesmo assim");
     }
 
     // Inicializar módulos
@@ -155,9 +167,8 @@ void setup()
     // Verificar se precisa de configuração
     if (!configLoaded || !configManager.isConfigValid())
     {
-        Serial.println("⚠️ Config inválida - entrando em modo AP");
-        isInitialConfigMode = true;
-        changeState(STATE_CONFIG_AP);
+        Serial.println("⚠️ Config inválida - entrando em modo CONFIG_AP obrigatório");
+        changeState(STATE_INITIAL_CONFIG_AP);
     }
     else
     {
@@ -180,8 +191,27 @@ void loop()
     // Update do estado atual
     switch (currentState)
     {
-    case STATE_CONFIG_AP:
+    case STATE_INITIAL_CONFIG_AP:
         ConfigAP::update();
+        // Não tem timeout - fica até ser configurado
+        break;
+        
+    case STATE_TEMP_CONFIG_AP:
+        ConfigAP::update();
+        
+        // Check timeout for temporary CONFIG_AP mode
+        if (tempConfigApStartTime > 0)
+        {
+            uint32_t configApTimeout = configManager.getConfig().config_ap_timeout_sec * 1000;
+            if (millis() - tempConfigApStartTime > configApTimeout)
+            {
+                Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n", 
+                             configManager.getConfig().config_ap_timeout_sec);
+                tempConfigApStartTime = 0;
+                changeState(STATE_BIKE_PAIRING);
+                return;
+            }
+        }
         break;
     case STATE_BIKE_PAIRING:
         // Verificar se precisa sync urgente (buffer crítico)
@@ -217,21 +247,13 @@ void loop()
         break;
 
     case STATE_INITIAL_SYNC:
-    case STATE_CLOUD_SYNC:
     {
         SyncResult result = CloudSync::update();
         if (result == SyncResult::SUCCESS)
         {
-            Serial.println("✅ Sync successful - transitioning to BIKE_PAIRING");
+            Serial.println("✅ INITIAL_SYNC successful - transitioning to BIKE_PAIRING");
             changeState(STATE_BIKE_PAIRING);
             break;
-        }
-
-        // Check for timeout
-        if (millis() - stateStartTime > configManager.getConfig().timeouts.wifi_sec * 1000)
-        {
-            Serial.println("⏰ Cloud sync timeout");
-            result = SyncResult::FAILURE;
         }
 
         if (result == SyncResult::IN_PROGRESS)
@@ -239,18 +261,50 @@ void loop()
             break;
         }
 
-        // Handle failure
-        Serial.println("⚠️ Sync falhou");
-
-        if (currentState == STATE_INITIAL_SYNC)
+        if (result == SyncResult::FAILURE)
         {
-            Serial.println("🚨 ERRO CRÍTICO: Retornando ao modo CONFIG_AP");
-            changeState(STATE_CONFIG_AP);
+            Serial.println("🚨 INITIAL_SYNC FALHOU - config inválida ou sem conectividade");
+            Serial.println("🚨 ERRO CRÍTICO: Retornando ao modo CONFIG_AP obrigatório");
+            changeState(STATE_INITIAL_CONFIG_AP);
         }
-        else
+        break;
+    }
+    
+    case STATE_CLOUD_SYNC:
+    {
+        SyncResult result = CloudSync::update();
+        if (result == SyncResult::SUCCESS)
         {
-            Serial.println("⚠️ Continuando com última config válida");
+            Serial.println("✅ CLOUD_SYNC successful - transitioning to BIKE_PAIRING");
+            syncFailureCount = 0; // Reset counter on success
             changeState(STATE_BIKE_PAIRING);
+            break;
+        }
+
+        if (result == SyncResult::IN_PROGRESS)
+        {
+            break;
+        }
+
+        if (result == SyncResult::FAILURE)
+        {
+            syncFailureCount++;
+            Serial.printf("⚠️ CLOUD_SYNC falhou (tentativa %d/%d)\n", 
+                         syncFailureCount, 
+                         configManager.getConfig().sync_max_retries);
+
+            if (syncFailureCount >= configManager.getConfig().sync_max_retries)
+            {
+                Serial.printf("🚨 %d falhas consecutivas - entrando em CONFIG_AP temporário\n", 
+                             syncFailureCount);
+                syncFailureCount = 0;
+                changeState(STATE_TEMP_CONFIG_AP);
+            }
+            else
+            {
+                Serial.println("⚠️ Continuando com última config válida");
+                changeState(STATE_BIKE_PAIRING);
+            }
         }
         break;
     }

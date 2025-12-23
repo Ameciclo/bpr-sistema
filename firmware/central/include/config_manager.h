@@ -52,6 +52,8 @@ struct LimitsConfig {
 struct FallbackConfig {
     uint8_t max_failures;
     uint16_t timeout_min;
+    uint8_t sync_max_retries;
+    uint16_t config_ap_timeout_sec;
 };
 
 struct BufferConfig {

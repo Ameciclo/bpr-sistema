@@ -42,6 +42,8 @@ ConfigManager::ConfigManager() {
     
     config.fallback.max_failures = MAX_SYNC_FAILURES;
     config.fallback.timeout_min = SYNC_FAILURE_TIMEOUT_MS / 60000;
+    config.fallback.sync_max_retries = 3;
+    config.fallback.config_ap_timeout_sec = 300; // 5 minutes
     
     // Buffer defaults
     config.buffer.max_size = 50;
@@ -120,6 +122,8 @@ bool ConfigManager::loadConfig() {
     
     if (doc["fallback"]["max_failures"]) config.fallback.max_failures = doc["fallback"]["max_failures"];
     if (doc["fallback"]["timeout_min"]) config.fallback.timeout_min = doc["fallback"]["timeout_min"];
+    if (doc["fallback"]["sync_max_retries"]) config.fallback.sync_max_retries = doc["fallback"]["sync_max_retries"];
+    if (doc["fallback"]["config_ap_timeout_sec"]) config.fallback.config_ap_timeout_sec = doc["fallback"]["config_ap_timeout_sec"];
     
     // Buffer config
     if (doc["buffer"]["max_size"]) config.buffer.max_size = doc["buffer"]["max_size"];
@@ -186,6 +190,8 @@ bool ConfigManager::saveConfig() {
     
     doc["fallback"]["max_failures"] = config.fallback.max_failures;
     doc["fallback"]["timeout_min"] = config.fallback.timeout_min;
+    doc["fallback"]["sync_max_retries"] = config.fallback.sync_max_retries;
+    doc["fallback"]["config_ap_timeout_sec"] = config.fallback.config_ap_timeout_sec;
     
     doc["buffer"]["max_size"] = config.buffer.max_size;
     doc["buffer"]["sync_threshold_percent"] = config.buffer.sync_threshold_percent;
@@ -264,6 +270,8 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig
     
     if (firebaseConfig["fallback"]["max_failures"]) config.fallback.max_failures = firebaseConfig["fallback"]["max_failures"];
     if (firebaseConfig["fallback"]["timeout_min"]) config.fallback.timeout_min = firebaseConfig["fallback"]["timeout_min"];
+    if (firebaseConfig["fallback"]["sync_max_retries"]) config.fallback.sync_max_retries = firebaseConfig["fallback"]["sync_max_retries"];
+    if (firebaseConfig["fallback"]["config_ap_timeout_sec"]) config.fallback.config_ap_timeout_sec = firebaseConfig["fallback"]["config_ap_timeout_sec"];
     
     // Buffer config
     if (firebaseConfig["buffer"]["max_size"]) config.buffer.max_size = firebaseConfig["buffer"]["max_size"];

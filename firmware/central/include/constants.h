@@ -48,7 +48,8 @@
 enum SystemState
 {
     STATE_BOOT,
-    STATE_CONFIG_AP,
+    STATE_INITIAL_CONFIG_AP,    // Config AP obrigatório (sem config válida)
+    STATE_TEMP_CONFIG_AP,       // Config AP temporário (após falhas de sync)
     STATE_INITIAL_SYNC,
     STATE_BIKE_PAIRING,
     STATE_CLOUD_SYNC
@@ -60,8 +61,10 @@ inline const char *getStateName(SystemState state)
     {
     case STATE_BOOT:
         return "BOOT";
-    case STATE_CONFIG_AP:
-        return "CONFIG_AP";
+    case STATE_INITIAL_CONFIG_AP:
+        return "INITIAL_CONFIG_AP";
+    case STATE_TEMP_CONFIG_AP:
+        return "TEMP_CONFIG_AP";
     case STATE_INITIAL_SYNC:
         return "INITIAL_SYNC";
     case STATE_BIKE_PAIRING:
