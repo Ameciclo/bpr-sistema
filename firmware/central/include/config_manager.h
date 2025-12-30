@@ -81,6 +81,7 @@ struct BackupConfig {
 
 struct CentralConfig {
     char base_id[32];
+    uint32_t version;
     LocationConfig location;
     WiFiConfig wifi;
     FirebaseConfig firebase;

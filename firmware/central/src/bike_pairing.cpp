@@ -113,7 +113,7 @@ uint8_t BikePairing::getConnectedBikes()
 
 void BikePairing::sendHeartbeat()
 {
-    DynamicJsonDocument heartbeat(1024);
+    DynamicJsonDocument heartbeat(JSON_MEDIUM_BUFFER);
     
     // Dados da central
     heartbeat["timestamp"] = millis() / 1000;
@@ -198,7 +198,7 @@ void BPRBLEServer::onBikeDataReceived(const String& bikeId, const String& jsonDa
         Serial.printf("⚠️ Data rejected from %s - Central is BUSY\n", bikeId.c_str());
         
         // Enviar resposta informando que está busy
-        DynamicJsonDocument busyResponse(256);
+        DynamicJsonDocument busyResponse(JSON_SMALL_BUFFER);
         busyResponse["type"] = "busy";
         busyResponse["message"] = "Central busy - try again later";
         busyResponse["retry_after_sec"] = 30;
@@ -216,7 +216,7 @@ void BPRBLEServer::onBikeDataReceived(const String& bikeId, const String& jsonDa
     }
     
     // Parse JSON para verificar tipo
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(JSON_MEDIUM_BUFFER);
     DeserializationError error = deserializeJson(doc, jsonData);
     
     if (error) {
@@ -271,7 +271,7 @@ void BPRBLEServer::onConfigRequest(const String& bikeId, const String& request) 
     currentStatus = PAIRING_SENDING_CONFIG;
     lastActivity = millis();
     
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
     DeserializationError error = deserializeJson(doc, request);
     
     if (error) {
@@ -330,7 +330,7 @@ void BikePairing::requestDataFromBike(const String& bikeId) {
     lastActivity = millis();
     
     // Enviar comando para bike enviar dados
-    DynamicJsonDocument cmd(256);
+    DynamicJsonDocument cmd(JSON_SMALL_BUFFER);
     cmd["type"] = "data_request";
     cmd["bike_id"] = bikeId;
     
@@ -350,7 +350,7 @@ void BikePairing::processDataFromBike(const String& bikeId, const String& jsonDa
     Serial.printf("📥 Processing data from %s\n", bikeId.c_str());
     
     // Parse para atualizar heartbeat
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
     if (deserializeJson(doc, jsonData) == DeserializationError::Ok) {
         if (doc["battery"] && doc["heap"]) {
             BikeManager::updateHeartbeat(bikeId, doc["battery"], doc["heap"]);

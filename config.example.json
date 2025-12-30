@@ -3,44 +3,6 @@
     "<BASE_NAME>": {
       "bikes": {
         "<BIKE_ID>": {
-          "config": {
-            "battery": {
-              "critical_voltage": 3.2,
-              "low_voltage": 3.45,
-              "critical_percent": 15,
-              "low_percent": 25,
-              "recovery_percent": 30
-            },
-            "bike_name": "<BIKE_DISPLAY_NAME>",
-            "ble": {
-              "base_name": "<BASE_NAME>",
-              "scan_time_sec": 5
-            },
-            "dev_mode": false,
-            "power": {
-              "deep_sleep_duration_sec": 3600,
-              "deep_sleep_critical_sec": 7200
-            },
-            "intervals": {
-              "checkin_interval_sec": 300,
-              "scan_interval_normal_sec": 25,
-              "scan_interval_low_battery_sec": 120,
-              "scan_interval_critical_sec": 300,
-              "checkin_low_battery_sec": 600
-            },
-            "timeouts": {
-              "max_time_without_base_sec": 7200
-            },
-            "states": {
-              "enable_low_battery_mode": true,
-              "enable_emergency_upload": true
-            },
-            "version": 2,
-            "wifi": {
-              "scan_interval_sec": 300,
-              "scan_timeout_ms": 5000
-            }
-          },
           "first_seen": 0,
           "first_seen_human": "<TIMESTAMP_HUMAN>",
           "last_visit": 0,
@@ -50,6 +12,7 @@
         }
       },
       "configs": {
+        "version": 2,
         "backup": {
           "enabled": true,
           "retention_hours": 24
@@ -66,6 +29,8 @@
           "min_size_bytes": 64
         },
         "fallback": {
+          "sync_max_retries": 3,
+          "config_ap_timeout_sec": 300,
           "max_failures": 5,
           "timeout_min": 30
         },
@@ -88,10 +53,6 @@
         "limits": {
           "batch_size": 8000,
           "max_bikes": 10
-        },
-        "location": {
-          "lat": 0.0,
-          "lng": 0.0
         },
         "storage": {
           "aggressive_cleanup_multiplier": 0.5,

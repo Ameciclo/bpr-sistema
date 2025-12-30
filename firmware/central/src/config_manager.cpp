@@ -1,32 +1,279 @@
 #include "config_manager.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <vector>
 #include "constants.h"
 
-ConfigManager::ConfigManager() {
+// Config field mapping for hybrid approach
+enum FieldType {
+    STRING,
+    UINT32,
+    UINT16,
+    UINT8,
+    FLOAT,
+    BOOL
+};
+
+struct ConfigField
+{
+    const char *jsonPath;
+    void *fieldPtr;
+    FieldType type;
+    size_t maxSize; // for strings only
+};
+
+// Static array with all config fields
+static ConfigField configFields[] = {
+    // Basic
+    {"base_id", nullptr, STRING, sizeof(((CentralConfig *)0)->base_id)},
+    {"version", nullptr, UINT32, 0},
+
+    // WiFi
+    {"wifi.ssid", nullptr, STRING, sizeof(((CentralConfig *)0)->wifi.ssid)},
+    {"wifi.password", nullptr, STRING, sizeof(((CentralConfig *)0)->wifi.password)},
+
+    // Firebase
+    {"firebase.database_url", nullptr, STRING, sizeof(((CentralConfig *)0)->firebase.database_url)},
+    {"firebase.api_key", nullptr, STRING, sizeof(((CentralConfig *)0)->firebase.api_key)},
+
+    // Intervals
+    {"intervals.sync_sec", nullptr, UINT32, 0},
+    {"intervals.cleanup_sec", nullptr, UINT32, 0},
+    {"intervals.log_sec", nullptr, UINT32, 0},
+    {"intervals.led_count_sec", nullptr, UINT32, 0},
+
+    // Timeouts
+    {"timeouts.wifi_sec", nullptr, UINT32, 0},
+    {"timeouts.firebase_ms", nullptr, UINT32, 0},
+
+    // LED
+    {"led.boot_ms", nullptr, UINT16, 0},
+    {"led.ble_ready_ms", nullptr, UINT16, 0},
+    {"led.wifi_sync_ms", nullptr, UINT16, 0},
+    {"led.bike_arrived_ms", nullptr, UINT16, 0},
+    {"led.bike_left_ms", nullptr, UINT16, 0},
+    {"led.count_ms", nullptr, UINT16, 0},
+    {"led.count_pause_ms", nullptr, UINT16, 0},
+    {"led.error_ms", nullptr, UINT16, 0},
+
+    // Limits
+    {"limits.max_bikes", nullptr, UINT8, 0},
+    {"limits.batch_size", nullptr, UINT16, 0},
+
+    // Fallback
+    {"fallback.max_failures", nullptr, UINT8, 0},
+    {"fallback.timeout_min", nullptr, UINT16, 0},
+    {"fallback.sync_max_retries", nullptr, UINT8, 0},
+    {"fallback.config_ap_timeout_sec", nullptr, UINT16, 0},
+
+    // Buffer
+    {"buffer.max_size", nullptr, UINT8, 0},
+    {"buffer.sync_threshold_percent", nullptr, UINT8, 0},
+    {"buffer.auto_save_interval", nullptr, UINT8, 0},
+    {"buffer.max_item_size", nullptr, UINT16, 0},
+
+    // Compression
+    {"compression.enabled", nullptr, BOOL, 0},
+    {"compression.min_size_bytes", nullptr, UINT16, 0},
+
+    // Storage
+    {"storage.min_free_kb", nullptr, UINT16, 0},
+    {"storage.warning_threshold_kb", nullptr, UINT16, 0},
+    {"storage.aggressive_cleanup_multiplier", nullptr, FLOAT, 0},
+
+    // Backup
+    {"backup.enabled", nullptr, BOOL, 0},
+    {"backup.retention_hours", nullptr, UINT16, 0}};
+
+// Initialize field pointers to actual config struct members
+void initConfigFieldPointers(CentralConfig *config)
+{
+    configFields[0].fieldPtr = config->base_id;
+    configFields[1].fieldPtr = &config->version;
+    configFields[2].fieldPtr = config->wifi.ssid;
+    configFields[3].fieldPtr = config->wifi.password;
+    configFields[4].fieldPtr = config->firebase.database_url;
+    configFields[5].fieldPtr = config->firebase.api_key;
+    configFields[6].fieldPtr = &config->intervals.sync_sec;
+    configFields[7].fieldPtr = &config->intervals.cleanup_sec;
+    configFields[8].fieldPtr = &config->intervals.log_sec;
+    configFields[9].fieldPtr = &config->intervals.led_count_sec;
+    configFields[10].fieldPtr = &config->timeouts.wifi_sec;
+    configFields[11].fieldPtr = &config->timeouts.firebase_ms;
+    configFields[12].fieldPtr = &config->led.boot_ms;
+    configFields[13].fieldPtr = &config->led.ble_ms;
+    configFields[14].fieldPtr = &config->led.sync_ms;
+    configFields[15].fieldPtr = &config->led.bike_arrived_ms;
+    configFields[16].fieldPtr = &config->led.bike_left_ms;
+    configFields[17].fieldPtr = &config->led.count_ms;
+    configFields[18].fieldPtr = &config->led.count_pause_ms;
+    configFields[19].fieldPtr = &config->led.error_ms;
+    configFields[20].fieldPtr = &config->limits.max_bikes;
+    configFields[21].fieldPtr = &config->limits.batch_size;
+    configFields[22].fieldPtr = &config->fallback.max_failures;
+    configFields[23].fieldPtr = &config->fallback.timeout_min;
+    configFields[24].fieldPtr = &config->fallback.sync_max_retries;
+    configFields[25].fieldPtr = &config->fallback.config_ap_timeout_sec;
+    configFields[26].fieldPtr = &config->buffer.max_size;
+    configFields[27].fieldPtr = &config->buffer.sync_threshold_percent;
+    configFields[28].fieldPtr = &config->buffer.auto_save_interval;
+    configFields[29].fieldPtr = &config->buffer.max_item_size;
+    configFields[30].fieldPtr = &config->compression.enabled;
+    configFields[31].fieldPtr = &config->compression.min_size_bytes;
+    configFields[32].fieldPtr = &config->storage.min_free_kb;
+    configFields[33].fieldPtr = &config->storage.warning_threshold_kb;
+    configFields[34].fieldPtr = &config->storage.aggressive_cleanup_multiplier;
+    configFields[35].fieldPtr = &config->backup.enabled;
+    configFields[36].fieldPtr = &config->backup.retention_hours;
+}
+
+// Helper function to save field to JSON
+void saveFieldToJson(DynamicJsonDocument &doc, const ConfigField &field)
+{
+    // Parse nested path (e.g., "wifi.ssid" -> doc["wifi"]["ssid"])
+    String path = field.jsonPath;
+    int dotPos = path.indexOf('.');
+
+    if (dotPos == -1)
+    {
+        // Simple field
+        switch (field.type)
+        {
+        case STRING:
+            doc[path] = (char *)field.fieldPtr;
+            break;
+        case UINT32:
+            doc[path] = *(uint32_t *)field.fieldPtr;
+            break;
+        case UINT16:
+            doc[path] = *(uint16_t *)field.fieldPtr;
+            break;
+        case UINT8:
+            doc[path] = *(uint8_t *)field.fieldPtr;
+            break;
+        case FLOAT:
+            doc[path] = *(float *)field.fieldPtr;
+            break;
+        case BOOL:
+            doc[path] = *(bool *)field.fieldPtr;
+            break;
+        }
+    }
+    else
+    {
+        // Nested field
+        String section = path.substring(0, dotPos);
+        String key = path.substring(dotPos + 1);
+
+        switch (field.type)
+        {
+        case STRING:
+            doc[section][key] = (char *)field.fieldPtr;
+            break;
+        case UINT32:
+            doc[section][key] = *(uint32_t *)field.fieldPtr;
+            break;
+        case UINT16:
+            doc[section][key] = *(uint16_t *)field.fieldPtr;
+            break;
+        case UINT8:
+            doc[section][key] = *(uint8_t *)field.fieldPtr;
+            break;
+        case FLOAT:
+            doc[section][key] = *(float *)field.fieldPtr;
+            break;
+        case BOOL:
+            doc[section][key] = *(bool *)field.fieldPtr;
+            break;
+        }
+    }
+}
+void loadFieldFromJson(const DynamicJsonDocument &doc, const ConfigField &field)
+{
+    // Parse nested path (e.g., "wifi.ssid" -> doc["wifi"]["ssid"])
+    String path = field.jsonPath;
+    int dotPos = path.indexOf('.');
+
+    JsonVariantConst value;
+    if (dotPos == -1)
+    {
+        value = doc[path];
+    }
+    else
+    {
+        String section = path.substring(0, dotPos);
+        String key = path.substring(dotPos + 1);
+        value = doc[section][key];
+    }
+
+    if (value.isNull())
+        return;
+
+    // Set value based on type
+    switch (field.type)
+    {
+    case STRING:
+        if (value.is<const char *>())
+        {
+            strncpy((char *)field.fieldPtr, value.as<const char *>(), field.maxSize - 1);
+            ((char *)field.fieldPtr)[field.maxSize - 1] = '\0';
+        }
+        break;
+    case UINT32:
+        if (value.is<uint32_t>())
+        {
+            *(uint32_t *)field.fieldPtr = value.as<uint32_t>();
+        }
+        break;
+    case UINT16:
+        if (value.is<uint16_t>())
+        {
+            *(uint16_t *)field.fieldPtr = value.as<uint16_t>();
+        }
+        break;
+    case UINT8:
+        if (value.is<uint8_t>())
+        {
+            *(uint8_t *)field.fieldPtr = value.as<uint8_t>();
+        }
+        break;
+    case FLOAT:
+        if (value.is<float>())
+        {
+            *(float *)field.fieldPtr = value.as<float>();
+        }
+        break;
+    case BOOL:
+        if (value.is<bool>())
+        {
+            *(bool *)field.fieldPtr = value.as<bool>();
+        }
+        break;
+    }
+}
+
+ConfigManager::ConfigManager()
+{
     // Initialize with defaults
     strcpy(config.base_id, "central_default");
-    
-    config.location.lat = 0.0;
-    config.location.lng = 0.0;
-    
+
     strcpy(config.wifi.ssid, "");
     strcpy(config.wifi.password, "");
     config.wifi.timeout_ms = WIFI_TIMEOUT_DEFAULT;
-    
+
     strcpy(config.firebase.project_id, "");
     strcpy(config.firebase.database_url, "");
     strcpy(config.firebase.api_key, "");
-    
+
     config.intervals.sync_sec = 300;
     config.intervals.cleanup_sec = 60;
     config.intervals.log_sec = 15;
     config.intervals.led_count_sec = 30;
-    
+
     config.timeouts.wifi_sec = 30;
     config.timeouts.firebase_ms = 10000;
     config.timeouts.config_ap_min = 15;
-    
+
     config.led.pin = LED_PIN;
     config.led.boot_ms = LED_BOOT_INTERVAL;
     config.led.ble_ms = LED_BLE_INTERVAL;
@@ -36,362 +283,249 @@ ConfigManager::ConfigManager() {
     config.led.count_pause_ms = LED_COUNT_PAUSE;
     config.led.bike_arrived_ms = 150;
     config.led.bike_left_ms = 800;
-    
+
     config.limits.max_bikes = MAX_BIKES;
     config.limits.batch_size = MAX_BUFFER_SIZE;
-    
+
     config.fallback.max_failures = MAX_SYNC_FAILURES;
     config.fallback.timeout_min = SYNC_FAILURE_TIMEOUT_MS / 60000;
     config.fallback.sync_max_retries = 3;
     config.fallback.config_ap_timeout_sec = 300; // 5 minutes
-    
+
     // Buffer defaults
     config.buffer.max_size = 50;
     config.buffer.sync_threshold_percent = 80;
     config.buffer.auto_save_interval = 5;
     config.buffer.max_item_size = 256;
-    
+
     // Compression defaults
     config.compression.enabled = false;
     config.compression.min_size_bytes = 64;
-    
+
     // Storage defaults
     config.storage.min_free_kb = 20;
     config.storage.warning_threshold_kb = 10;
     config.storage.aggressive_cleanup_multiplier = 0.5;
-    
+
     // Backup defaults
     config.backup.enabled = true;
     config.backup.retention_hours = 24;
 }
 
-bool ConfigManager::loadConfig() {
-    if (!LittleFS.exists(CONFIG_FILE)) {
+bool ConfigManager::loadConfig()
+{
+    if (!LittleFS.exists(CONFIG_FILE))
+    {
         Serial.println("📄 Config file not found, using defaults");
         return false;
     }
-    
+
     File file = LittleFS.open(CONFIG_FILE, "r");
-    if (!file) {
+    if (!file)
+    {
         Serial.println("❌ Failed to open config file");
         return false;
     }
-    
-    DynamicJsonDocument doc(2048);
+
+    DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
     DeserializationError error = deserializeJson(doc, file);
     file.close();
-    
-    if (error) {
+
+    if (error)
+    {
         Serial.printf("❌ Config parse error: %s\n", error.c_str());
         return false;
     }
-    
-    // Load config from JSON
-    if (doc["base_id"]) strcpy(config.base_id, doc["base_id"]);
-    
-    if (doc["location"]["lat"]) config.location.lat = doc["location"]["lat"];
-    if (doc["location"]["lng"]) config.location.lng = doc["location"]["lng"];
-    
-    if (doc["wifi"]["ssid"]) strcpy(config.wifi.ssid, doc["wifi"]["ssid"]);
-    if (doc["wifi"]["password"]) strcpy(config.wifi.password, doc["wifi"]["password"]);
-    
-    if (doc["firebase"]["project_id"]) strcpy(config.firebase.project_id, doc["firebase"]["project_id"]);
-    if (doc["firebase"]["database_url"]) strcpy(config.firebase.database_url, doc["firebase"]["database_url"]);
-    if (doc["firebase"]["api_key"]) strcpy(config.firebase.api_key, doc["firebase"]["api_key"]);
-    
-    if (doc["intervals"]["sync_sec"]) config.intervals.sync_sec = doc["intervals"]["sync_sec"];
-    if (doc["intervals"]["cleanup_sec"]) config.intervals.cleanup_sec = doc["intervals"]["cleanup_sec"];
-    if (doc["intervals"]["log_sec"]) config.intervals.log_sec = doc["intervals"]["log_sec"];
-    if (doc["intervals"]["led_count_sec"]) config.intervals.led_count_sec = doc["intervals"]["led_count_sec"];
-    
-    if (doc["timeouts"]["wifi_sec"]) config.timeouts.wifi_sec = doc["timeouts"]["wifi_sec"];
-    if (doc["timeouts"]["firebase_ms"]) config.timeouts.firebase_ms = doc["timeouts"]["firebase_ms"];
-    if (doc["timeouts"]["config_ap_min"]) config.timeouts.config_ap_min = doc["timeouts"]["config_ap_min"];
-    
-    if (doc["led"]["boot_ms"]) config.led.boot_ms = doc["led"]["boot_ms"];
-    if (doc["led"]["ble_ready_ms"]) config.led.ble_ms = doc["led"]["ble_ready_ms"];
-    if (doc["led"]["wifi_sync_ms"]) config.led.sync_ms = doc["led"]["wifi_sync_ms"];
-    if (doc["led"]["bike_arrived_ms"]) config.led.bike_arrived_ms = doc["led"]["bike_arrived_ms"];
-    if (doc["led"]["bike_left_ms"]) config.led.bike_left_ms = doc["led"]["bike_left_ms"];
-    if (doc["led"]["count_ms"]) config.led.count_ms = doc["led"]["count_ms"];
-    if (doc["led"]["count_pause_ms"]) config.led.count_pause_ms = doc["led"]["count_pause_ms"];
-    if (doc["led"]["error_ms"]) config.led.error_ms = doc["led"]["error_ms"];
-    
-    if (doc["limits"]["max_bikes"]) config.limits.max_bikes = doc["limits"]["max_bikes"];
-    if (doc["limits"]["batch_size"]) config.limits.batch_size = doc["limits"]["batch_size"];
-    
-    if (doc["fallback"]["max_failures"]) config.fallback.max_failures = doc["fallback"]["max_failures"];
-    if (doc["fallback"]["timeout_min"]) config.fallback.timeout_min = doc["fallback"]["timeout_min"];
-    if (doc["fallback"]["sync_max_retries"]) config.fallback.sync_max_retries = doc["fallback"]["sync_max_retries"];
-    if (doc["fallback"]["config_ap_timeout_sec"]) config.fallback.config_ap_timeout_sec = doc["fallback"]["config_ap_timeout_sec"];
-    
-    // Buffer config
-    if (doc["buffer"]["max_size"]) config.buffer.max_size = doc["buffer"]["max_size"];
-    if (doc["buffer"]["sync_threshold_percent"]) config.buffer.sync_threshold_percent = doc["buffer"]["sync_threshold_percent"];
-    if (doc["buffer"]["auto_save_interval"]) config.buffer.auto_save_interval = doc["buffer"]["auto_save_interval"];
-    if (doc["buffer"]["max_item_size"]) config.buffer.max_item_size = doc["buffer"]["max_item_size"];
-    
-    // Compression config
-    if (doc["compression"]["enabled"]) config.compression.enabled = doc["compression"]["enabled"];
-    if (doc["compression"]["min_size_bytes"]) config.compression.min_size_bytes = doc["compression"]["min_size_bytes"];
-    
-    // Storage config
-    if (doc["storage"]["min_free_kb"]) config.storage.min_free_kb = doc["storage"]["min_free_kb"];
-    if (doc["storage"]["warning_threshold_kb"]) config.storage.warning_threshold_kb = doc["storage"]["warning_threshold_kb"];
-    if (doc["storage"]["aggressive_cleanup_multiplier"]) config.storage.aggressive_cleanup_multiplier = doc["storage"]["aggressive_cleanup_multiplier"];
-    
-    // Backup config
-    if (doc["backup"]["enabled"]) config.backup.enabled = doc["backup"]["enabled"];
-    if (doc["backup"]["retention_hours"]) config.backup.retention_hours = doc["backup"]["retention_hours"];
-    
-    Serial.printf("✅ Config carregada do arquivo:\n");
-    Serial.printf("   Base ID: %s\n", config.base_id);
-    Serial.printf("   WiFi: %s\n", config.wifi.ssid);
-    Serial.printf("   Firebase: %s\n", config.firebase.database_url);
-    
+
+    // Initialize field pointers
+    initConfigFieldPointers(&config);
+
+    // Load all fields automatically
+    for (const auto &field : configFields)
+    {
+        loadFieldFromJson(doc, field);
+    }
+
+    Serial.printf("✅ Config loaded: %s\n", config.base_id);
     return isConfigValid();
 }
 
-bool ConfigManager::saveConfig() {
-    DynamicJsonDocument doc(2048);
-    
-    doc["base_id"] = config.base_id;
-    
-    doc["location"]["lat"] = config.location.lat;
-    doc["location"]["lng"] = config.location.lng;
-    
-    doc["wifi"]["ssid"] = config.wifi.ssid;
-    doc["wifi"]["password"] = config.wifi.password;
-    
-    doc["firebase"]["project_id"] = config.firebase.project_id;
-    doc["firebase"]["database_url"] = config.firebase.database_url;
-    doc["firebase"]["api_key"] = config.firebase.api_key;
-    
-    doc["intervals"]["sync_sec"] = config.intervals.sync_sec;
-    doc["intervals"]["cleanup_sec"] = config.intervals.cleanup_sec;
-    doc["intervals"]["log_sec"] = config.intervals.log_sec;
-    doc["intervals"]["led_count_sec"] = config.intervals.led_count_sec;
-    
-    doc["timeouts"]["wifi_sec"] = config.timeouts.wifi_sec;
-    doc["timeouts"]["firebase_ms"] = config.timeouts.firebase_ms;
-    doc["timeouts"]["config_ap_min"] = config.timeouts.config_ap_min;
-    
-    doc["led"]["boot_ms"] = config.led.boot_ms;
-    doc["led"]["ble_ready_ms"] = config.led.ble_ms;
-    doc["led"]["wifi_sync_ms"] = config.led.sync_ms;
-    doc["led"]["bike_arrived_ms"] = config.led.bike_arrived_ms;
-    doc["led"]["bike_left_ms"] = config.led.bike_left_ms;
-    doc["led"]["count_ms"] = config.led.count_ms;
-    doc["led"]["count_pause_ms"] = config.led.count_pause_ms;
-    doc["led"]["error_ms"] = config.led.error_ms;
-    
-    doc["limits"]["max_bikes"] = config.limits.max_bikes;
-    doc["limits"]["batch_size"] = config.limits.batch_size;
-    
-    doc["fallback"]["max_failures"] = config.fallback.max_failures;
-    doc["fallback"]["timeout_min"] = config.fallback.timeout_min;
-    doc["fallback"]["sync_max_retries"] = config.fallback.sync_max_retries;
-    doc["fallback"]["config_ap_timeout_sec"] = config.fallback.config_ap_timeout_sec;
-    
-    doc["buffer"]["max_size"] = config.buffer.max_size;
-    doc["buffer"]["sync_threshold_percent"] = config.buffer.sync_threshold_percent;
-    doc["buffer"]["auto_save_interval"] = config.buffer.auto_save_interval;
-    doc["buffer"]["max_item_size"] = config.buffer.max_item_size;
-    
-    doc["compression"]["enabled"] = config.compression.enabled;
-    doc["compression"]["min_size_bytes"] = config.compression.min_size_bytes;
-    
-    doc["storage"]["min_free_kb"] = config.storage.min_free_kb;
-    doc["storage"]["warning_threshold_kb"] = config.storage.warning_threshold_kb;
-    doc["storage"]["aggressive_cleanup_multiplier"] = config.storage.aggressive_cleanup_multiplier;
-    
-    doc["backup"]["enabled"] = config.backup.enabled;
-    doc["backup"]["retention_hours"] = config.backup.retention_hours;
-    
+bool ConfigManager::saveConfig()
+{
+    DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
+
+    // Initialize field pointers
+    initConfigFieldPointers(&config);
+
+    // Save all fields automatically
+    for (const auto &field : configFields)
+    {
+        saveFieldToJson(doc, field);
+    }
+
     File file = LittleFS.open(CONFIG_FILE, "w");
-    if (!file) {
+    if (!file)
+    {
         Serial.println("❌ Failed to create config file");
         return false;
     }
-    
+
     serializeJson(doc, file);
     file.close();
-    
+
     Serial.println("💾 Config saved");
     return true;
 }
 
-bool ConfigManager::isConfigValid() {
-    bool valid = strlen(config.base_id) > 0 && 
-                strlen(config.wifi.ssid) > 0 && 
-                strlen(config.firebase.database_url) > 0 &&
-                strlen(config.firebase.api_key) > 0;
-    
-    Serial.printf("🔍 Validação da config: %s\n", valid ? "✅ VÁLIDA" : "❌ INVÁLIDA");
-    Serial.printf("   Base ID: %s\n", strlen(config.base_id) > 0 ? "✅" : "❌");
-    Serial.printf("   WiFi SSID: %s\n", strlen(config.wifi.ssid) > 0 ? "✅" : "❌");
-    Serial.printf("   Firebase URL: %s\n", strlen(config.firebase.database_url) > 0 ? "✅" : "❌");
-    Serial.printf("   Firebase Key: %s\n", strlen(config.firebase.api_key) > 0 ? "✅" : "❌");
-    
+bool ConfigManager::isConfigValid()
+{
+    std::vector<String> missingFields;
+
+    // Initialize field pointers
+    initConfigFieldPointers(&config);
+
+    // Check all fields automatically
+    for (const auto &field : configFields)
+    {
+        bool isEmpty = false;
+
+        switch (field.type)
+        {
+        case STRING:
+            isEmpty = (strlen((char *)field.fieldPtr) == 0);
+            break;
+        case UINT32:
+            isEmpty = (*(uint32_t *)field.fieldPtr == 0);
+            break;
+        case UINT16:
+            isEmpty = (*(uint16_t *)field.fieldPtr == 0);
+            break;
+        case UINT8:
+            isEmpty = (*(uint8_t *)field.fieldPtr == 0);
+            break;
+        case FLOAT:
+            // For floats, only check if exactly 0.0 (location can be 0.0)
+            isEmpty = false; // Don't validate floats as required
+            break;
+        case BOOL:
+            isEmpty = false; // Bools are always valid (true/false)
+            break;
+        }
+
+        if (isEmpty)
+        {
+            missingFields.push_back(field.jsonPath);
+        }
+    }
+
+    bool valid = missingFields.empty();
+
+    if (valid)
+    {
+        Serial.printf("✅ Config válida: %s (todos os %d campos obrigatórios presentes)\n",
+                      config.base_id, sizeof(configFields) / sizeof(configFields[0]));
+    }
+    else
+    {
+        Serial.printf("❌ Config inválida: %d campos faltando de %d obrigatórios\n",
+                      missingFields.size(), sizeof(configFields) / sizeof(configFields[0]));
+        for (const String &field : missingFields)
+        {
+            Serial.printf("   - %s\n", field.c_str());
+        }
+    }
+
     return valid;
 }
 
-void ConfigManager::updateFromFirebase(const DynamicJsonDocument& firebaseConfig) {
-    // Atualizar todos os campos do Firebase
-    if (firebaseConfig["location"]["lat"]) config.location.lat = firebaseConfig["location"]["lat"];
-    if (firebaseConfig["location"]["lng"]) config.location.lng = firebaseConfig["location"]["lng"];
-    
-    if (firebaseConfig["wifi"]["ssid"]) strcpy(config.wifi.ssid, firebaseConfig["wifi"]["ssid"]);
-    if (firebaseConfig["wifi"]["password"]) strcpy(config.wifi.password, firebaseConfig["wifi"]["password"]);
-    
-    if (firebaseConfig["intervals"]["sync_sec"]) config.intervals.sync_sec = firebaseConfig["intervals"]["sync_sec"];
-    if (firebaseConfig["intervals"]["cleanup_sec"]) config.intervals.cleanup_sec = firebaseConfig["intervals"]["cleanup_sec"];
-    if (firebaseConfig["intervals"]["log_sec"]) config.intervals.log_sec = firebaseConfig["intervals"]["log_sec"];
-    if (firebaseConfig["intervals"]["led_count_sec"]) config.intervals.led_count_sec = firebaseConfig["intervals"]["led_count_sec"];
-    
-    if (firebaseConfig["timeouts"]["wifi_sec"]) {
-        config.timeouts.wifi_sec = firebaseConfig["timeouts"]["wifi_sec"];
-        config.wifi.timeout_ms = config.timeouts.wifi_sec * 1000;
+void ConfigManager::updateFromFirebase(const DynamicJsonDocument &firebaseConfig)
+{
+    Serial.println("🔄 Updating config from Firebase...");
+
+    // Initialize field pointers
+    initConfigFieldPointers(&config);
+
+    // Update all fields automatically
+    for (const auto &field : configFields)
+    {
+        loadFieldFromJson(firebaseConfig, field);
     }
-    if (firebaseConfig["timeouts"]["firebase_ms"]) config.timeouts.firebase_ms = firebaseConfig["timeouts"]["firebase_ms"];
-    if (firebaseConfig["timeouts"]["config_ap_min"]) config.timeouts.config_ap_min = firebaseConfig["timeouts"]["config_ap_min"];
-    
-    if (firebaseConfig["led"]["boot_ms"]) config.led.boot_ms = firebaseConfig["led"]["boot_ms"];
-    if (firebaseConfig["led"]["ble_ready_ms"]) config.led.ble_ms = firebaseConfig["led"]["ble_ready_ms"];
-    if (firebaseConfig["led"]["wifi_sync_ms"]) config.led.sync_ms = firebaseConfig["led"]["wifi_sync_ms"];
-    if (firebaseConfig["led"]["bike_arrived_ms"]) config.led.bike_arrived_ms = firebaseConfig["led"]["bike_arrived_ms"];
-    if (firebaseConfig["led"]["bike_left_ms"]) config.led.bike_left_ms = firebaseConfig["led"]["bike_left_ms"];
-    if (firebaseConfig["led"]["count_ms"]) config.led.count_ms = firebaseConfig["led"]["count_ms"];
-    if (firebaseConfig["led"]["count_pause_ms"]) config.led.count_pause_ms = firebaseConfig["led"]["count_pause_ms"];
-    if (firebaseConfig["led"]["error_ms"]) config.led.error_ms = firebaseConfig["led"]["error_ms"];
-    
-    if (firebaseConfig["limits"]["max_bikes"]) config.limits.max_bikes = firebaseConfig["limits"]["max_bikes"];
-    if (firebaseConfig["limits"]["batch_size"]) config.limits.batch_size = firebaseConfig["limits"]["batch_size"];
-    
-    if (firebaseConfig["fallback"]["max_failures"]) config.fallback.max_failures = firebaseConfig["fallback"]["max_failures"];
-    if (firebaseConfig["fallback"]["timeout_min"]) config.fallback.timeout_min = firebaseConfig["fallback"]["timeout_min"];
-    if (firebaseConfig["fallback"]["sync_max_retries"]) config.fallback.sync_max_retries = firebaseConfig["fallback"]["sync_max_retries"];
-    if (firebaseConfig["fallback"]["config_ap_timeout_sec"]) config.fallback.config_ap_timeout_sec = firebaseConfig["fallback"]["config_ap_timeout_sec"];
-    
-    // Buffer config
-    if (firebaseConfig["buffer"]["max_size"]) config.buffer.max_size = firebaseConfig["buffer"]["max_size"];
-    if (firebaseConfig["buffer"]["sync_threshold_percent"]) config.buffer.sync_threshold_percent = firebaseConfig["buffer"]["sync_threshold_percent"];
-    if (firebaseConfig["buffer"]["auto_save_interval"]) config.buffer.auto_save_interval = firebaseConfig["buffer"]["auto_save_interval"];
-    if (firebaseConfig["buffer"]["max_item_size"]) config.buffer.max_item_size = firebaseConfig["buffer"]["max_item_size"];
-    
-    // Compression config
-    if (firebaseConfig["compression"]["enabled"]) config.compression.enabled = firebaseConfig["compression"]["enabled"];
-    if (firebaseConfig["compression"]["min_size_bytes"]) config.compression.min_size_bytes = firebaseConfig["compression"]["min_size_bytes"];
-    
-    // Storage config
-    if (firebaseConfig["storage"]["min_free_kb"]) config.storage.min_free_kb = firebaseConfig["storage"]["min_free_kb"];
-    if (firebaseConfig["storage"]["warning_threshold_kb"]) config.storage.warning_threshold_kb = firebaseConfig["storage"]["warning_threshold_kb"];
-    if (firebaseConfig["storage"]["aggressive_cleanup_multiplier"]) config.storage.aggressive_cleanup_multiplier = firebaseConfig["storage"]["aggressive_cleanup_multiplier"];
-    
-    // Backup config
-    if (firebaseConfig["backup"]["enabled"]) config.backup.enabled = firebaseConfig["backup"]["enabled"];
-    if (firebaseConfig["backup"]["retention_hours"]) config.backup.retention_hours = firebaseConfig["backup"]["retention_hours"];
-    
+
+    // Save updated config
     saveConfig();
-    Serial.println("🔄 Config atualizada e salva localmente");
-    Serial.printf("   Sync interval: %d segundos\n", config.intervals.sync_sec);
-    Serial.printf("   WiFi timeout: %d segundos\n", config.timeouts.wifi_sec);
-    Serial.printf("   LED count interval: %d segundos\n", config.intervals.led_count_sec);
-    Serial.printf("   Fallback: %d falhas ou %d min\n", config.fallback.max_failures, config.fallback.timeout_min);
+    Serial.println("✅ Config updated from Firebase and saved locally");
 }
 
-String ConfigManager::getCentralConfigUrl() const {
-    return String(config.firebase.database_url) + 
-           "/bases/" + config.base_id + "/configs.json?auth=" + 
+String ConfigManager::getCentralConfigUrl() const
+{
+    return String(config.firebase.database_url) +
+           "/bases/" + config.base_id + "/configs.json?auth=" +
            config.firebase.api_key;
 }
 
-String ConfigManager::getBikeRegistryUrl() const {
-    return String(config.firebase.database_url) + 
-           "/bases/" + config.base_id + "/bikes.json?auth=" + 
+String ConfigManager::getBikeRegistryUrl() const
+{
+    return String(config.firebase.database_url) +
+           "/bases/" + config.base_id + "/bikes.json?auth=" +
            config.firebase.api_key;
 }
 
-String ConfigManager::getWiFiConfigUrl() const {
-    return String(config.firebase.database_url) + 
-           "/bases/" + config.base_id + "/configs/wifi.json?auth=" + 
+String ConfigManager::getWiFiConfigUrl() const
+{
+    return String(config.firebase.database_url) +
+           "/bases/" + config.base_id + "/configs/wifi.json?auth=" +
            config.firebase.api_key;
 }
 
-String ConfigManager::getHeartbeatUrl() const {
-    return String(config.firebase.database_url) + 
-           "/bases/" + config.base_id + "/last_heartbeat.json?auth=" + 
+String ConfigManager::getHeartbeatUrl() const
+{
+    return String(config.firebase.database_url) +
+           "/bases/" + config.base_id + "/last_heartbeat.json?auth=" +
            config.firebase.api_key;
 }
 
-String ConfigManager::getBufferDataUrl() const {
-    return String(config.firebase.database_url) + 
-           "/bases/" + config.base_id + "/data.json?auth=" + 
+String ConfigManager::getBufferDataUrl() const
+{
+    return String(config.firebase.database_url) +
+           "/bases/" + config.base_id + "/data.json?auth=" +
            config.firebase.api_key;
 }
 
-bool ConfigManager::updateFromJson(const String& json) {
-    // Early return se JSON vazio
-    if (json.length() < 100) {
-        Serial.println("🚨 JSON too small - invalid config!");
+bool ConfigManager::updateFromJson(const String &json)
+{
+    if (json.length() < 100)
+    {
+        Serial.println("🚨 JSON too small");
         return false;
     }
-    
-    DynamicJsonDocument doc(2048);
-    
-    // Early return se parse falhar
-    if (deserializeJson(doc, json) != DeserializationError::Ok) {
-        Serial.println("🚨 JSON parse failed!");
-        return false;
-    }
-    
-    // Early return se validação falhar
-    if (!isValidFirebaseConfig(doc)) {
-        Serial.println("🚨 Config validation failed!");
-        return false;
-    }
-    
-    // Sucesso - atualizar config
-    updateFromFirebase(doc);
-    Serial.println("✅ Config updated successfully from JSON");
-    return true;
-}
 
-bool ConfigManager::isValidFirebaseConfig(const DynamicJsonDocument& doc) const {
-    Serial.println("🔍 Validating Firebase config fields...");
-    
-    // Lista de campos obrigatórios
-    struct RequiredField {
-        const char* path;
-        const char* description;
-    };
-    
-    RequiredField required[] = {
-        {"intervals.sync_sec", "Sync interval"},
-        {"timeouts.wifi_sec", "WiFi timeout"},
-        {"led.ble_ready_ms", "LED BLE pattern"},
-        {"limits.max_bikes", "Max bikes limit"},
-        {"fallback.max_failures", "Max failures"}
-    };
-    
-    // Early return se algum campo obrigatório faltar
-    for (auto& field : required) {
-        bool exists = false;
-        
-        if (strcmp(field.path, "intervals.sync_sec") == 0) exists = doc["intervals"]["sync_sec"];
-        else if (strcmp(field.path, "timeouts.wifi_sec") == 0) exists = doc["timeouts"]["wifi_sec"];
-        else if (strcmp(field.path, "led.ble_ready_ms") == 0) exists = doc["led"]["ble_ready_ms"];
-        else if (strcmp(field.path, "limits.max_bikes") == 0) exists = doc["limits"]["max_bikes"];
-        else if (strcmp(field.path, "fallback.max_failures") == 0) exists = doc["fallback"]["max_failures"];
-        
-        if (!exists) {
-            Serial.printf("❌ Missing required field: %s (%s)\n", field.description, field.path);
-            return false;
-        }
-        
-        Serial.printf("✅ %s: OK\n", field.description);
+    DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
+    if (deserializeJson(doc, json) != DeserializationError::Ok)
+    {
+        Serial.println("🚨 JSON parse failed");
+        return false;
     }
-    
-    Serial.println("✅ All required fields present - config valid!");
+
+    // Backup config atual
+    CentralConfig backup = config;
+
+    // Initialize field pointers and apply new config
+    initConfigFieldPointers(&config);
+    for (const auto &field : configFields)
+    {
+        loadFieldFromJson(doc, field);
+    }
+
+    // Validar com MESMA função usada no boot
+    if (!isConfigValid())
+    {
+        Serial.println("🚨 Firebase config invalid - restoring backup");
+        config = backup;
+        return false;
+    }
+
+    // Sucesso - salvar nova config
+    saveConfig();
+    Serial.println("✅ Firebase config applied and saved");
     return true;
 }

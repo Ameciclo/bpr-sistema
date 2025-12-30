@@ -12,12 +12,12 @@
 extern ConfigManager configManager;
 extern BufferManager bufferManager;
 extern SystemState currentState;
-extern bool firstSync;
 
 // Static members
 bool CloudSync::syncInProgress = false;
 SyncResult CloudSync::currentResult = SyncResult::SUCCESS;
 static uint32_t syncStartTime = 0;
+static bool firstSync = true;  // Flag para indicar se é o primeiro sync
 
 SyncResult CloudSync::enter()
 {
@@ -63,6 +63,12 @@ SyncResult CloudSync::update()
         bool heartbeatOk = uploadHeartbeat();
 
         success = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
+        
+        // Marcar que o primeiro sync foi concluído
+        if (success && firstSync) {
+            firstSync = false;
+            Serial.println("✅ First sync completed - WiFi config uploaded");
+        }
     }
 
     // Sempre desconectar WiFi
@@ -206,7 +212,7 @@ bool CloudSync::downloadBikeData()
 
 bool CloudSync::uploadBufferData()
 {
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(JSON_LARGE_BUFFER);
 
     // Early return se não há dados
     if (!bufferManager.getDataForUpload(doc))
@@ -238,7 +244,7 @@ bool CloudSync::uploadBufferData()
     // Sucesso
     bufferManager.markAsConfirmed();
     Serial.printf("📤 Buffer data uploaded: %d bytes\n", jsonString.length());
-    Serial.printf("   URL: /bases/%s/data\n", configManager.getConfig().base_id);
+    Serial.printf("   URL: %s\n", configManager.getBufferDataUrl().c_str());
     http.end();
     return true;
 }
@@ -257,7 +263,7 @@ bool CloudSync::uploadHeartbeat()
     char dateStr[64];
     strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
 
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
     doc["timestamp"] = now;
     doc["timestamp_human"] = dateStr;
     doc["bikes_connected"] = BikeManager::getConnectedCount();
@@ -297,7 +303,7 @@ bool CloudSync::uploadWiFiConfig()
     String url = configManager.getWiFiConfigUrl();
     const CentralConfig &config = configManager.getConfig();
 
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
     doc["ssid"] = config.wifi.ssid;
     doc["password"] = config.wifi.password;
 
@@ -324,7 +330,7 @@ bool CloudSync::uploadWiFiConfig()
 
 bool CloudSync::uploadBikeData()
 {
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(JSON_LARGE_BUFFER);
 
     // Early return se não há atualizações
     if (!BikeManager::uploadToFirebase(doc))

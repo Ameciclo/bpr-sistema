@@ -23,6 +23,7 @@ public:
     void bootPattern();
     void configPattern();
     void bikePairingPattern();
+    void pairingPattern();
     void syncPattern();
     void errorPattern();
     void bikeArrivedPattern();

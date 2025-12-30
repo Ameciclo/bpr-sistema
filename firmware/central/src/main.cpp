@@ -202,11 +202,11 @@ void loop()
         // Check timeout for temporary CONFIG_AP mode
         if (tempConfigApStartTime > 0)
         {
-            uint32_t configApTimeout = configManager.getConfig().config_ap_timeout_sec * 1000;
+            uint32_t configApTimeout = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
             if (millis() - tempConfigApStartTime > configApTimeout)
             {
                 Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n", 
-                             configManager.getConfig().config_ap_timeout_sec);
+                             configManager.getConfig().fallback.config_ap_timeout_sec);
                 tempConfigApStartTime = 0;
                 changeState(STATE_BIKE_PAIRING);
                 return;
@@ -215,7 +215,7 @@ void loop()
         break;
     case STATE_BIKE_PAIRING:
         // Verificar se precisa sync urgente (buffer crítico)
-        if (bufferManager.isCriticallyFull())
+        if (bufferManager.needsSync())
         {
             Serial.println("🚨 Buffer crítico - sync urgente!");
             changeState(STATE_CLOUD_SYNC);
@@ -291,9 +291,9 @@ void loop()
             syncFailureCount++;
             Serial.printf("⚠️ CLOUD_SYNC falhou (tentativa %d/%d)\n", 
                          syncFailureCount, 
-                         configManager.getConfig().sync_max_retries);
+                         configManager.getConfig().fallback.sync_max_retries);
 
-            if (syncFailureCount >= configManager.getConfig().sync_max_retries)
+            if (syncFailureCount >= configManager.getConfig().fallback.sync_max_retries)
             {
                 Serial.printf("🚨 %d falhas consecutivas - entrando em CONFIG_AP temporário\n", 
                              syncFailureCount);

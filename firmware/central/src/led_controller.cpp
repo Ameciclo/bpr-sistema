@@ -108,6 +108,10 @@ void LEDController::bikePairingPattern() {
     setPattern(PATTERN_BLE_READY);
 }
 
+void LEDController::pairingPattern() {
+    setPattern(PATTERN_BLE_READY);
+}
+
 void LEDController::syncPattern() {
     setPattern(PATTERN_SYNC);
 }

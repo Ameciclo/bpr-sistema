@@ -34,19 +34,17 @@ void ConfigAP::enter(bool isInitialMode)
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
     // Configurar callbacks para conexões
-    wifiConnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-        Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                     info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
-                     info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
-                     info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]);
-    }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
-    
-    wifiDisconnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-        Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                     info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
-                     info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
-                     info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]);
-    }, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
+    wifiConnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+                                      { Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                                                      info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
+                                                      info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
+                                                      info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]); }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
+
+    wifiDisconnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
+                                         { Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                                                         info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
+                                                         info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
+                                                         info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]); }, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
 
     setupWebServer();
     server.begin();
@@ -72,12 +70,15 @@ void ConfigAP::update()
 
         if (elapsed > timeoutMs)
         {
-            if (isInitialConfigMode) {
+            if (isInitialConfigMode)
+            {
                 // Config inicial falhou - restart necessário
                 Serial.printf("⏰ Timeout CONFIG_AP inicial (%d min) - Reiniciando...\n",
-                             configManager.getConfig().timeouts.config_ap_min);
+                              configManager.getConfig().timeouts.config_ap_min);
                 ESP.restart();
-            } else {
+            }
+            else
+            {
                 // Fallback - voltar para operação normal
                 Serial.println("⏰ Timeout CONFIG_AP (fallback) - Voltando para BIKE_PAIRING");
                 // main.cpp vai detectar e mudar estado
@@ -91,17 +92,19 @@ void ConfigAP::exit()
 {
     server.stop();
     WiFi.softAPdisconnect(true);
-    
+
     // Remover callbacks WiFi específicos
-    if (wifiConnectEventId != 0) {
+    if (wifiConnectEventId != 0)
+    {
         WiFi.removeEvent(wifiConnectEventId);
         wifiConnectEventId = 0;
     }
-    if (wifiDisconnectEventId != 0) {
+    if (wifiDisconnectEventId != 0)
+    {
         WiFi.removeEvent(wifiDisconnectEventId);
         wifiDisconnectEventId = 0;
     }
-    
+
     Serial.println("🔚 ConfigAP: Callbacks WiFi removidos, saindo do modo AP");
 }
 
@@ -135,9 +138,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
     }
 
     HTTPClient http;
-    String url = String(config.firebase.database_url) +
-                 "/bases/" + config.base_id + "/configs/wifi.json?auth=" +
-                 config.firebase.api_key;
+    String url = configManager.getWiFiConfigUrl();
 
     DynamicJsonDocument doc(256);
     doc["ssid"] = config.wifi.ssid;

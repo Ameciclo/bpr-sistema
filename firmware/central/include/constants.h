@@ -1,7 +1,7 @@
 #pragma once
 
-#include "bpr_protocol.h"
-#include "bpr_types.h"
+#include "../common/bpr_protocol.h"
+#include "../common/bpr_types.h"
 
 // Hardware pins
 #define LED_PIN 8
@@ -13,6 +13,13 @@
 #define BIKE_DATA_FILE "/bike_data.json"
 #define BIKE_CONFIG_CACHE_FILE "/bike_config_versions.json"
 #define BIKE_CONFIGS_FILE "/bike_configs.json"
+
+// JSON Buffer sizes
+#define JSON_SMALL_BUFFER 512     // Heartbeat, configs simples
+#define JSON_MEDIUM_BUFFER 1024   // Dados de bike, status
+#define JSON_LARGE_BUFFER 4096    // Upload batch, múltiplas bikes
+#define JSON_HUGE_BUFFER 8192     // Buffer completo, persistência
+#define CONFIG_JSON_BUFFER_SIZE 1536
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000
@@ -30,6 +37,11 @@
 // Buffer limits
 #define MAX_BUFFER_SIZE 8000
 #define MAX_BIKES 10
+#define MINIMAL_FREE_FS_SPACE 20480
+
+// Buffer sync thresholds
+#define BUFFER_SYNC_THRESHOLD_PERCENT 80
+#define BUFFER_CRITICAL_THRESHOLD_PERCENT 95
 
 // Config AP
 #define AP_SSID "BPR Central"
