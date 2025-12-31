@@ -3,18 +3,25 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 
+#define CREDENTIAL_FIELDS \
+    FIELD(base_id, "") \
+    FIELD(wifi_ssid, "") \
+    FIELD(wifi_password, "") \
+    FIELD(firebase_database_url, "") \
+    FIELD(firebase_api_key, "") \
+    FIELD(firebase_project_id, "") \
+    FIELD_NUM(created_timestamp, 0)
+
 ConfigCredentials::ConfigCredentials() {
     setDefaults();
 }
 
 void ConfigCredentials::setDefaults() {
-    strcpy(credentials.base_id, "");
-    strcpy(credentials.wifi_ssid, "");
-    strcpy(credentials.wifi_password, "");
-    strcpy(credentials.firebase_database_url, "");
-    strcpy(credentials.firebase_api_key, "");
-    strcpy(credentials.firebase_project_id, "");
-    credentials.created_timestamp = 0;
+#define FIELD(name, default_val) strcpy(credentials.name, default_val);
+#define FIELD_NUM(name, default_val) credentials.name = default_val;
+    CREDENTIAL_FIELDS
+#undef FIELD
+#undef FIELD_NUM
 }
 
 bool ConfigCredentials::loadCredentials() {
@@ -38,40 +45,18 @@ bool ConfigCredentials::loadCredentials() {
         return false;
     }
 
-    // Load credentials from JSON
-    if (doc["base_id"]) {
-        strncpy(credentials.base_id, doc["base_id"], sizeof(credentials.base_id) - 1);
-        credentials.base_id[sizeof(credentials.base_id) - 1] = '\0';
+#define FIELD(name, default_val) \
+    if (doc[#name]) { \
+        strncpy(credentials.name, doc[#name], sizeof(credentials.name) - 1); \
+        credentials.name[sizeof(credentials.name) - 1] = '\0'; \
     }
+#define FIELD_NUM(name, default_val) \
+    if (doc[#name]) credentials.name = doc[#name];
     
-    if (doc["wifi_ssid"]) {
-        strncpy(credentials.wifi_ssid, doc["wifi_ssid"], sizeof(credentials.wifi_ssid) - 1);
-        credentials.wifi_ssid[sizeof(credentials.wifi_ssid) - 1] = '\0';
-    }
+    CREDENTIAL_FIELDS
     
-    if (doc["wifi_password"]) {
-        strncpy(credentials.wifi_password, doc["wifi_password"], sizeof(credentials.wifi_password) - 1);
-        credentials.wifi_password[sizeof(credentials.wifi_password) - 1] = '\0';
-    }
-    
-    if (doc["firebase_database_url"]) {
-        strncpy(credentials.firebase_database_url, doc["firebase_database_url"], sizeof(credentials.firebase_database_url) - 1);
-        credentials.firebase_database_url[sizeof(credentials.firebase_database_url) - 1] = '\0';
-    }
-    
-    if (doc["firebase_api_key"]) {
-        strncpy(credentials.firebase_api_key, doc["firebase_api_key"], sizeof(credentials.firebase_api_key) - 1);
-        credentials.firebase_api_key[sizeof(credentials.firebase_api_key) - 1] = '\0';
-    }
-    
-    if (doc["firebase_project_id"]) {
-        strncpy(credentials.firebase_project_id, doc["firebase_project_id"], sizeof(credentials.firebase_project_id) - 1);
-        credentials.firebase_project_id[sizeof(credentials.firebase_project_id) - 1] = '\0';
-    }
-    
-    if (doc["created_timestamp"]) {
-        credentials.created_timestamp = doc["created_timestamp"];
-    }
+#undef FIELD
+#undef FIELD_NUM
 
     Serial.printf("✅ Credentials loaded: %s\n", credentials.base_id);
     return isCredentialsValid();
@@ -80,13 +65,11 @@ bool ConfigCredentials::loadCredentials() {
 bool ConfigCredentials::saveCredentials() {
     DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
     
-    doc["base_id"] = credentials.base_id;
-    doc["wifi_ssid"] = credentials.wifi_ssid;
-    doc["wifi_password"] = credentials.wifi_password;
-    doc["firebase_database_url"] = credentials.firebase_database_url;
-    doc["firebase_api_key"] = credentials.firebase_api_key;
-    doc["firebase_project_id"] = credentials.firebase_project_id;
-    doc["created_timestamp"] = credentials.created_timestamp;
+#define FIELD(name, default_val) doc[#name] = credentials.name;
+#define FIELD_NUM(name, default_val) doc[#name] = credentials.name;
+    CREDENTIAL_FIELDS
+#undef FIELD
+#undef FIELD_NUM
 
     File file = LittleFS.open(CREDENTIALS_FILE, "w");
     if (!file) {
@@ -102,21 +85,23 @@ bool ConfigCredentials::saveCredentials() {
 }
 
 bool ConfigCredentials::isCredentialsValid() {
-    bool valid = (strlen(credentials.base_id) > 0 &&
-                  strlen(credentials.wifi_ssid) > 0 &&
-                  strlen(credentials.wifi_password) > 0 &&
-                  strlen(credentials.firebase_database_url) > 0 &&
-                  strlen(credentials.firebase_api_key) > 0);
+    bool valid = true;
+    
+#define FIELD(name, default_val) \
+    if (strlen(credentials.name) == 0) { \
+        Serial.println("   - " #name " missing"); \
+        valid = false; \
+    }
+#define FIELD_NUM(name, default_val) // Skip numeric fields
+    
+    if (!valid) Serial.println("❌ Credentials invalid - missing required fields:");
+    CREDENTIAL_FIELDS
+    
+#undef FIELD
+#undef FIELD_NUM
 
     if (valid) {
         Serial.printf("✅ Credentials valid: %s\n", credentials.base_id);
-    } else {
-        Serial.println("❌ Credentials invalid - missing required fields");
-        if (strlen(credentials.base_id) == 0) Serial.println("   - base_id missing");
-        if (strlen(credentials.wifi_ssid) == 0) Serial.println("   - wifi_ssid missing");
-        if (strlen(credentials.wifi_password) == 0) Serial.println("   - wifi_password missing");
-        if (strlen(credentials.firebase_database_url) == 0) Serial.println("   - firebase_database_url missing");
-        if (strlen(credentials.firebase_api_key) == 0) Serial.println("   - firebase_api_key missing");
     }
 
     return valid;
