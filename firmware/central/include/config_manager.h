@@ -83,8 +83,6 @@ struct CentralConfig {
     char base_id[32];
     uint32_t version;
     LocationConfig location;
-    WiFiConfig wifi;
-    FirebaseConfig firebase;
     IntervalsConfig intervals;
     TimeoutsConfig timeouts;
     LEDConfig led;
@@ -111,12 +109,12 @@ public:
     const CentralConfig& getConfig() const { return config; }
     CentralConfig& getConfig() { return config; }
     
-    // Firebase URL builders
-    String getCentralConfigUrl() const;
-    String getBikeRegistryUrl() const;
-    String getWiFiConfigUrl() const;
-    String getHeartbeatUrl() const;
-    String getBufferDataUrl() const;
+    // Firebase URL builders (now require credentials)
+    String getCentralConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
+    String getBikeRegistryUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
+    String getWiFiConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
+    String getHeartbeatUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
+    String getBufferDataUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
     
     // JSON parsing and validation
     bool updateFromJson(const String& json);

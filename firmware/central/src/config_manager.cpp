@@ -28,14 +28,6 @@ static ConfigField configFields[] = {
     {"base_id", nullptr, STRING, sizeof(((CentralConfig *)0)->base_id)},
     {"version", nullptr, UINT32, 0},
 
-    // WiFi
-    {"wifi.ssid", nullptr, STRING, sizeof(((CentralConfig *)0)->wifi.ssid)},
-    {"wifi.password", nullptr, STRING, sizeof(((CentralConfig *)0)->wifi.password)},
-
-    // Firebase
-    {"firebase.database_url", nullptr, STRING, sizeof(((CentralConfig *)0)->firebase.database_url)},
-    {"firebase.api_key", nullptr, STRING, sizeof(((CentralConfig *)0)->firebase.api_key)},
-
     // Intervals
     {"intervals.sync_sec", nullptr, UINT32, 0},
     {"intervals.cleanup_sec", nullptr, UINT32, 0},
@@ -90,41 +82,37 @@ void initConfigFieldPointers(CentralConfig *config)
 {
     configFields[0].fieldPtr = config->base_id;
     configFields[1].fieldPtr = &config->version;
-    configFields[2].fieldPtr = config->wifi.ssid;
-    configFields[3].fieldPtr = config->wifi.password;
-    configFields[4].fieldPtr = config->firebase.database_url;
-    configFields[5].fieldPtr = config->firebase.api_key;
-    configFields[6].fieldPtr = &config->intervals.sync_sec;
-    configFields[7].fieldPtr = &config->intervals.cleanup_sec;
-    configFields[8].fieldPtr = &config->intervals.log_sec;
-    configFields[9].fieldPtr = &config->intervals.led_count_sec;
-    configFields[10].fieldPtr = &config->timeouts.wifi_sec;
-    configFields[11].fieldPtr = &config->timeouts.firebase_ms;
-    configFields[12].fieldPtr = &config->led.boot_ms;
-    configFields[13].fieldPtr = &config->led.ble_ms;
-    configFields[14].fieldPtr = &config->led.sync_ms;
-    configFields[15].fieldPtr = &config->led.bike_arrived_ms;
-    configFields[16].fieldPtr = &config->led.bike_left_ms;
-    configFields[17].fieldPtr = &config->led.count_ms;
-    configFields[18].fieldPtr = &config->led.count_pause_ms;
-    configFields[19].fieldPtr = &config->led.error_ms;
-    configFields[20].fieldPtr = &config->limits.max_bikes;
-    configFields[21].fieldPtr = &config->limits.batch_size;
-    configFields[22].fieldPtr = &config->fallback.max_failures;
-    configFields[23].fieldPtr = &config->fallback.timeout_min;
-    configFields[24].fieldPtr = &config->fallback.sync_max_retries;
-    configFields[25].fieldPtr = &config->fallback.config_ap_timeout_sec;
-    configFields[26].fieldPtr = &config->buffer.max_size;
-    configFields[27].fieldPtr = &config->buffer.sync_threshold_percent;
-    configFields[28].fieldPtr = &config->buffer.auto_save_interval;
-    configFields[29].fieldPtr = &config->buffer.max_item_size;
-    configFields[30].fieldPtr = &config->compression.enabled;
-    configFields[31].fieldPtr = &config->compression.min_size_bytes;
-    configFields[32].fieldPtr = &config->storage.min_free_kb;
-    configFields[33].fieldPtr = &config->storage.warning_threshold_kb;
-    configFields[34].fieldPtr = &config->storage.aggressive_cleanup_multiplier;
-    configFields[35].fieldPtr = &config->backup.enabled;
-    configFields[36].fieldPtr = &config->backup.retention_hours;
+    configFields[2].fieldPtr = &config->intervals.sync_sec;
+    configFields[3].fieldPtr = &config->intervals.cleanup_sec;
+    configFields[4].fieldPtr = &config->intervals.log_sec;
+    configFields[5].fieldPtr = &config->intervals.led_count_sec;
+    configFields[6].fieldPtr = &config->timeouts.wifi_sec;
+    configFields[7].fieldPtr = &config->timeouts.firebase_ms;
+    configFields[8].fieldPtr = &config->led.boot_ms;
+    configFields[9].fieldPtr = &config->led.ble_ms;
+    configFields[10].fieldPtr = &config->led.sync_ms;
+    configFields[11].fieldPtr = &config->led.bike_arrived_ms;
+    configFields[12].fieldPtr = &config->led.bike_left_ms;
+    configFields[13].fieldPtr = &config->led.count_ms;
+    configFields[14].fieldPtr = &config->led.count_pause_ms;
+    configFields[15].fieldPtr = &config->led.error_ms;
+    configFields[16].fieldPtr = &config->limits.max_bikes;
+    configFields[17].fieldPtr = &config->limits.batch_size;
+    configFields[18].fieldPtr = &config->fallback.max_failures;
+    configFields[19].fieldPtr = &config->fallback.timeout_min;
+    configFields[20].fieldPtr = &config->fallback.sync_max_retries;
+    configFields[21].fieldPtr = &config->fallback.config_ap_timeout_sec;
+    configFields[22].fieldPtr = &config->buffer.max_size;
+    configFields[23].fieldPtr = &config->buffer.sync_threshold_percent;
+    configFields[24].fieldPtr = &config->buffer.auto_save_interval;
+    configFields[25].fieldPtr = &config->buffer.max_item_size;
+    configFields[26].fieldPtr = &config->compression.enabled;
+    configFields[27].fieldPtr = &config->compression.min_size_bytes;
+    configFields[28].fieldPtr = &config->storage.min_free_kb;
+    configFields[29].fieldPtr = &config->storage.warning_threshold_kb;
+    configFields[30].fieldPtr = &config->storage.aggressive_cleanup_multiplier;
+    configFields[31].fieldPtr = &config->backup.enabled;
+    configFields[32].fieldPtr = &config->backup.retention_hours;
 }
 
 // Helper function to save field to JSON
@@ -256,14 +244,6 @@ ConfigManager::ConfigManager()
 {
     // Initialize with defaults
     strcpy(config.base_id, "central_default");
-
-    strcpy(config.wifi.ssid, "");
-    strcpy(config.wifi.password, "");
-    config.wifi.timeout_ms = WIFI_TIMEOUT_DEFAULT;
-
-    strcpy(config.firebase.project_id, "");
-    strcpy(config.firebase.database_url, "");
-    strcpy(config.firebase.api_key, "");
 
     config.intervals.sync_sec = 300;
     config.intervals.cleanup_sec = 60;
@@ -456,39 +436,29 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument &firebaseConfig
     Serial.println("✅ Config updated from Firebase and saved locally");
 }
 
-String ConfigManager::getCentralConfigUrl() const
+String ConfigManager::getCentralConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
 {
-    return String(config.firebase.database_url) +
-           "/bases/" + config.base_id + "/configs.json?auth=" +
-           config.firebase.api_key;
+    return dbUrl + "/bases/" + baseId + "/configs.json?auth=" + apiKey;
 }
 
-String ConfigManager::getBikeRegistryUrl() const
+String ConfigManager::getBikeRegistryUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
 {
-    return String(config.firebase.database_url) +
-           "/bases/" + config.base_id + "/bikes.json?auth=" +
-           config.firebase.api_key;
+    return dbUrl + "/bases/" + baseId + "/bikes.json?auth=" + apiKey;
 }
 
-String ConfigManager::getWiFiConfigUrl() const
+String ConfigManager::getWiFiConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
 {
-    return String(config.firebase.database_url) +
-           "/bases/" + config.base_id + "/configs/wifi.json?auth=" +
-           config.firebase.api_key;
+    return dbUrl + "/bases/" + baseId + "/configs/wifi.json?auth=" + apiKey;
 }
 
-String ConfigManager::getHeartbeatUrl() const
+String ConfigManager::getHeartbeatUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
 {
-    return String(config.firebase.database_url) +
-           "/bases/" + config.base_id + "/last_heartbeat.json?auth=" +
-           config.firebase.api_key;
+    return dbUrl + "/bases/" + baseId + "/last_heartbeat.json?auth=" + apiKey;
 }
 
-String ConfigManager::getBufferDataUrl() const
+String ConfigManager::getBufferDataUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
 {
-    return String(config.firebase.database_url) +
-           "/bases/" + config.base_id + "/data.json?auth=" +
-           config.firebase.api_key;
+    return dbUrl + "/bases/" + baseId + "/data.json?auth=" + apiKey;
 }
 
 bool ConfigManager::updateFromJson(const String &json)

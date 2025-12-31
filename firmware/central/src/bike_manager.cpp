@@ -3,9 +3,11 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 #include "config_manager.h"
+#include "config_credentials.h"
 #include <HTTPClient.h>
 
 extern ConfigManager configManager;
+extern ConfigCredentials configCredentials;
 
 // Global JSON documents for bike data
 static DynamicJsonDocument bikes(1024);
@@ -395,10 +397,10 @@ void BikeManager::populateHeartbeatData(JsonArray &bikes_array)
 bool BikeManager::downloadFromFirebase()
 {
     HTTPClient http;
-    const CentralConfig &config = configManager.getConfig();
+    const CredentialsConfig &creds = configCredentials.getCredentials();
 
     // Baixar dados das bikes (registry)
-    String bikeUrl = configManager.getBikeRegistryUrl();
+    String bikeUrl = configManager.getBikeRegistryUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     Serial.println("🔄 Downloading bike registry from Firebase...");
 
@@ -421,8 +423,8 @@ bool BikeManager::downloadFromFirebase()
     http.end();
 
     // Baixar configs das bikes
-    String configUrl = String(config.firebase.database_url) +
-                       "/bike_configs.json?auth=" + config.firebase.api_key;
+    String configUrl = String(creds.firebase_database_url) +
+                       "/bike_configs.json?auth=" + creds.firebase_api_key;
 
     Serial.println("🔄 Downloading bike configs from Firebase...");
 

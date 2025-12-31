@@ -4,12 +4,14 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 #include "config_manager.h"
+#include "config_credentials.h"
 #include "buffer_manager.h"
 #include "led_controller.h"
 #include "bike_manager.h"
 #include "ble_server.h"
 
 extern ConfigManager configManager;
+extern ConfigCredentials configCredentials;
 extern BufferManager bufferManager;
 extern SystemState currentState;
 
@@ -107,10 +109,11 @@ void CloudSync::printStatus()
 
 bool CloudSync::connectWiFi()
 {
+    const CredentialsConfig &creds = configCredentials.getCredentials();
     const CentralConfig &config = configManager.getConfig();
 
     WiFi.mode(WIFI_STA);
-    WiFi.begin(config.wifi.ssid, config.wifi.password);
+    WiFi.begin(creds.wifi_ssid, creds.wifi_password);
 
     uint32_t startTime = millis();
     while (WiFi.status() != WL_CONNECTED)
@@ -160,11 +163,12 @@ void CloudSync::syncTime()
 bool CloudSync::downloadCentralConfig()
 {
     HTTPClient http;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
 
-    String url = configManager.getCentralConfigUrl();
+    String url = configManager.getCentralConfigUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     Serial.printf("🔄 Downloading central config from Firebase...\n");
-    Serial.printf("   Base ID: %s\n", configManager.getConfig().base_id);
+    Serial.printf("   Base ID: %s\n", creds.base_id);
 
     http.begin(url);
     int httpCode = http.GET();
@@ -222,7 +226,8 @@ bool CloudSync::uploadBufferData()
     }
 
     HTTPClient http;
-    String url = configManager.getBufferDataUrl();
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    String url = configManager.getBufferDataUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -244,7 +249,6 @@ bool CloudSync::uploadBufferData()
     // Sucesso
     bufferManager.markAsConfirmed();
     Serial.printf("📤 Buffer data uploaded: %d bytes\n", jsonString.length());
-    Serial.printf("   URL: %s\n", configManager.getBufferDataUrl().c_str());
     http.end();
     return true;
 }
@@ -252,8 +256,9 @@ bool CloudSync::uploadBufferData()
 bool CloudSync::uploadHeartbeat()
 {
     HTTPClient http;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
 
-    String url = configManager.getHeartbeatUrl();
+    String url = configManager.getHeartbeatUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     // Obter timestamp e formato legível
     time_t now = time(nullptr);
@@ -299,13 +304,13 @@ bool CloudSync::uploadHeartbeat()
 bool CloudSync::uploadWiFiConfig()
 {
     HTTPClient http;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
 
-    String url = configManager.getWiFiConfigUrl();
-    const CentralConfig &config = configManager.getConfig();
+    String url = configManager.getWiFiConfigUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     DynamicJsonDocument doc(JSON_SMALL_BUFFER);
-    doc["ssid"] = config.wifi.ssid;
-    doc["password"] = config.wifi.password;
+    doc["ssid"] = creds.wifi_ssid;
+    doc["password"] = creds.wifi_password;
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -324,7 +329,7 @@ bool CloudSync::uploadWiFiConfig()
     }
 
     // Sucesso
-    Serial.printf("📶 WiFi config updated in Firebase: %s\n", config.wifi.ssid);
+    Serial.printf("📶 WiFi config updated in Firebase: %s\n", creds.wifi_ssid);
     return true;
 }
 
@@ -340,7 +345,8 @@ bool CloudSync::uploadBikeData()
     }
 
     HTTPClient http;
-    String url = configManager.getBikeRegistryUrl();
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    String url = configManager.getBikeRegistryUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");

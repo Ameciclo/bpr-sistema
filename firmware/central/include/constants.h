@@ -8,6 +8,7 @@
 
 // Files
 #define CONFIG_FILE "/config.json"
+#define CREDENTIALS_FILE "/config_credentials.json"
 #define BUFFER_FILE "/buffer.json"
 #define BIKE_REGISTRY_FILE "/bike_registry.json"
 #define BIKE_DATA_FILE "/bike_data.json"
@@ -20,6 +21,7 @@
 #define JSON_LARGE_BUFFER 4096    // Upload batch, múltiplas bikes
 #define JSON_HUGE_BUFFER 8192     // Buffer completo, persistência
 #define CONFIG_JSON_BUFFER_SIZE 1536
+#define CONFIG_CREDENTIALS_SIZE 512  // Credentials JSON buffer
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000

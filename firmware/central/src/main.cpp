@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include "config_manager.h"
+#include "config_credentials.h"
 #include "constants.h"
 #include "config_ap.h"
 #include "bike_pairing.h"
@@ -12,6 +13,7 @@
 
 // Instâncias globais
 ConfigManager configManager;
+ConfigCredentials configCredentials;
 LEDController ledController;
 BufferManager bufferManager;
 
@@ -61,7 +63,7 @@ void changeState(SystemState newState)
     case STATE_INITIAL_CONFIG_AP:
         ledController.configPattern();
         SyncMonitor::reset();
-        ConfigAP::enter(true);  // Modo obrigatório
+        ConfigAP::enter(true); // Modo obrigatório
         break;
     case STATE_TEMP_CONFIG_AP:
         ledController.configPattern();
@@ -151,6 +153,10 @@ void setup()
     }
 
     // Inicializar módulos
+    Serial.println("⚙️ Carregando credenciais...");
+    bool credsLoaded = configCredentials.loadCredentials();
+    Serial.printf("🔑 Credentials loaded: %s\n", credsLoaded ? "OK" : "FALHA");
+    
     Serial.println("⚙️ Carregando configurações...");
     bool configLoaded = configManager.loadConfig();
     Serial.printf("📋 Config loaded: %s\n", configLoaded ? "OK" : "FALHA");
@@ -165,14 +171,14 @@ void setup()
     Serial.println("✅ LED controller OK");
 
     // Verificar se precisa de configuração
-    if (!configLoaded || !configManager.isConfigValid())
+    if (!credsLoaded || !configCredentials.isCredentialsValid() || !configLoaded || !configManager.isConfigValid())
     {
-        Serial.println("⚠️ Config inválida - entrando em modo CONFIG_AP obrigatório");
+        Serial.println("⚠️ Config/Credentials inválidas - entrando em modo CONFIG_AP obrigatório");
         changeState(STATE_INITIAL_CONFIG_AP);
     }
     else
     {
-        Serial.println("✅ Config válida encontrada");
+        Serial.println("✅ Config e Credentials válidas encontradas");
         Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
         changeState(STATE_INITIAL_SYNC);
     }
@@ -195,18 +201,18 @@ void loop()
         ConfigAP::update();
         // Não tem timeout - fica até ser configurado
         break;
-        
+
     case STATE_TEMP_CONFIG_AP:
         ConfigAP::update();
-        
+
         // Check timeout for temporary CONFIG_AP mode
         if (tempConfigApStartTime > 0)
         {
             uint32_t configApTimeout = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
             if (millis() - tempConfigApStartTime > configApTimeout)
             {
-                Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n", 
-                             configManager.getConfig().fallback.config_ap_timeout_sec);
+                Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n",
+                              configManager.getConfig().fallback.config_ap_timeout_sec);
                 tempConfigApStartTime = 0;
                 changeState(STATE_BIKE_PAIRING);
                 return;
@@ -269,7 +275,7 @@ void loop()
         }
         break;
     }
-    
+
     case STATE_CLOUD_SYNC:
     {
         SyncResult result = CloudSync::update();
@@ -289,14 +295,14 @@ void loop()
         if (result == SyncResult::FAILURE)
         {
             syncFailureCount++;
-            Serial.printf("⚠️ CLOUD_SYNC falhou (tentativa %d/%d)\n", 
-                         syncFailureCount, 
-                         configManager.getConfig().fallback.sync_max_retries);
+            Serial.printf("⚠️ CLOUD_SYNC falhou (tentativa %d/%d)\n",
+                          syncFailureCount,
+                          configManager.getConfig().fallback.sync_max_retries);
 
             if (syncFailureCount >= configManager.getConfig().fallback.sync_max_retries)
             {
-                Serial.printf("🚨 %d falhas consecutivas - entrando em CONFIG_AP temporário\n", 
-                             syncFailureCount);
+                Serial.printf("🚨 %d falhas consecutivas - entrando em CONFIG_AP temporário\n",
+                              syncFailureCount);
                 syncFailureCount = 0;
                 changeState(STATE_TEMP_CONFIG_AP);
             }

@@ -4,9 +4,11 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 #include "config_manager.h"
+#include "config_credentials.h"
 #include <HTTPClient.h>
 
 extern ConfigManager configManager;
+extern ConfigCredentials configCredentials;
 
 static WebServer server(80);
 static uint32_t apStartTime = 0;
@@ -117,10 +119,10 @@ void ConfigAP::printStatus()
 
 bool ConfigAP::tryUpdateWiFiInFirebase()
 {
-    const CentralConfig &config = configManager.getConfig();
+    const CredentialsConfig &creds = configCredentials.getCredentials();
 
     WiFi.mode(WIFI_STA);
-    WiFi.begin(config.wifi.ssid, config.wifi.password);
+    WiFi.begin(creds.wifi_ssid, creds.wifi_password);
 
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 30)
@@ -138,11 +140,11 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
     }
 
     HTTPClient http;
-    String url = configManager.getWiFiConfigUrl();
+    String url = String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/wifi.json?auth=" + creds.firebase_api_key;
 
     DynamicJsonDocument doc(256);
-    doc["ssid"] = config.wifi.ssid;
-    doc["password"] = config.wifi.password;
+    doc["ssid"] = creds.wifi_ssid;
+    doc["password"] = creds.wifi_password;
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -182,28 +184,24 @@ void ConfigAP::setupWebServer()
         html += "<button onclick='showJson()' id='jsonBtn' style='background:#95a5a6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>JSON</button></div>";
         
         // Obter configurações atuais para pré-preenchimento
-        const CentralConfig& currentConfig = configManager.getConfig();
+        const CredentialsConfig& currentCreds = configCredentials.getCredentials();
         
         // Formulário tradicional com valores pré-preenchidos
         html += "<div id='formDiv'><form action='/save' method='post'>";
-        html += "<label>ID da Base:</label><input name='base_id' value='" + String(currentConfig.base_id) + "' placeholder='Ex: base01, ameciclo, cepas' required><br>";
-        html += "<label>WiFi SSID:</label><input name='ssid' value='" + String(currentConfig.wifi.ssid) + "' placeholder='Nome da rede WiFi' required><br>";
-        html += "<label>WiFi Senha:</label><input name='pass' type='password' value='" + String(currentConfig.wifi.password) + "' placeholder='Senha do WiFi' required><br>";
-        html += "<label>Firebase Database URL:</label><input name='url' value='" + String(currentConfig.firebase.database_url) + "' placeholder='https://projeto.firebaseio.com' required><br>";
-        html += "<label>Firebase API Key:</label><input name='key' value='" + String(currentConfig.firebase.api_key) + "' placeholder='AIza...' required><br>";
+        html += "<label>ID da Base:</label><input name='base_id' value='" + String(currentCreds.base_id) + "' placeholder='Ex: base01, ameciclo, cepas' required><br>";
+        html += "<label>WiFi SSID:</label><input name='ssid' value='" + String(currentCreds.wifi_ssid) + "' placeholder='Nome da rede WiFi' required><br>";
+        html += "<label>WiFi Senha:</label><input name='pass' type='password' value='" + String(currentCreds.wifi_password) + "' placeholder='Senha do WiFi' required><br>";
+        html += "<label>Firebase Database URL:</label><input name='url' value='" + String(currentCreds.firebase_database_url) + "' placeholder='https://projeto.firebaseio.com' required><br>";
+        html += "<label>Firebase API Key:</label><input name='key' value='" + String(currentCreds.firebase_api_key) + "' placeholder='AIza...' required><br>";
         html += "<button type='submit'>💾 Salvar Configuração</button></form></div>";
         
         // Gerar JSON atual para pré-preenchimento
         String currentJson = "{\n";
-        currentJson += "  \"base_id\": \"" + String(currentConfig.base_id) + "\",\n";
-        currentJson += "  \"wifi\": {\n";
-        currentJson += "    \"ssid\": \"" + String(currentConfig.wifi.ssid) + "\",\n";
-        currentJson += "    \"password\": \"" + String(currentConfig.wifi.password) + "\"\n";
-        currentJson += "  },\n";
-        currentJson += "  \"firebase\": {\n";
-        currentJson += "    \"database_url\": \"" + String(currentConfig.firebase.database_url) + "\",\n";
-        currentJson += "    \"api_key\": \"" + String(currentConfig.firebase.api_key) + "\"\n";
-        currentJson += "  }\n";
+        currentJson += "  \"base_id\": \"" + String(currentCreds.base_id) + "\",\n";
+        currentJson += "  \"wifi_ssid\": \"" + String(currentCreds.wifi_ssid) + "\",\n";
+        currentJson += "  \"wifi_password\": \"" + String(currentCreds.wifi_password) + "\",\n";
+        currentJson += "  \"firebase_database_url\": \"" + String(currentCreds.firebase_database_url) + "\",\n";
+        currentJson += "  \"firebase_api_key\": \"" + String(currentCreds.firebase_api_key) + "\"\n";
         currentJson += "}";
         
         // Configuração via JSON com valores pré-preenchidos
@@ -226,50 +224,53 @@ void ConfigAP::setupWebServer()
 
     server.on("/save", HTTP_POST, []()
               {
-        CentralConfig& config = configManager.getConfig();
+        CredentialsConfig& creds = configCredentials.getCredentials();
         
         Serial.println("📝 Dados recebidos do formulário:");
         
         if (server.hasArg("base_id")) {
-            strcpy(config.base_id, server.arg("base_id").c_str());
-            Serial.printf("   Base ID: %s\n", config.base_id);
+            strcpy(creds.base_id, server.arg("base_id").c_str());
+            Serial.printf("   Base ID: %s\n", creds.base_id);
         }
         if (server.hasArg("ssid")) {
-            strcpy(config.wifi.ssid, server.arg("ssid").c_str());
-            Serial.printf("   WiFi SSID: %s\n", config.wifi.ssid);
+            strcpy(creds.wifi_ssid, server.arg("ssid").c_str());
+            Serial.printf("   WiFi SSID: %s\n", creds.wifi_ssid);
         }
         if (server.hasArg("pass")) {
-            strcpy(config.wifi.password, server.arg("pass").c_str());
-            Serial.printf("   WiFi Password: %s\n", config.wifi.password);
+            strcpy(creds.wifi_password, server.arg("pass").c_str());
+            Serial.printf("   WiFi Password: %s\n", creds.wifi_password);
         }
         if (server.hasArg("url")) {
-            strcpy(config.firebase.database_url, server.arg("url").c_str());
-            Serial.printf("   Firebase URL: %s\n", config.firebase.database_url);
+            strcpy(creds.firebase_database_url, server.arg("url").c_str());
+            Serial.printf("   Firebase URL: %s\n", creds.firebase_database_url);
         }
         if (server.hasArg("key")) {
-            strcpy(config.firebase.api_key, server.arg("key").c_str());
-            Serial.printf("   Firebase Key: %s\n", config.firebase.api_key);
+            strcpy(creds.firebase_api_key, server.arg("key").c_str());
+            Serial.printf("   Firebase Key: %s\n", creds.firebase_api_key);
         }
         
         // Extrair project_id da URL automaticamente
-        String url = config.firebase.database_url;
+        String url = creds.firebase_database_url;
         if (url.indexOf("://") > 0) {
             int start = url.indexOf("://") + 3;
             int end = url.indexOf(".", start);
             if (end > start) {
                 String projectId = url.substring(start, end);
-                strcpy(config.firebase.project_id, projectId.c_str());
-                Serial.printf("   Firebase Project (auto): %s\n", config.firebase.project_id);
+                strcpy(creds.firebase_project_id, projectId.c_str());
+                Serial.printf("   Firebase Project (auto): %s\n", creds.firebase_project_id);
             }
         }
         
-        Serial.println("💾 Salvando configuração...");
+        // Set timestamp
+        creds.created_timestamp = millis() / 1000;
         
-        if (configManager.saveConfig()) {
-            Serial.println("✅ Configuração salva com sucesso!");
+        Serial.println("💾 Salvando credenciais...");
+        
+        if (configCredentials.saveCredentials()) {
+            Serial.println("✅ Credenciais salvas com sucesso!");
             
             // Tentar atualizar WiFi no Firebase imediatamente
-            if (strlen(config.wifi.ssid) > 0 && strlen(config.firebase.database_url) > 0) {
+            if (strlen(creds.wifi_ssid) > 0 && strlen(creds.firebase_database_url) > 0) {
                 Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
                 if (tryUpdateWiFiInFirebase()) {
                     Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
@@ -281,13 +282,13 @@ void ConfigAP::setupWebServer()
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
-            html += "<div class='success'><h1>✅ Configuração Salva!</h1><p>🔄 A Central está reiniciando...</p>";
+            html += "<div class='success'><h1>✅ Credenciais Salvas!</h1><p>🔄 A Central está reiniciando...</p>";
             html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
             server.send(200, "text/html", html);
             delay(2000);
             ESP.restart();
         } else {
-            Serial.println("❌ Erro ao salvar configuração!");
+            Serial.println("❌ Erro ao salvar credenciais!");
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
@@ -309,7 +310,7 @@ void ConfigAP::setupWebServer()
         doc["uptime_ms"] = millis();
         doc["config_time_remaining_ms"] = remaining;
         doc["heap_free"] = ESP.getFreeHeap();
-        doc["base_id"] = configManager.getConfig().base_id;
+        doc["base_id"] = configCredentials.getCredentials().base_id;
         
         String response;
         serializeJson(doc, response);
@@ -327,7 +328,7 @@ void ConfigAP::setupWebServer()
         Serial.println(jsonStr);
         Serial.println("---");
         
-        DynamicJsonDocument doc(2048);
+        DynamicJsonDocument doc(1024);
         DeserializationError error = deserializeJson(doc, jsonStr);
         
         if (error) {
@@ -341,50 +342,52 @@ void ConfigAP::setupWebServer()
             return;
         }
         
-        CentralConfig& config = configManager.getConfig();
+        CredentialsConfig& creds = configCredentials.getCredentials();
         
         // Processar campos do JSON
         if (doc["base_id"]) {
-            strcpy(config.base_id, doc["base_id"]);
-            Serial.printf("   Base ID: %s\n", config.base_id);
+            strcpy(creds.base_id, doc["base_id"]);
+            Serial.printf("   Base ID: %s\n", creds.base_id);
         }
-        if (doc["wifi"]["ssid"]) {
-            strcpy(config.wifi.ssid, doc["wifi"]["ssid"]);
-            Serial.printf("   WiFi SSID: %s\n", config.wifi.ssid);
+        if (doc["wifi_ssid"]) {
+            strcpy(creds.wifi_ssid, doc["wifi_ssid"]);
+            Serial.printf("   WiFi SSID: %s\n", creds.wifi_ssid);
         }
-        if (doc["wifi"]["password"]) {
-            strcpy(config.wifi.password, doc["wifi"]["password"]);
-            Serial.printf("   WiFi Password: %s\n", config.wifi.password);
+        if (doc["wifi_password"]) {
+            strcpy(creds.wifi_password, doc["wifi_password"]);
+            Serial.printf("   WiFi Password: %s\n", creds.wifi_password);
         }
-        if (doc["firebase"]["database_url"]) {
-            strcpy(config.firebase.database_url, doc["firebase"]["database_url"]);
-            Serial.printf("   Firebase URL: %s\n", config.firebase.database_url);
+        if (doc["firebase_database_url"]) {
+            strcpy(creds.firebase_database_url, doc["firebase_database_url"]);
+            Serial.printf("   Firebase URL: %s\n", creds.firebase_database_url);
         }
-        if (doc["firebase"]["api_key"]) {
-            strcpy(config.firebase.api_key, doc["firebase"]["api_key"]);
-            Serial.printf("   Firebase Key: %s\n", config.firebase.api_key);
+        if (doc["firebase_api_key"]) {
+            strcpy(creds.firebase_api_key, doc["firebase_api_key"]);
+            Serial.printf("   Firebase Key: %s\n", creds.firebase_api_key);
         }
         
         // Extrair project_id da URL automaticamente
-        String url = config.firebase.database_url;
+        String url = creds.firebase_database_url;
         if (url.indexOf("://") > 0) {
             int start = url.indexOf("://") + 3;
             int end = url.indexOf(".", start);
             if (end > start) {
                 String projectId = url.substring(start, end);
-                strcpy(config.firebase.project_id, projectId.c_str());
-                Serial.printf("   Firebase Project (auto): %s\n", config.firebase.project_id);
+                strcpy(creds.firebase_project_id, projectId.c_str());
+                Serial.printf("   Firebase Project (auto): %s\n", creds.firebase_project_id);
             }
         }
         
-        Serial.println("💾 Salvando configuração via JSON...");
+        // Set timestamp
+        creds.created_timestamp = millis() / 1000;
         
-        if (configManager.saveConfig()) {
-            Serial.println("✅ Configuração JSON salva com sucesso!");
+        Serial.println("💾 Salvando credenciais via JSON...");
+        
+        if (configCredentials.saveCredentials()) {
+            Serial.println("✅ Credenciais JSON salvas com sucesso!");
             
             // Tentar atualizar WiFi no Firebase imediatamente
-            CentralConfig& savedConfig = configManager.getConfig();
-            if (strlen(savedConfig.wifi.ssid) > 0 && strlen(savedConfig.firebase.database_url) > 0) {
+            if (strlen(creds.wifi_ssid) > 0 && strlen(creds.firebase_database_url) > 0) {
                 Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
                 if (tryUpdateWiFiInFirebase()) {
                     Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
@@ -402,7 +405,7 @@ void ConfigAP::setupWebServer()
             delay(2000);
             ESP.restart();
         } else {
-            Serial.println("❌ Erro ao salvar configuração JSON!");
+            Serial.println("❌ Erro ao salvar credenciais JSON!");
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
             html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
