@@ -1,8 +1,12 @@
 #include "config_manager.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
 #include <vector>
 #include "constants.h"
+#include "config_credentials.h"
+
+extern ConfigCredentials configCredentials;
 
 // Config field mapping for hybrid approach
 enum FieldType {
@@ -436,29 +440,79 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument &firebaseConfig
     Serial.println("✅ Config updated from Firebase and saved locally");
 }
 
-String ConfigManager::getCentralConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
+String ConfigManager::getConfigVersionUrl() const
 {
-    return dbUrl + "/bases/" + baseId + "/configs.json?auth=" + apiKey;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/version.json?auth=" + creds.firebase_api_key;
 }
 
-String ConfigManager::getBikeRegistryUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
+String ConfigManager::getCentralConfigUrl() const
 {
-    return dbUrl + "/bases/" + baseId + "/bikes.json?auth=" + apiKey;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs.json?auth=" + creds.firebase_api_key;
 }
 
-String ConfigManager::getWiFiConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
+String ConfigManager::getBikeRegistryUrl() const
 {
-    return dbUrl + "/bases/" + baseId + "/configs/wifi.json?auth=" + apiKey;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/bikes.json?auth=" + creds.firebase_api_key;
 }
 
-String ConfigManager::getHeartbeatUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
+String ConfigManager::getWiFiConfigUrl() const
 {
-    return dbUrl + "/bases/" + baseId + "/last_heartbeat.json?auth=" + apiKey;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/wifi.json?auth=" + creds.firebase_api_key;
 }
 
-String ConfigManager::getBufferDataUrl(const String& baseId, const String& dbUrl, const String& apiKey) const
+String ConfigManager::getHeartbeatUrl() const
 {
-    return dbUrl + "/bases/" + baseId + "/data.json?auth=" + apiKey;
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/last_heartbeat.json?auth=" + creds.firebase_api_key;
+}
+
+String ConfigManager::getBikeConfigsUrl() const
+{
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bike_configs.json?auth=" + creds.firebase_api_key;
+}
+
+String ConfigManager::getBufferDataUrl() const
+{
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/data.json?auth=" + creds.firebase_api_key;
+}
+
+bool ConfigManager::needsConfigUpdate()
+{
+    HTTPClient http;
+    String url = getConfigVersionUrl();
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("⚠️ Version check failed: HTTP %d\n", httpCode);
+        http.end();
+        return true; // Se falhar, baixa por segurança
+    }
+    
+    String response = http.getString();
+    http.end();
+    
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
+    if (deserializeJson(doc, response) != DeserializationError::Ok) {
+        Serial.println("⚠️ Version parse failed");
+        return true; // Se falhar, baixa por segurança
+    }
+    
+    uint32_t remoteVersion = doc.as<uint32_t>();
+    bool needsUpdate = (remoteVersion > config.version);
+    
+    Serial.printf("📋 Version check: local=%d, remote=%d -> %s\n", 
+                  config.version, remoteVersion, 
+                  needsUpdate ? "UPDATE NEEDED" : "UP TO DATE");
+    
+    return needsUpdate;
 }
 
 bool ConfigManager::updateFromJson(const String &json)

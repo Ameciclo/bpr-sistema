@@ -8,6 +8,15 @@ enum PairingStatus {
     PAIRING_BUSY           // Atividade geral (múltiplas bikes)
 };
 
+enum BikeEvent {
+    BIKE_ARRIVED,
+    BIKE_LEFT,
+    BIKE_COUNT_CHANGED
+};
+
+// Callback para eventos de bike
+typedef void (*BikeEventCallback)(BikeEvent event, uint8_t bikeCount);
+
 class BikePairing {
 public:
     static void enter();
@@ -18,6 +27,10 @@ public:
     static PairingStatus getStatus();
     static bool isSafeToExit();
     static void sendHeartbeat();
+    
+    // Sistema de eventos
+    static void setEventCallback(BikeEventCallback callback);
+    static void triggerEvent(BikeEvent event, uint8_t bikeCount = 0);
     
     // Funções auxiliares para heartbeat inteligente
     static String calculateBikeStatus(const String& bikeId);

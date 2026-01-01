@@ -6,20 +6,17 @@
 #include "config_manager.h"
 #include "config_credentials.h"
 #include "buffer_manager.h"
-#include "led_controller.h"
 #include "bike_manager.h"
 #include "ble_server.h"
 
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
 extern BufferManager bufferManager;
-extern SystemState currentState;
 
 // Static members
 bool CloudSync::syncInProgress = false;
 SyncResult CloudSync::currentResult = SyncResult::SUCCESS;
 static uint32_t syncStartTime = 0;
-static bool firstSync = true;  // Flag para indicar se é o primeiro sync
 
 SyncResult CloudSync::enter()
 {
@@ -59,17 +56,18 @@ SyncResult CloudSync::update()
 
         bool centralConfigOk = downloadCentralConfig();
         bool bikeDataOk = downloadBikeData();
-        bool wifiConfigOk = firstSync ? uploadWiFiConfig() : true;
         bool bikeUploadOk = uploadBikeData();
         bool bufferOk = uploadBufferData();
         bool heartbeatOk = uploadHeartbeat();
 
-        success = centralConfigOk && bikeDataOk && wifiConfigOk && bikeUploadOk && bufferOk && heartbeatOk;
-        
+        success = centralConfigOk && bikeDataOk && bikeUploadOk && bufferOk && heartbeatOk;
+
         // Marcar que o primeiro sync foi concluído
-        if (success && firstSync) {
-            firstSync = false;
-            Serial.println("✅ First sync completed - WiFi config uploaded");
+        if (success && configCredentials.isFirstSync())
+        {
+            configCredentials.setFirstSyncCompleted();
+            configCredentials.saveCredentials();
+            Serial.println("✅ First sync completed - flag updated");
         }
     }
 
@@ -104,7 +102,7 @@ void CloudSync::exit()
 
 void CloudSync::printStatus()
 {
-    Serial.printf("😲 Bikes conectadas: 0 | 💾 Heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("😲 Bikes conectadas: %d | 💾 Heap: %d bytes\n", BikeManager::getConnectedCount(), ESP.getFreeHeap());
 }
 
 bool CloudSync::connectWiFi()
@@ -162,13 +160,17 @@ void CloudSync::syncTime()
 
 bool CloudSync::downloadCentralConfig()
 {
-    HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
+    // Verificar se precisa atualizar antes de baixar
+    if (!configManager.needsConfigUpdate())
+    {
+        Serial.println("📋 Config already up to date - skipping download");
+        return true;
+    }
 
-    String url = configManager.getCentralConfigUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
+    HTTPClient http;
+    String url = configManager.getCentralConfigUrl();
 
     Serial.printf("🔄 Downloading central config from Firebase...\n");
-    Serial.printf("   Base ID: %s\n", creds.base_id);
 
     http.begin(url);
     int httpCode = http.GET();
@@ -202,16 +204,20 @@ bool CloudSync::downloadBikeData()
 {
     Serial.println("🔄 Downloading bike data (registry + configs)...");
 
-    if (BikeManager::downloadFromFirebase())
+    if (!BikeManager::downloadBikeRegistry())
     {
-        Serial.println("✅ Bike data downloaded successfully");
-        return true;
-    }
-    else
-    {
-        Serial.println("🚨 Bike data download failed!");
+        Serial.println("❌ Bike registry download failed");
         return false;
     }
+
+    if (!BikeManager::downloadBikeConfigs())
+    {
+        Serial.println("❌ Bike configs download failed");
+        return false;
+    }
+
+    Serial.println("✅ Bike data downloaded successfully!");
+    return true;
 }
 
 bool CloudSync::uploadBufferData()
@@ -226,8 +232,7 @@ bool CloudSync::uploadBufferData()
     }
 
     HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
-    String url = configManager.getBufferDataUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
+    String url = configManager.getBufferDataUrl();
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -256,9 +261,8 @@ bool CloudSync::uploadBufferData()
 bool CloudSync::uploadHeartbeat()
 {
     HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
 
-    String url = configManager.getHeartbeatUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
+    String url = configManager.getHeartbeatUrl();
 
     // Obter timestamp e formato legível
     time_t now = time(nullptr);
@@ -301,52 +305,26 @@ bool CloudSync::uploadHeartbeat()
     return success;
 }
 
-bool CloudSync::uploadWiFiConfig()
-{
-    HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
-
-    String url = configManager.getWiFiConfigUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
-
-    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
-    doc["ssid"] = creds.wifi_ssid;
-    doc["password"] = creds.wifi_password;
-
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    int httpCode = http.PUT(jsonString);
-    http.end();
-
-    // Early return se falhar
-    if (httpCode != HTTP_CODE_OK)
-    {
-        Serial.printf("❌ Failed to upload WiFi config: HTTP %d\n", httpCode);
-        return false;
-    }
-
-    // Sucesso
-    Serial.printf("📶 WiFi config updated in Firebase: %s\n", creds.wifi_ssid);
-    return true;
-}
-
 bool CloudSync::uploadBikeData()
 {
     DynamicJsonDocument doc(JSON_LARGE_BUFFER);
 
-    // Early return se não há atualizações
+    // Early return se BikeManager não tem dados para upload
     if (!BikeManager::uploadToFirebase(doc))
+    {
+        Serial.println("📝 No bike data upload needed - handled by BikeManager");
+        return true;
+    }
+
+    // Early return se documento está vazio
+    if (doc.size() == 0)
     {
         Serial.println("📝 No bike data updates to send");
         return true;
     }
 
     HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
-    String url = configManager.getBikeRegistryUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
+    String url = configManager.getBikeRegistryUrl();
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -355,16 +333,18 @@ bool CloudSync::uploadBikeData()
     serializeJson(doc, jsonString);
 
     int httpCode = http.PATCH(jsonString);
-    http.end();
 
     // Early return se falhar
     if (httpCode != HTTP_CODE_OK)
     {
         Serial.printf("❌ Failed to upload bike data: HTTP %d\n", httpCode);
+        Serial.printf("   URL: %s\n", url.c_str());
+        http.end();
         return false;
     }
 
     // Sucesso
     Serial.printf("📤 Bike data uploaded: %d bikes\n", doc.size());
+    http.end();
     return true;
 }

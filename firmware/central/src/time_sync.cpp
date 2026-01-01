@@ -1,5 +1,4 @@
 #include "time_sync.h"
-#include <WiFi.h>
 #include <time.h>
 #include "constants.h"
 

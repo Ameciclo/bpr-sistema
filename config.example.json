@@ -62,10 +62,6 @@
         "timeouts": {
           "firebase_ms": 10000,
           "wifi_sec": 60
-        },
-        "wifi": {
-          "password": "<WIFI_PASSWORD>",
-          "ssid": "<WIFI_SSID>"
         }
       },
       "data": {

@@ -142,7 +142,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
     HTTPClient http;
     String url = String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/wifi.json?auth=" + creds.firebase_api_key;
 
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
     doc["ssid"] = creds.wifi_ssid;
     doc["password"] = creds.wifi_password;
 
@@ -261,8 +261,9 @@ void ConfigAP::setupWebServer()
             }
         }
         
-        // Set timestamp
+        // Set timestamp and first_sync flag
         creds.created_timestamp = millis() / 1000;
+        creds.first_sync = true;
         
         Serial.println("💾 Salvando credenciais...");
         
@@ -305,7 +306,7 @@ void ConfigAP::setupWebServer()
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
         uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
         
-        DynamicJsonDocument doc(512);
+        DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
         doc["status"] = "config_mode";
         doc["uptime_ms"] = millis();
         doc["config_time_remaining_ms"] = remaining;
@@ -328,7 +329,7 @@ void ConfigAP::setupWebServer()
         Serial.println(jsonStr);
         Serial.println("---");
         
-        DynamicJsonDocument doc(1024);
+        DynamicJsonDocument doc(JSON_MEDIUM_BUFFER);
         DeserializationError error = deserializeJson(doc, jsonStr);
         
         if (error) {
@@ -378,8 +379,9 @@ void ConfigAP::setupWebServer()
             }
         }
         
-        // Set timestamp
+        // Set timestamp and first_sync flag
         creds.created_timestamp = millis() / 1000;
+        creds.first_sync = true;
         
         Serial.println("💾 Salvando credenciais via JSON...");
         

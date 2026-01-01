@@ -29,6 +29,21 @@ static uint32_t lastSyncCheck = 0;
 static uint8_t syncFailureCount = 0;
 static uint32_t tempConfigApStartTime = 0;
 
+// Callback para eventos de bike
+void onBikeEvent(BikeEvent event, uint8_t bikeCount) {
+    switch (event) {
+        case BIKE_ARRIVED:
+            ledController.bikeArrivedPattern();
+            break;
+        case BIKE_LEFT:
+            ledController.bikeLeftPattern();
+            break;
+        case BIKE_COUNT_CHANGED:
+            ledController.countPattern(bikeCount);
+            break;
+    }
+}
+
 void changeState(SystemState newState)
 {
     if (currentState == newState)
@@ -73,6 +88,7 @@ void changeState(SystemState newState)
         break;
     case STATE_BIKE_PAIRING:
         ledController.pairingPattern();
+        BikePairing::setEventCallback(onBikeEvent);
         BikePairing::enter();
         break;
     case STATE_INITIAL_SYNC:
@@ -221,7 +237,7 @@ void loop()
         break;
     case STATE_BIKE_PAIRING:
         // Verificar se precisa sync urgente (buffer crítico)
-        if (bufferManager.needsSync())
+        if (bufferManager.isFull())
         {
             Serial.println("🚨 Buffer crítico - sync urgente!");
             changeState(STATE_CLOUD_SYNC);
@@ -236,7 +252,7 @@ void loop()
             {
                 Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
             }
-            else
+            else if (bufferManager.hasData())
             {
                 // Add memory check before sync
                 if (ESP.getFreeHeap() < 50000)

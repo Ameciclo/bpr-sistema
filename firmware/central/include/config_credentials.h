@@ -9,6 +9,7 @@ struct CredentialsConfig {
     char firebase_api_key[128];
     char firebase_project_id[64];
     uint32_t created_timestamp;
+    bool first_sync;
 };
 
 class ConfigCredentials {
@@ -28,6 +29,10 @@ public:
     String getFirebaseURL() const { return String(credentials.firebase_database_url); }
     String getFirebaseKey() const { return String(credentials.firebase_api_key); }
     String getFirebaseProject() const { return String(credentials.firebase_project_id); }
+    
+    // First sync management
+    bool isFirstSync() const { return credentials.first_sync; }
+    void setFirstSyncCompleted() { credentials.first_sync = false; }
     
 private:
     CredentialsConfig credentials;

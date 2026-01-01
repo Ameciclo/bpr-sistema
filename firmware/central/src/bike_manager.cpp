@@ -7,11 +7,10 @@
 #include <HTTPClient.h>
 
 extern ConfigManager configManager;
-extern ConfigCredentials configCredentials;
 
 // Global JSON documents for bike data
-static DynamicJsonDocument bikes(1024);
-static DynamicJsonDocument configVersions(256);
+static DynamicJsonDocument bikes(JSON_LARGE_BUFFER);
+static DynamicJsonDocument configVersions(JSON_SMALL_BUFFER);
 static std::map<String, bool> configChanged;
 static bool dataLoaded = false;
 
@@ -393,14 +392,10 @@ void BikeManager::populateHeartbeatData(JsonArray &bikes_array)
     }
 }
 
-// Funções de configuração (ex-BikeConfigManager)
-bool BikeManager::downloadFromFirebase()
+bool BikeManager::downloadBikeRegistry()
 {
     HTTPClient http;
-    const CredentialsConfig &creds = configCredentials.getCredentials();
-
-    // Baixar dados das bikes (registry)
-    String bikeUrl = configManager.getBikeRegistryUrl(creds.base_id, creds.firebase_database_url, creds.firebase_api_key);
+    String bikeUrl = configManager.getBikeRegistryUrl();
 
     Serial.println("🔄 Downloading bike registry from Firebase...");
 
@@ -417,19 +412,25 @@ bool BikeManager::downloadFromFirebase()
             if (deserializeJson(firebaseData, payload) == DeserializationError::Ok)
             {
                 updateFromFirebase(firebaseData);
+                http.end();
+                return true;
             }
         }
     }
+    
     http.end();
+    return false;
+}
 
-    // Baixar configs das bikes
-    String configUrl = String(creds.firebase_database_url) +
-                       "/bike_configs.json?auth=" + creds.firebase_api_key;
+bool BikeManager::downloadBikeConfigs()
+{
+    HTTPClient http;
+    String configUrl = configManager.getBikeConfigsUrl();
 
     Serial.println("🔄 Downloading bike configs from Firebase...");
 
     http.begin(configUrl);
-    httpCode = http.GET();
+    int httpCode = http.GET();
 
     if (httpCode == HTTP_CODE_OK)
     {
@@ -438,13 +439,13 @@ bool BikeManager::downloadFromFirebase()
         if (payload == "null" || payload.length() < 10)
         {
             Serial.println("📝 No bike configs in Firebase");
+            http.end();
             return true;
         }
 
         DynamicJsonDocument newConfigs(JSON_LARGE_BUFFER);
         if (deserializeJson(newConfigs, payload) == DeserializationError::Ok)
         {
-            // Integrar configs nas bikes existentes
             JsonObjectConst obj = newConfigs.as<JsonObjectConst>();
             for (JsonPairConst bike : obj)
             {
@@ -467,6 +468,7 @@ bool BikeManager::downloadFromFirebase()
 
             saveData();
             Serial.printf("✅ Downloaded configs for %d bikes\n", newConfigs.size());
+            http.end();
             return true;
         }
         else

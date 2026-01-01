@@ -80,15 +80,6 @@ bool BufferManager::addData(const String &bikeId, const uint8_t *data, size_t le
     return true;
 }
 
-bool BufferManager::needsSync()
-{
-    int threshold = (MAX_BUFFER_SIZE * BUFFER_SYNC_THRESHOLD_PERCENT) / 100;
-    uint32_t syncInterval = configManager.getConfig().intervals.sync_sec * 1000;
-
-    return dataCount >= threshold ||
-           (dataCount > 0 && (millis() - lastSync) > syncInterval);
-}
-
 bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
 {
     if (dataCount == 0)
@@ -323,6 +314,17 @@ void BufferManager::cleanupOldBackups()
         }
         file = root.openNextFile();
     }
+}
+
+bool BufferManager::isFull()
+{
+    int threshold = (MAX_BUFFER_SIZE * BUFFER_SYNC_THRESHOLD_PERCENT) / 100;
+    return dataCount >= threshold;
+}
+
+bool BufferManager::hasData()
+{
+    return dataCount > 0;
 }
 
 int BufferManager::getDataCount()

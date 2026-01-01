@@ -10,7 +10,8 @@
     FIELD(firebase_database_url, "") \
     FIELD(firebase_api_key, "") \
     FIELD(firebase_project_id, "") \
-    FIELD_NUM(created_timestamp, 0)
+    FIELD_NUM(created_timestamp, 0) \
+    FIELD_BOOL(first_sync, true)
 
 ConfigCredentials::ConfigCredentials() {
     setDefaults();
@@ -19,9 +20,11 @@ ConfigCredentials::ConfigCredentials() {
 void ConfigCredentials::setDefaults() {
 #define FIELD(name, default_val) strcpy(credentials.name, default_val);
 #define FIELD_NUM(name, default_val) credentials.name = default_val;
+#define FIELD_BOOL(name, default_val) credentials.name = default_val;
     CREDENTIAL_FIELDS
 #undef FIELD
 #undef FIELD_NUM
+#undef FIELD_BOOL
 }
 
 bool ConfigCredentials::loadCredentials() {
@@ -52,11 +55,14 @@ bool ConfigCredentials::loadCredentials() {
     }
 #define FIELD_NUM(name, default_val) \
     if (doc[#name]) credentials.name = doc[#name];
+#define FIELD_BOOL(name, default_val) \
+    if (doc[#name]) credentials.name = doc[#name];
     
     CREDENTIAL_FIELDS
     
 #undef FIELD
 #undef FIELD_NUM
+#undef FIELD_BOOL
 
     Serial.printf("✅ Credentials loaded: %s\n", credentials.base_id);
     return isCredentialsValid();
@@ -67,9 +73,11 @@ bool ConfigCredentials::saveCredentials() {
     
 #define FIELD(name, default_val) doc[#name] = credentials.name;
 #define FIELD_NUM(name, default_val) doc[#name] = credentials.name;
+#define FIELD_BOOL(name, default_val) doc[#name] = credentials.name;
     CREDENTIAL_FIELDS
 #undef FIELD
 #undef FIELD_NUM
+#undef FIELD_BOOL
 
     File file = LittleFS.open(CREDENTIALS_FILE, "w");
     if (!file) {
@@ -93,12 +101,14 @@ bool ConfigCredentials::isCredentialsValid() {
         valid = false; \
     }
 #define FIELD_NUM(name, default_val) // Skip numeric fields
+#define FIELD_BOOL(name, default_val) // Skip boolean fields
     
     if (!valid) Serial.println("❌ Credentials invalid - missing required fields:");
     CREDENTIAL_FIELDS
     
 #undef FIELD
 #undef FIELD_NUM
+#undef FIELD_BOOL
 
     if (valid) {
         Serial.printf("✅ Credentials valid: %s\n", credentials.base_id);

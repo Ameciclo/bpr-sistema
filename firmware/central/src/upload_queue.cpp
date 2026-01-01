@@ -91,7 +91,7 @@ void UploadQueue::clearAll() {
 }
 
 String UploadQueue::getUploadStatus() {
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
     doc["pending_count"] = getPendingCount();
     doc["total_bikes_uploaded"] = lastUploadTime.size();
     

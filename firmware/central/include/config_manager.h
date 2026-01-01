@@ -109,12 +109,17 @@ public:
     const CentralConfig& getConfig() const { return config; }
     CentralConfig& getConfig() { return config; }
     
-    // Firebase URL builders (now require credentials)
-    String getCentralConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
-    String getBikeRegistryUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
-    String getWiFiConfigUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
-    String getHeartbeatUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
-    String getBufferDataUrl(const String& baseId, const String& dbUrl, const String& apiKey) const;
+    // Firebase URL builders (no parameters needed - access credentials internally)
+    String getConfigVersionUrl() const;
+    String getCentralConfigUrl() const;
+    String getBikeRegistryUrl() const;
+    String getBikeConfigsUrl() const;
+    String getWiFiConfigUrl() const;
+    String getHeartbeatUrl() const;
+    String getBufferDataUrl() const;
+    
+    // Version checking
+    bool needsConfigUpdate();
     
     // JSON parsing and validation
     bool updateFromJson(const String& json);

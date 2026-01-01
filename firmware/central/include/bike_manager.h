@@ -33,6 +33,8 @@ public:
     
     // Sincronização Firebase
     static bool downloadFromFirebase();
+    static bool downloadBikeRegistry();
+    static bool downloadBikeConfigs();
     static bool uploadToFirebase(DynamicJsonDocument& doc);
     static void updateFromFirebase(const DynamicJsonDocument& firebaseData);
     

@@ -3,13 +3,11 @@
 #include <queue>
 #include "constants.h"
 #include "buffer_manager.h"
-#include "led_controller.h"
 #include "bike_manager.h"
 #include "ble_server.h"
 #include "config_manager.h"
 
 extern BufferManager bufferManager;
-extern LEDController ledController;
 extern SystemState currentState;
 extern uint32_t stateStartTime;
 extern ConfigManager configManager;
@@ -18,6 +16,9 @@ static uint32_t lastHeartbeat = 0;
 static PairingStatus currentStatus = PAIRING_IDLE;
 static uint32_t lastActivity = 0;
 static uint32_t busyTimeout = 10000; // 10 segundos para considerar idle
+
+// Sistema de eventos
+static BikeEventCallback eventCallback = nullptr;
 
 // Sistema de fila sequencial
 static std::queue<String> dataQueue;
@@ -69,7 +70,7 @@ void BikePairing::update()
     if (now - lastLedUpdate > ledInterval)
     {
         lastLedUpdate = now;
-        ledController.countPattern(BPRBLEServer::getConnectedBikes());
+        triggerEvent(BIKE_COUNT_CHANGED, BPRBLEServer::getConnectedBikes());
     }
 }
 
@@ -158,7 +159,7 @@ bool BikePairing::isSafeToExit()
 
 // Implementação dos callbacks do BLE Server
 void BPRBLEServer::onBikeConnected(const String& bikeId) {
-    ledController.bikeArrivedPattern();
+    BikePairing::triggerEvent(BIKE_ARRIVED, BPRBLEServer::getConnectedBikes());
     Serial.printf("🚲 Bike %s connected\n", bikeId.c_str());
     
     // Verificar se bike pode conectar (não blocked)
@@ -184,11 +185,11 @@ void BPRBLEServer::onBikeConnected(const String& bikeId) {
 }
 
 void BPRBLEServer::onBikeDisconnected(const String& bikeId) {
-    ledController.bikeLeftPattern();
+    BikePairing::triggerEvent(BIKE_LEFT, BPRBLEServer::getConnectedBikes());
     if (!bikeId.isEmpty()) {
-        Serial.printf("🚲 Bike %s disconnected - LED pattern triggered\n", bikeId.c_str());
+        Serial.printf("🚲 Bike %s disconnected - event triggered\n", bikeId.c_str());
     } else {
-        Serial.printf("🚲 Device disconnected - LED pattern triggered\n");
+        Serial.printf("🚲 Device disconnected - event triggered\n");
     }
 }
 
@@ -320,6 +321,16 @@ void BikePairing::processDataQueue() {
         
         Serial.printf("🎯 Processing next bike from queue: %s\n", nextBike.c_str());
         requestDataFromBike(nextBike);
+    }
+}
+
+void BikePairing::setEventCallback(BikeEventCallback callback) {
+    eventCallback = callback;
+}
+
+void BikePairing::triggerEvent(BikeEvent event, uint8_t bikeCount) {
+    if (eventCallback) {
+        eventCallback(event, bikeCount);
     }
 }
 

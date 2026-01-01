@@ -76,7 +76,7 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
             return;
         }
         
-        DynamicJsonDocument doc(1024);
+        DynamicJsonDocument doc(JSON_MEDIUM_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
 
         if (!error && doc["bike_id"])
@@ -123,7 +123,7 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks
             return;
         }
         
-        DynamicJsonDocument doc(512);
+        DynamicJsonDocument doc(JSON_SMALL_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
 
         if (!error && doc["bike_id"])

@@ -20,7 +20,6 @@ public:
     // Dados coletados
     bool addData(const String& bikeId, const uint8_t* data, size_t length);
     bool addBikeData(const String& bikeId, const String& jsonData);
-    bool needsSync();
     bool getDataForUpload(DynamicJsonDocument& doc);
     void markAsConfirmed();
     void rollbackUpload();
@@ -28,6 +27,8 @@ public:
     // Status
     int getDataCount();
     int getPendingCount();
+    bool isFull();
+    bool hasData();
     void printStorageInfo();
     bool hasEnoughSpace();
 
