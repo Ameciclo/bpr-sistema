@@ -2,15 +2,13 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "constants.h"
-#include "config_manager.h"
-#include "config_credentials.h"
-#include <HTTPClient.h>
+#include "buffer_manager.h"
 
-extern ConfigManager configManager;
+extern BufferManager bufferManager;
 
 // Global JSON documents for bike data
-static DynamicJsonDocument bikes(JSON_LARGE_BUFFER);
-static DynamicJsonDocument configVersions(JSON_SMALL_BUFFER);
+static DynamicJsonDocument bikes(BIKE_REGISTRY_BUFFER);
+static DynamicJsonDocument configVersions(CONFIG_VERSION_BUFFER);
 static std::map<String, bool> configChanged;
 static bool dataLoaded = false;
 
@@ -174,49 +172,26 @@ void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap)
                   bikeId.c_str(), battery, heap);
 }
 
-void BikeManager::updateFromFirebase(const DynamicJsonDocument &firebaseData)
-{
-    Serial.println("🔄 Updating bike data from Firebase...");
-
-    bikes.clear();
-
-    JsonObjectConst obj = firebaseData.as<JsonObjectConst>();
-    for (JsonPairConst bike : obj)
-    {
-        String bikeId = bike.key().c_str();
-        bikes[bikeId] = bike.value();
-
-        String status = bike.value()["status"] | "unknown";
-        Serial.printf("   %s: %s\n", bikeId.c_str(), status.c_str());
-    }
-
-    saveData();
-    dataLoaded = true;
-
-    Serial.printf("✅ Data updated: %d bikes from Firebase\n", bikes.size());
-}
-
-bool BikeManager::uploadToFirebase(DynamicJsonDocument &doc)
+bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
 {
     if (!dataLoaded)
         return false;
 
     doc.clear();
 
-    // Só enviar bikes NOVAS (que não existem no Firebase)
+    // Só incluir bikes NOVAS (pending recentes)
     JsonObject obj = bikes.as<JsonObject>();
     for (JsonPair bike : obj)
     {
         String bikeId = bike.key().c_str();
         String status = bike.value()["status"] | "";
 
-        // Só incluir se é pending E foi adicionada recentemente (first_seen)
         if (status == "pending" && bike.value()["first_seen"])
         {
             uint32_t firstSeen = bike.value()["first_seen"] | 0;
             uint32_t now = time(nullptr);
 
-            // Só enviar se foi vista pela primeira vez há menos de 5 minutos
+            // Só incluir se foi vista há menos de 5 minutos
             if ((now - firstSeen) < 300)
             {
                 doc[bikeId] = bike.value();
@@ -338,8 +313,9 @@ int BikeManager::getConnectedCount()
         if (!heartbeat.isNull())
         {
             uint32_t lastSeen = heartbeat["timestamp"] | 0;
-            // Considerar conectada se heartbeat foi há menos de 5 minutos
-            if ((now - lastSeen) < 300)
+
+            // Considerar conectada se heartbeat foi há menos de 2 minutos
+            if ((now - lastSeen) < 120)
             {
                 count++;
             }
@@ -392,99 +368,6 @@ void BikeManager::populateHeartbeatData(JsonArray &bikes_array)
     }
 }
 
-bool BikeManager::downloadBikeRegistry()
-{
-    HTTPClient http;
-    String bikeUrl = configManager.getBikeRegistryUrl();
-
-    Serial.println("🔄 Downloading bike registry from Firebase...");
-
-    http.begin(bikeUrl);
-    int httpCode = http.GET();
-
-    if (httpCode == HTTP_CODE_OK)
-    {
-        String payload = http.getString();
-
-        if (payload != "null" && payload.length() > 10)
-        {
-            DynamicJsonDocument firebaseData(JSON_LARGE_BUFFER);
-            if (deserializeJson(firebaseData, payload) == DeserializationError::Ok)
-            {
-                updateFromFirebase(firebaseData);
-                http.end();
-                return true;
-            }
-        }
-    }
-    
-    http.end();
-    return false;
-}
-
-bool BikeManager::downloadBikeConfigs()
-{
-    HTTPClient http;
-    String configUrl = configManager.getBikeConfigsUrl();
-
-    Serial.println("🔄 Downloading bike configs from Firebase...");
-
-    http.begin(configUrl);
-    int httpCode = http.GET();
-
-    if (httpCode == HTTP_CODE_OK)
-    {
-        String payload = http.getString();
-
-        if (payload == "null" || payload.length() < 10)
-        {
-            Serial.println("📝 No bike configs in Firebase");
-            http.end();
-            return true;
-        }
-
-        DynamicJsonDocument newConfigs(JSON_LARGE_BUFFER);
-        if (deserializeJson(newConfigs, payload) == DeserializationError::Ok)
-        {
-            JsonObjectConst obj = newConfigs.as<JsonObjectConst>();
-            for (JsonPairConst bike : obj)
-            {
-                String bikeId = bike.key().c_str();
-                bikes[bikeId]["config"] = bike.value();
-
-                int newVersion = bike.value()["version"] | 1;
-                int oldVersion = configVersions[bikeId]["version"] | 0;
-
-                if (newVersion > oldVersion)
-                {
-                    configChanged[bikeId] = true;
-                    configVersions[bikeId]["version"] = newVersion;
-                    configVersions[bikeId]["last_update"] = time(nullptr);
-
-                    Serial.printf("🔄 Config changed for %s: v%d → v%d\n",
-                                  bikeId.c_str(), oldVersion, newVersion);
-                }
-            }
-
-            saveData();
-            Serial.printf("✅ Downloaded configs for %d bikes\n", newConfigs.size());
-            http.end();
-            return true;
-        }
-        else
-        {
-            Serial.println("❌ Failed to parse bike configs");
-        }
-    }
-    else
-    {
-        Serial.printf("❌ Failed to download configs: HTTP %d\n", httpCode);
-    }
-
-    http.end();
-    return false;
-}
-
 bool BikeManager::hasConfigUpdate(const String &bikeId)
 {
     return configChanged.find(bikeId) != configChanged.end() && configChanged[bikeId];
@@ -504,37 +387,10 @@ String BikeManager::getConfigForBike(const String &bikeId)
         return generateDefaultConfig(bikeId);
     }
 
-    DynamicJsonDocument response(JSON_MEDIUM_BUFFER);
+    DynamicJsonDocument response(BIKE_CONFIG_BUFFER);
     response["type"] = "config_push";
     response["bike_id"] = bikeId;
     response["config"] = bikes[bikeId]["config"];
-
-    String result;
-    serializeJson(response, result);
-    return result;
-}
-
-String BikeManager::generateDefaultConfig(const String &bikeId)
-{
-    DynamicJsonDocument response(JSON_MEDIUM_BUFFER);
-    response["type"] = "config_push";
-    response["bike_id"] = bikeId;
-
-    // Config padrão
-    response["config"]["version"] = 1;
-    response["config"]["bike_name"] = "Bike " + bikeId;
-    response["config"]["dev_mode"] = false;
-
-    response["config"]["wifi"]["scan_interval_sec"] = 300;
-    response["config"]["wifi"]["scan_timeout_ms"] = 5000;
-
-    response["config"]["ble"]["base_name"] = "BPR Central";
-    response["config"]["ble"]["scan_time_sec"] = 5;
-
-    response["config"]["power"]["deep_sleep_duration_sec"] = 3600;
-
-    response["config"]["battery"]["critical_voltage"] = 3.2;
-    response["config"]["battery"]["low_voltage"] = 3.45;
 
     String result;
     serializeJson(response, result);
@@ -557,7 +413,7 @@ String BikeManager::processHeartbeat(const String &bikeId, const JsonObject &hea
     updateHeartbeat(bikeId, batteryPercent, heap);
 
     // Prepare response
-    DynamicJsonDocument response(JSON_SMALL_BUFFER);
+    DynamicJsonDocument response(BIKE_HEARTBEAT_BUFFER);
     response["type"] = "heartbeat_response";
     response["bike_id"] = bikeId;
     response["timestamp"] = time(nullptr);
@@ -595,7 +451,7 @@ String BikeManager::processHeartbeat(const String &bikeId, const JsonObject &hea
 
 String BikeManager::confirmDataUpload(const String &bikeId)
 {
-    DynamicJsonDocument response(JSON_SMALL_BUFFER);
+    DynamicJsonDocument response(BIKE_HEARTBEAT_BUFFER);
     response["type"] = "upload_confirmed";
     response["bike_id"] = bikeId;
     response["timestamp"] = time(nullptr);

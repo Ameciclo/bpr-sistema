@@ -443,7 +443,7 @@ void ConfigManager::updateFromFirebase(const DynamicJsonDocument &firebaseConfig
 String ConfigManager::getConfigVersionUrl() const
 {
     const CredentialsConfig &creds = configCredentials.getCredentials();
-    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/version.json?auth=" + creds.firebase_api_key;
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/last_update.json?auth=" + creds.firebase_api_key;
 }
 
 String ConfigManager::getCentralConfigUrl() const
@@ -476,6 +476,18 @@ String ConfigManager::getBikeConfigsUrl() const
     return String(creds.firebase_database_url) + "/bike_configs.json?auth=" + creds.firebase_api_key;
 }
 
+String ConfigManager::getBikeRegistryVersionUrl() const
+{
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/bikes/last_update.json?auth=" + creds.firebase_api_key;
+}
+
+String ConfigManager::getBikeConfigsVersionUrl() const
+{
+    const CredentialsConfig &creds = configCredentials.getCredentials();
+    return String(creds.firebase_database_url) + "/bike_configs/last_update.json?auth=" + creds.firebase_api_key;
+}
+
 String ConfigManager::getBufferDataUrl() const
 {
     const CredentialsConfig &creds = configCredentials.getCredentials();
@@ -499,7 +511,7 @@ bool ConfigManager::needsConfigUpdate()
     String response = http.getString();
     http.end();
     
-    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
+    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
     if (deserializeJson(doc, response) != DeserializationError::Ok) {
         Serial.println("⚠️ Version parse failed");
         return true; // Se falhar, baixa por segurança

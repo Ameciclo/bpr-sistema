@@ -15,13 +15,19 @@
 #define BIKE_CONFIG_CACHE_FILE "/bike_config_versions.json"
 #define BIKE_CONFIGS_FILE "/bike_configs.json"
 
-// JSON Buffer sizes
-#define JSON_SMALL_BUFFER 512     // Heartbeat, configs simples
-#define JSON_MEDIUM_BUFFER 1024   // Dados de bike, status
-#define JSON_LARGE_BUFFER 4096    // Upload batch, múltiplas bikes
-#define JSON_HUGE_BUFFER 8192     // Buffer completo, persistência
+// JSON Buffer sizes - Specific document types
+#define BIKE_REGISTRY_BUFFER 4096      // Multiple bikes with full data
+#define BIKE_CONFIG_BUFFER 1024        // Single bike configuration
+#define BIKE_DATA_BUFFER 1024          // Single bike data/scans
+#define BIKE_HEARTBEAT_BUFFER 512      // Heartbeat responses
+#define BLE_COMMAND_BUFFER 256         // Simple BLE commands
+#define CENTRAL_HEARTBEAT_BUFFER 512   // Central heartbeat data
+#define BUFFER_PERSISTENCE_BUFFER 8192 // Buffer save/load operations
+#define UPLOAD_BATCH_BUFFER 4096       // Firebase upload batches
+#define CONFIG_VERSION_BUFFER 256      // Version checking
+#define STATUS_RESPONSE_BUFFER 512     // Status/queue responses
 #define CONFIG_JSON_BUFFER_SIZE 1536
-#define CONFIG_CREDENTIALS_SIZE 512  // Credentials JSON buffer
+#define CONFIG_CREDENTIALS_SIZE 512 // Credentials JSON buffer
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000
@@ -62,8 +68,8 @@
 enum SystemState
 {
     STATE_BOOT,
-    STATE_INITIAL_CONFIG_AP,    // Config AP obrigatório (sem config válida)
-    STATE_TEMP_CONFIG_AP,       // Config AP temporário (após falhas de sync)
+    STATE_INITIAL_CONFIG_AP, // Config AP obrigatório (sem config válida)
+    STATE_TEMP_CONFIG_AP,    // Config AP temporário (após falhas de sync)
     STATE_INITIAL_SYNC,
     STATE_BIKE_PAIRING,
     STATE_CLOUD_SYNC

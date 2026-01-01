@@ -2,6 +2,7 @@
   "bases": {
     "<BASE_NAME>": {
       "bikes": {
+        "last_update": "<TIMESTAMP_HUMAN>",
         "<BIKE_ID>": {
           "first_seen": 0,
           "first_seen_human": "<TIMESTAMP_HUMAN>",
@@ -12,7 +13,7 @@
         }
       },
       "configs": {
-        "version": 2,
+        "last_update": "<TIMESTAMP_HUMAN>",
         "backup": {
           "enabled": true,
           "retention_hours": 24
@@ -81,6 +82,7 @@
     }
   },
   "bike_configs": {
+    "last_update": "<TIMESTAMP_HUMAN>",
     "<BIKE_ID>": {
       "battery": {
         "critical_voltage": 3.2,
@@ -113,7 +115,7 @@
         "enable_low_battery_mode": true,
         "enable_emergency_upload": true
       },
-      "version": 2,
+      "last_update": "<TIMESTAMP_HUMAN>",
       "wifi": {
         "scan_interval_sec": 300,
         "scan_timeout_ms": 5000

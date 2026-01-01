@@ -2,6 +2,7 @@
 #include "bike_manager.h"
 #include "ble_server.h"
 #include "time_sync.h"
+#include "constants.h"
 #include <ArduinoJson.h>
 
 static std::map<String, PendingUpload> pendingUploads;
@@ -91,7 +92,7 @@ void UploadQueue::clearAll() {
 }
 
 String UploadQueue::getUploadStatus() {
-    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
+    DynamicJsonDocument doc(STATUS_RESPONSE_BUFFER);
     doc["pending_count"] = getPendingCount();
     doc["total_bikes_uploaded"] = lastUploadTime.size();
     

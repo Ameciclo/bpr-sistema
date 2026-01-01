@@ -114,6 +114,8 @@ public:
     String getCentralConfigUrl() const;
     String getBikeRegistryUrl() const;
     String getBikeConfigsUrl() const;
+    String getBikeRegistryVersionUrl() const;
+    String getBikeConfigsVersionUrl() const;
     String getWiFiConfigUrl() const;
     String getHeartbeatUrl() const;
     String getBufferDataUrl() const;

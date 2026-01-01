@@ -31,12 +31,9 @@ public:
     static String generateDefaultConfig(const String& bikeId);
     static std::vector<String> getBikesWithUpdates();
     
-    // Sincronização Firebase
-    static bool downloadFromFirebase();
-    static bool downloadBikeRegistry();
-    static bool downloadBikeConfigs();
-    static bool uploadToFirebase(DynamicJsonDocument& doc);
-    static void updateFromFirebase(const DynamicJsonDocument& firebaseData);
+    // Sincronização com CloudSync (apenas preparação de dados)
+    static bool getPendingBikesForUpload(DynamicJsonDocument& doc);
+    static void updateFromCloudSync(const DynamicJsonDocument& firebaseData);
     
     // Logs e eventos
     static void logConfigEvent(const String& bikeId, const String& event, bool success);

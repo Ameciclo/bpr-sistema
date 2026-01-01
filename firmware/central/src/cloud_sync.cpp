@@ -55,12 +55,13 @@ SyncResult CloudSync::update()
         syncTime();
 
         bool centralConfigOk = downloadCentralConfig();
-        bool bikeDataOk = downloadBikeData();
+        bool bikeRegistryOk = downloadBikeRegistryData();
+        bool bikeConfigsOk = downloadBikeConfigs();
         bool bikeUploadOk = uploadBikeData();
         bool bufferOk = uploadBufferData();
         bool heartbeatOk = uploadHeartbeat();
 
-        success = centralConfigOk && bikeDataOk && bikeUploadOk && bufferOk && heartbeatOk;
+        success = centralConfigOk && bikeRegistryOk && bikeConfigsOk && bikeUploadOk && bufferOk && heartbeatOk;
 
         // Marcar que o primeiro sync foi concluído
         if (success && configCredentials.isFirstSync())
@@ -200,29 +201,69 @@ bool CloudSync::downloadCentralConfig()
     return true;
 }
 
-bool CloudSync::downloadBikeData()
+bool CloudSync::downloadBikeRegistryData()
 {
-    Serial.println("🔄 Downloading bike data (registry + configs)...");
+    HTTPClient http;
+    String url = configManager.getBikeRegistryUrl();
 
-    if (!BikeManager::downloadBikeRegistry())
+    Serial.println("🔄 Downloading bike registry from Firebase...");
+
+    http.begin(url);
+    int httpCode = http.GET();
+
+    if (httpCode != HTTP_CODE_OK)
     {
-        Serial.println("❌ Bike registry download failed");
+        Serial.printf("❌ Bike registry download failed: HTTP %d\n", httpCode);
+        http.end();
         return false;
     }
 
-    if (!BikeManager::downloadBikeConfigs())
+    String json = http.getString();
+    http.end();
+
+    DynamicJsonDocument doc(BIKE_REGISTRY_BUFFER);
+    DeserializationError error = deserializeJson(doc, json);
+
+    if (error)
     {
-        Serial.println("❌ Bike configs download failed");
+        Serial.printf("❌ Registry parse error: %s\n", error.c_str());
         return false;
     }
 
-    Serial.println("✅ Bike data downloaded successfully!");
+    Serial.println("✅ Bike registry downloaded successfully!");
+    return true;
+}
+
+bool CloudSync::downloadBikeConfigs()
+{
+    HTTPClient http;
+    String url = configManager.getBikeConfigsUrl();
+
+    Serial.println("🔄 Downloading bike configs from Firebase...");
+
+    http.begin(url);
+    int httpCode = http.GET();
+
+    if (httpCode != HTTP_CODE_OK)
+    {
+        Serial.printf("❌ Bike configs download failed: HTTP %d\n", httpCode);
+        http.end();
+        return false;
+    }
+
+    String json = http.getString();
+    http.end();
+
+    // Salvar configs no buffer_manager para distribuição
+    bufferManager.addConfigData("bike_configs", json);
+
+    Serial.println("✅ Bike configs downloaded successfully!");
     return true;
 }
 
 bool CloudSync::uploadBufferData()
 {
-    DynamicJsonDocument doc(JSON_LARGE_BUFFER);
+    DynamicJsonDocument doc(UPLOAD_BATCH_BUFFER);
 
     // Early return se não há dados
     if (!bufferManager.getDataForUpload(doc))
@@ -272,7 +313,7 @@ bool CloudSync::uploadHeartbeat()
     char dateStr[64];
     strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
 
-    DynamicJsonDocument doc(JSON_SMALL_BUFFER);
+    DynamicJsonDocument doc(CENTRAL_HEARTBEAT_BUFFER);
     doc["timestamp"] = now;
     doc["timestamp_human"] = dateStr;
     doc["bikes_connected"] = BikeManager::getConnectedCount();
@@ -303,48 +344,4 @@ bool CloudSync::uploadHeartbeat()
 
     http.end();
     return success;
-}
-
-bool CloudSync::uploadBikeData()
-{
-    DynamicJsonDocument doc(JSON_LARGE_BUFFER);
-
-    // Early return se BikeManager não tem dados para upload
-    if (!BikeManager::uploadToFirebase(doc))
-    {
-        Serial.println("📝 No bike data upload needed - handled by BikeManager");
-        return true;
-    }
-
-    // Early return se documento está vazio
-    if (doc.size() == 0)
-    {
-        Serial.println("📝 No bike data updates to send");
-        return true;
-    }
-
-    HTTPClient http;
-    String url = configManager.getBikeRegistryUrl();
-
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    int httpCode = http.PATCH(jsonString);
-
-    // Early return se falhar
-    if (httpCode != HTTP_CODE_OK)
-    {
-        Serial.printf("❌ Failed to upload bike data: HTTP %d\n", httpCode);
-        Serial.printf("   URL: %s\n", url.c_str());
-        http.end();
-        return false;
-    }
-
-    // Sucesso
-    Serial.printf("📤 Bike data uploaded: %d bikes\n", doc.size());
-    http.end();
-    return true;
 }

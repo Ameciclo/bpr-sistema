@@ -329,7 +329,7 @@ void ConfigAP::setupWebServer()
         Serial.println(jsonStr);
         Serial.println("---");
         
-        DynamicJsonDocument doc(JSON_MEDIUM_BUFFER);
+        DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
         DeserializationError error = deserializeJson(doc, jsonStr);
         
         if (error) {

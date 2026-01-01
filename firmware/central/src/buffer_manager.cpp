@@ -16,10 +16,32 @@ void BufferManager::begin()
     Serial.printf("📥 DataBuffer initialized: %d items\n", dataCount);
 }
 
+bool BufferManager::addConfigData(const String &configType, const String &jsonData)
+{
+    // Adicionar timestamp da central
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    getLocalTime(&timeinfo);
+
+    char dateStr[64];
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+
+    DynamicJsonDocument doc(BIKE_DATA_BUFFER);
+    doc["config_type"] = configType;
+    doc["data"] = jsonData;
+    doc["central_receive_timestamp"] = now;
+    doc["central_receive_timestamp_human"] = dateStr;
+
+    String modifiedJson;
+    serializeJson(doc, modifiedJson);
+
+    return addData(configType, (uint8_t *)modifiedJson.c_str(), modifiedJson.length());
+}
+
 bool BufferManager::addBikeData(const String &bikeId, const String &jsonData)
 {
     // Parse JSON recebido
-    DynamicJsonDocument doc(JSON_MEDIUM_BUFFER);
+    DynamicJsonDocument doc(BIKE_DATA_BUFFER);
     DeserializationError error = deserializeJson(doc, jsonData);
 
     if (error)
@@ -120,7 +142,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
         }
 
         // Test if decoded data is valid JSON
-        DynamicJsonDocument testDoc(JSON_SMALL_BUFFER);
+        DynamicJsonDocument testDoc(BIKE_HEARTBEAT_BUFFER);
         if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok)
         {
             item["data_decoded"] = testDoc;
@@ -174,7 +196,7 @@ void BufferManager::loadBuffer()
     if (!file)
         return;
 
-    DynamicJsonDocument doc(JSON_HUGE_BUFFER);
+    DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
     if (deserializeJson(doc, file) != DeserializationError::Ok)
     {
         file.close();
@@ -217,7 +239,7 @@ void BufferManager::loadBuffer()
 
 void BufferManager::saveBuffer()
 {
-    DynamicJsonDocument doc(JSON_HUGE_BUFFER);
+    DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
 
     doc["data_count"] = dataCount;
     doc["last_sync"] = lastSync;

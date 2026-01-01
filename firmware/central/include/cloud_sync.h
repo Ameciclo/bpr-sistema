@@ -21,7 +21,8 @@ private:
     static bool connectWiFi();
     static void syncTime();
     static bool downloadCentralConfig();
-    static bool downloadBikeData();
+    static bool downloadBikeRegistryData();
+    static bool downloadBikeConfigs();
     static bool uploadBufferData();
     static bool uploadPresenceData();
     static bool uploadHeartbeat();
