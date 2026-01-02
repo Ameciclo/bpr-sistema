@@ -1,8 +1,8 @@
-#include "self_check.h"
 #include <LittleFS.h>
-#include <WiFi.h>
 #include <NimBLEDevice.h>
+#include <WiFi.h>
 #include "constants.h"
+#include "self_check.h"
 
 SelfCheck::SelfCheck() {}
 

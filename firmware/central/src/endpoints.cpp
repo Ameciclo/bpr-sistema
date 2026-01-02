@@ -1,5 +1,5 @@
-#include "endpoints.h"
 #include "config_credentials.h"
+#include "endpoints.h"
 
 extern ConfigCredentials configCredentials;
 

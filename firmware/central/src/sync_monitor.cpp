@@ -1,5 +1,5 @@
-#include "sync_monitor.h"
 #include "config_manager.h"
+#include "sync_monitor.h"
 
 extern ConfigManager configManager;
 

@@ -1,6 +1,6 @@
-#include "time_sync.h"
 #include <time.h>
 #include "constants.h"
+#include "time_sync.h"
 
 static bool ntpInitialized = false;
 static time_t lastNtpSync = 0;

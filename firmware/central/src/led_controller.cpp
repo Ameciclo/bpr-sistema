@@ -1,6 +1,6 @@
-#include "led_controller.h"
-#include "constants.h"
 #include "config_manager.h"
+#include "constants.h"
+#include "led_controller.h"
 
 extern ConfigManager configManager;
 

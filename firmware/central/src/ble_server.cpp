@@ -1,8 +1,8 @@
-#include "ble_server.h"
-#include <NimBLEDevice.h>
 #include <ArduinoJson.h>
-#include "constants.h"
+#include <NimBLEDevice.h>
 #include "bike_manager.h"
+#include "ble_server.h"
+#include "constants.h"
 
 // Static members
 NimBLEServer *BPRBLEServer::pServer = nullptr;
