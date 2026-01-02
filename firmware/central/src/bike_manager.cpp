@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include "constants.h"
 #include "buffer_manager.h"
+#include "bpr_json_helper.h"
 
 extern BufferManager bufferManager;
 
@@ -388,8 +389,7 @@ String BikeManager::getConfigForBike(const String &bikeId)
     }
 
     DynamicJsonDocument response(BIKE_CONFIG_BUFFER);
-    response["type"] = "config_push";
-    response["bike_id"] = bikeId;
+    BPRJsonHelper::addBikeResponse(response, "config_push", bikeId);
     response["config"] = bikes[bikeId]["config"];
 
     String result;
@@ -400,9 +400,7 @@ String BikeManager::getConfigForBike(const String &bikeId)
 String BikeManager::confirmDataUpload(const String &bikeId)
 {
     DynamicJsonDocument response(BIKE_HEARTBEAT_BUFFER);
-    response["type"] = "upload_confirmed";
-    response["bike_id"] = bikeId;
-    response["timestamp"] = time(nullptr);
+    BPRJsonHelper::addBikeResponse(response, "upload_confirmed", bikeId);
     response["can_clear_buffer"] = true;
 
     String result;

@@ -10,6 +10,7 @@
 #include "constants.h"
 #include "endpoints.h"
 #include "time_sync.h"
+#include "bpr_json_helper.h"
 
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
@@ -396,20 +397,8 @@ bool CloudSync::uploadHeartbeat()
 
     String url = Endpoints::getHeartbeat();
 
-    // Obter timestamp e formato legível
-    time_t now = time(nullptr);
-    struct tm timeinfo;
-    getLocalTime(&timeinfo);
-
-    char dateStr[64];
-    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-
     DynamicJsonDocument doc(CENTRAL_HEARTBEAT_BUFFER);
-    doc["timestamp"] = now;
-    doc["timestamp_human"] = dateStr;
-    doc["bikes_connected"] = BikeManager::getConnectedCount();
-    doc["heap"] = ESP.getFreeHeap();
-    doc["uptime"] = millis() / 1000;
+    BPRJsonHelper::addHeartbeatFields(doc);
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -423,8 +412,8 @@ bool CloudSync::uploadHeartbeat()
 
     if (success)
     {
-        Serial.printf("💓 Heartbeat: %s | Bikes: %d | Heap: %d\n",
-                      dateStr, BikeManager::getConnectedCount(), ESP.getFreeHeap());
+        Serial.printf("💓 Heartbeat: Bikes: %d | Heap: %d\n",
+                      BikeManager::getConnectedCount(), ESP.getFreeHeap());
     }
     else
     {

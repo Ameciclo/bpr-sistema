@@ -1,9 +1,10 @@
-#include "buffer_manager.h"
-#include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <CRC32.h>
-#include "constants.h"
+#include <LittleFS.h>
+#include "buffer_manager.h"
 #include "config_manager.h"
+#include "constants.h"
+#include "bpr_json_helper.h"
 
 extern ConfigManager configManager;
 
@@ -28,19 +29,8 @@ String BufferManager::getBikeBufferPath(const String &bikeId) {
 
 bool BufferManager::addConfigData(const String &configType, const String &jsonData)
 {
-    // Adicionar timestamp da central
-    time_t now = time(nullptr);
-    struct tm timeinfo;
-    getLocalTime(&timeinfo);
-
-    char dateStr[64];
-    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-
     DynamicJsonDocument doc(BIKE_DATA_BUFFER);
-    doc["config_type"] = configType;
-    doc["data"] = jsonData;
-    doc["central_receive_timestamp"] = now;
-    doc["central_receive_timestamp_human"] = dateStr;
+    BPRJsonHelper::addConfigFields(doc, configType, jsonData);
 
     String modifiedJson;
     serializeJson(doc, modifiedJson);
@@ -61,15 +51,7 @@ bool BufferManager::addBikeData(const String &bikeId, const String &jsonData)
     }
 
     // Adicionar timestamp da central
-    time_t now = time(nullptr);
-    struct tm timeinfo;
-    getLocalTime(&timeinfo);
-
-    char dateStr[64];
-    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-
-    doc["central_receive_timestamp"] = now;
-    doc["central_receive_timestamp_human"] = dateStr;
+    BPRJsonHelper::addTimestamp(doc, "central_receive");
 
     // Serializar JSON modificado
     String modifiedJson;
@@ -126,7 +108,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
         return false;
     }
 
-    doc["timestamp"] = time(nullptr);
+    BPRJsonHelper::addTimestamp(doc);
     doc["base_id"] = configManager.getBaseId();
     doc["data_count"] = totalCount;
 
