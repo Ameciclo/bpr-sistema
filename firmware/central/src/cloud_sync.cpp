@@ -204,14 +204,56 @@ bool CloudSync::needsConfigUpdate()
 
 bool CloudSync::needsBikeRegistryUpdate()
 {
-    // TODO: Implementar cache local do last_update do registry
-    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), 0, "Bike registry");
+    // Ler last_update do arquivo local bike_registry.json
+    if (!LittleFS.exists(BIKE_REGISTRY_FILE))
+    {
+        Serial.println("📋 No local bike registry - needs download");
+        return true;
+    }
+
+    File file = LittleFS.open(BIKE_REGISTRY_FILE, "r");
+    if (!file)
+    {
+        return true;
+    }
+
+    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
+    if (deserializeJson(doc, file) != DeserializationError::Ok)
+    {
+        file.close();
+        return true;
+    }
+    file.close();
+
+    uint32_t localLastUpdate = doc["last_update"] | 0;
+    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), localLastUpdate, "Bike registry");
 }
 
 bool CloudSync::needsBikeConfigsUpdate()
 {
-    // TODO: Implementar cache local do last_update dos configs
-    return checkLastUpdateTime(Endpoints::getBikeConfigsVersion(), 0, "Bike configs");
+    // Ler last_update do arquivo local bike_configs.json
+    if (!LittleFS.exists(BIKE_CONFIGS_FILE))
+    {
+        Serial.println("📋 No local bike configs - needs download");
+        return true;
+    }
+
+    File file = LittleFS.open(BIKE_CONFIGS_FILE, "r");
+    if (!file)
+    {
+        return true;
+    }
+
+    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
+    if (deserializeJson(doc, file) != DeserializationError::Ok)
+    {
+        file.close();
+        return true;
+    }
+    file.close();
+
+    uint32_t localLastUpdate = doc["last_update"] | 0;
+    return checkLastUpdateTime(Endpoints::getBikeConfigsVersion(), localLastUpdate, "Bike configs");
 }
 
 void CloudSync::updateConfigFromFirebase(const DynamicJsonDocument &firebaseConfig)
@@ -315,6 +357,21 @@ bool CloudSync::downloadBikeRegistryData()
         return false;
     }
 
+    // Adicionar last_update se não existir
+    if (!doc.containsKey("last_update"))
+    {
+        doc["last_update"] = time(nullptr);
+    }
+
+    // Salvar no arquivo local
+    File file = LittleFS.open(BIKE_REGISTRY_FILE, "w");
+    if (file)
+    {
+        serializeJson(doc, file);
+        file.close();
+        Serial.println("💾 Bike registry saved locally");
+    }
+
     Serial.println("✅ Bike registry downloaded successfully!");
     return true;
 }
@@ -345,6 +402,25 @@ bool CloudSync::downloadBikeConfigs()
 
     String json = http.getString();
     http.end();
+
+    // Parse e adicionar last_update se necessário
+    DynamicJsonDocument doc(BIKE_REGISTRY_BUFFER);
+    if (deserializeJson(doc, json) == DeserializationError::Ok)
+    {
+        if (!doc.containsKey("last_update"))
+        {
+            doc["last_update"] = time(nullptr);
+        }
+
+        // Salvar no arquivo local
+        File file = LittleFS.open(BIKE_CONFIGS_FILE, "w");
+        if (file)
+        {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("💾 Bike configs saved locally");
+        }
+    }
 
     // Salvar configs no buffer_manager para distribuição
     bufferManager.addConfigData("bike_configs", json);

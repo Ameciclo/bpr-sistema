@@ -18,6 +18,7 @@ public:
 private:
     static bool syncInProgress;
     static SyncResult currentResult;
+    
     static bool connectWiFi();
     static bool checkLastUpdateTime(const String& url, uint32_t localLastUpdate, const String& componentName);
     static bool needsConfigUpdate();
