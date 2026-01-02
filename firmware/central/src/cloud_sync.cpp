@@ -1,14 +1,15 @@
-#include "cloud_sync.h"
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include "constants.h"
-#include "config_manager.h"
-#include "config_credentials.h"
-#include "buffer_manager.h"
+#include <HTTPClient.h>
+#include <WiFi.h>
 #include "bike_manager.h"
 #include "ble_server.h"
+#include "buffer_manager.h"
+#include "cloud_sync.h"
+#include "config_credentials.h"
+#include "config_manager.h"
+#include "constants.h"
 #include "endpoints.h"
+#include "time_sync.h"
 
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
@@ -30,7 +31,7 @@ SyncResult CloudSync::enter()
     syncInProgress = true;
     currentResult = SyncResult::IN_PROGRESS;
 
-    return SyncResult::IN_PROGRESS;
+    return currentResult;
 }
 
 SyncResult CloudSync::update()
@@ -40,54 +41,79 @@ SyncResult CloudSync::update()
         return currentResult;
     }
 
-    // Executar sync completo
-    bool success = true;
-
-    // WiFi
+    // WiFi connection PRIMEIRO
     if (!connectWiFi())
     {
         Serial.println("❌ WiFi connection failed");
-        success = false;
-    }
-
-    if (success)
-    {
-        // Sync completo
-        syncTime();
-
-        bool centralConfigOk = downloadCentralConfig();
-        bool bikeRegistryOk = downloadBikeRegistryData();
-        bool bikeConfigsOk = downloadBikeConfigs();
-        bool bufferOk = uploadBufferData();
-        bool heartbeatOk = uploadHeartbeat();
-
-        success = centralConfigOk && bikeRegistryOk && bikeConfigsOk && bufferOk && heartbeatOk;
-
-        // Marcar que o primeiro sync foi concluído
-        if (success && configCredentials.isFirstSync())
-        {
-            configCredentials.setFirstSyncCompleted();
-            configCredentials.saveCredentials();
-            Serial.println("✅ First sync completed - flag updated");
-        }
-    }
-
-    // Sempre desconectar WiFi
-    WiFi.disconnect(true);
-
-    // Finalizar sync
-    syncInProgress = false;
-    currentResult = success ? SyncResult::SUCCESS : SyncResult::FAILURE;
-
-    if (success)
-    {
-        Serial.println("✅ Sync complete");
-    }
-    else
-    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
         Serial.println("❌ Sync failed");
+        return currentResult;
     }
 
+    // Sync horário
+    TimeSync::init();
+
+    // UPLOADS (dados locais -> Firebase)
+    if (!uploadBufferData())
+    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
+        Serial.println("❌ Sync failed");
+        return currentResult;
+    }
+
+    if (!uploadHeartbeat())
+    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
+        Serial.println("❌ Sync failed");
+        return currentResult;
+    }
+
+    // DOWNLOADS (Firebase -> local)
+    if (!downloadCentralConfig())
+    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
+        Serial.println("❌ Sync failed");
+        return currentResult;
+    }
+
+    if (!downloadBikeRegistryData())
+    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
+        Serial.println("❌ Sync failed");
+        return currentResult;
+    }
+
+    if (!downloadBikeConfigs())
+    {
+        WiFi.disconnect(true);
+        syncInProgress = false;
+        currentResult = SyncResult::FAILURE;
+        Serial.println("❌ Sync failed");
+        return currentResult;
+    }
+
+    // Marcar que o primeiro sync foi concluído
+    if (configCredentials.isFirstSync())
+    {
+        configCredentials.setFirstSyncCompleted();
+        configCredentials.saveCredentials();
+        Serial.println("✅ First sync completed - flag updated");
+    }
+
+    // Sucesso - finalizar sync (WiFi será desconectado no exit())
+    syncInProgress = false;
+    currentResult = SyncResult::SUCCESS;
+    Serial.println("✅ Sync complete");
     return currentResult;
 }
 
@@ -129,47 +155,15 @@ bool CloudSync::connectWiFi()
     return true;
 }
 
-void CloudSync::syncTime()
-{
-    Serial.printf("⏰ Sincronizando horário com %s (UTC%+d)...\n",
-                  NTP_SERVER, TIMEZONE_OFFSET / 3600);
-
-    configTime(TIMEZONE_OFFSET, 0, NTP_SERVER);
-
-    // Aguardar sincronização
-    int attempts = 0;
-    struct tm timeinfo;
-    while (!getLocalTime(&timeinfo) && attempts < 10)
-    {
-        delay(1000);
-        attempts++;
-        Serial.print(".");
-    }
-
-    if (getLocalTime(&timeinfo))
-    {
-        char dateStr[64];
-        strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-        Serial.printf("\n✅ Horário sincronizado: %s\n", dateStr);
-        Serial.printf("   Timestamp: %ld\n", time(nullptr));
-    }
-    else
-    {
-        Serial.println("\n❌ Falha na sincronização do horário");
-    }
-}
-
-bool CloudSync::needsConfigUpdate()
+bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate, const String &componentName)
 {
     HTTPClient http;
-    String url = Endpoints::getConfigVersion();
-
     http.begin(url);
     int httpCode = http.GET();
 
     if (httpCode != HTTP_CODE_OK)
     {
-        Serial.printf("⚠️ Version check failed: HTTP %d\n", httpCode);
+        Serial.printf("⚠️ %s last_update check failed: HTTP %d\n", componentName.c_str(), httpCode);
         http.end();
         return true; // Se falhar, baixa por segurança
     }
@@ -180,33 +174,60 @@ bool CloudSync::needsConfigUpdate()
     DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
     if (deserializeJson(doc, response) != DeserializationError::Ok)
     {
-        Serial.println("⚠️ Version parse failed");
+        Serial.printf("⚠️ %s last_update parse failed\n", componentName.c_str());
         return true; // Se falhar, baixa por segurança
     }
 
-    uint32_t remoteVersion = doc.as<uint32_t>();
-    const CentralConfig &config = configManager.getConfig();
-    bool needsUpdate = (remoteVersion > config.version);
+    // Buscar por "last_update" no JSON
+    if (!doc.containsKey("last_update"))
+    {
+        Serial.printf("⚠️ %s missing last_update field\n", componentName.c_str());
+        return true; // Se não tem campo, baixa por segurança
+    }
 
-    Serial.printf("📋 Version check: local=%d, remote=%d -> %s\n",
-                  config.version, remoteVersion,
+    uint32_t remoteLastUpdate = doc["last_update"];
+    bool needsUpdate = (remoteLastUpdate > localLastUpdate);
+
+    Serial.printf("📋 %s last_update check: local=%d, remote=%d -> %s\n",
+                  componentName.c_str(), localLastUpdate, remoteLastUpdate,
                   needsUpdate ? "UPDATE NEEDED" : "UP TO DATE");
 
     return needsUpdate;
 }
 
+bool CloudSync::needsConfigUpdate()
+{
+    const CentralConfig &config = configManager.getConfig();
+    return checkLastUpdateTime(Endpoints::getConfigVersion(), config.last_update, "Config");
+}
+
+bool CloudSync::needsBikeRegistryUpdate()
+{
+    // TODO: Implementar cache local do last_update do registry
+    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), 0, "Bike registry");
+}
+
+bool CloudSync::needsBikeConfigsUpdate()
+{
+    // TODO: Implementar cache local do last_update dos configs
+    return checkLastUpdateTime(Endpoints::getBikeConfigsVersion(), 0, "Bike configs");
+}
+
 void CloudSync::updateConfigFromFirebase(const DynamicJsonDocument &firebaseConfig)
 {
     Serial.println("🔄 Updating config from Firebase...");
-    
+
     // Converter DynamicJsonDocument para String
     String jsonString;
     serializeJson(firebaseConfig, jsonString);
-    
+
     // Usar updateFromJson que já existe no ConfigManager
-    if (configManager.updateFromJson(jsonString)) {
+    if (configManager.updateFromJson(jsonString))
+    {
         Serial.println("✅ Config updated from Firebase and saved locally");
-    } else {
+    }
+    else
+    {
         Serial.println("❌ Failed to update config from Firebase");
     }
 }
@@ -259,6 +280,13 @@ bool CloudSync::downloadCentralConfig()
 
 bool CloudSync::downloadBikeRegistryData()
 {
+    // Verificar se precisa atualizar antes de baixar
+    if (!needsBikeRegistryUpdate())
+    {
+        Serial.println("🚲 Bike registry already up to date - skipping download");
+        return true;
+    }
+
     HTTPClient http;
     String url = Endpoints::getBikeRegistry();
 
@@ -292,6 +320,13 @@ bool CloudSync::downloadBikeRegistryData()
 
 bool CloudSync::downloadBikeConfigs()
 {
+    // Verificar se precisa atualizar antes de baixar
+    if (!needsBikeConfigsUpdate())
+    {
+        Serial.println("⚙️ Bike configs already up to date - skipping download");
+        return true;
+    }
+
     HTTPClient http;
     String url = Endpoints::getBikeConfigs();
 

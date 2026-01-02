@@ -19,8 +19,10 @@ private:
     static bool syncInProgress;
     static SyncResult currentResult;
     static bool connectWiFi();
-    static void syncTime();
+    static bool checkLastUpdateTime(const String& url, uint32_t localLastUpdate, const String& componentName);
     static bool needsConfigUpdate();
+    static bool needsBikeRegistryUpdate();
+    static bool needsBikeConfigsUpdate();
     static void updateConfigFromFirebase(const DynamicJsonDocument& firebaseConfig);
     static bool downloadCentralConfig();
     static bool downloadBikeRegistryData();
