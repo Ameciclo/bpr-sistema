@@ -1,11 +1,12 @@
-#include "config_ap.h"
-#include <WiFi.h>
-#include <WebServer.h>
 #include <ArduinoJson.h>
-#include "constants.h"
-#include "config_manager.h"
-#include "config_credentials.h"
 #include <HTTPClient.h>
+#include <WebServer.h>
+#include <WiFi.h>
+#include "config_ap.h"
+#include "config_credentials.h"
+#include "config_manager.h"
+#include "constants.h"
+#include "endpoints.h"
 
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
@@ -24,7 +25,7 @@ void ConfigAP::enter(bool isInitialMode)
     {
         Serial.println("🔧 Config inválida, entrando no modo AP");
         Serial.println("📱 Conecte-se ao WiFi: BPR_Central_Config (senha: botaprarodar)");
-        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
+        Serial.println("🌐 Acesse: http://192.168.1.1 para configurar");
     }
     else
     {
@@ -32,6 +33,7 @@ void ConfigAP::enter(bool isInitialMode)
     }
 
     WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
@@ -114,7 +116,7 @@ void ConfigAP::printStatus()
 {
     Serial.println("📱 Modo Configuração Ativo:");
     Serial.println("   WiFi: BPR Central (senha: botaprarodar)");
-    Serial.println("   URL: http://192.168.4.1");
+    Serial.println("   URL: http://192.168.1.1");
 }
 
 bool ConfigAP::tryUpdateWiFiInFirebase()
@@ -140,7 +142,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
     }
 
     HTTPClient http;
-    String url = String(creds.firebase_database_url) + "/bases/" + creds.base_id + "/configs/wifi.json?auth=" + creds.firebase_api_key;
+    String url = Endpoints::getWiFiConfig();
 
     DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
     doc["ssid"] = creds.wifi_ssid;
@@ -157,9 +159,10 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
 
     http.end();
 
-    // Voltar para modo AP
+    // Voltar para modo AP com IP customizado
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
 
     return success;
@@ -177,7 +180,7 @@ void ConfigAP::setupWebServer()
         html += "button:hover{background:#2980b9}.info{background:#e8f4fd;padding:15px;border-radius:4px;margin-bottom:20px;border-left:4px solid #3498db}";
         html += ".warning{background:#fff3cd;padding:10px;border-radius:4px;margin-top:15px;border-left:4px solid #ffc107}</style></head><body>";
         html += "<div class='container'><h1>🏢 BPR Central - Configuração</h1>";
-        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR_Central_Config<br>Senha: botaprarodar<br>Acesse: 192.168.4.1</div>";
+        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR_Central_Config<br>Senha: botaprarodar<br>Acesse: 192.168.1.1</div>";
         
         // Tabs para alternar entre formulário e JSON
         html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
