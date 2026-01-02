@@ -20,6 +20,8 @@ private:
     static SyncResult currentResult;
     static bool connectWiFi();
     static void syncTime();
+    static bool needsConfigUpdate();
+    static void updateConfigFromFirebase(const DynamicJsonDocument& firebaseConfig);
     static bool downloadCentralConfig();
     static bool downloadBikeRegistryData();
     static bool downloadBikeConfigs();

@@ -104,28 +104,12 @@ public:
     bool loadConfig();
     bool saveConfig();
     bool isConfigValid();
-    void updateFromFirebase(const DynamicJsonDocument& firebaseConfig);
     
     const CentralConfig& getConfig() const { return config; }
     CentralConfig& getConfig() { return config; }
     
-    // Firebase URL builders (no parameters needed - access credentials internally)
-    String getConfigVersionUrl() const;
-    String getCentralConfigUrl() const;
-    String getBikeRegistryUrl() const;
-    String getBikeConfigsUrl() const;
-    String getBikeRegistryVersionUrl() const;
-    String getBikeConfigsVersionUrl() const;
-    String getWiFiConfigUrl() const;
-    String getHeartbeatUrl() const;
-    String getBufferDataUrl() const;
-    
-    // Version checking
-    bool needsConfigUpdate();
-    
     // JSON parsing and validation
     bool updateFromJson(const String& json);
-    bool isValidFirebaseConfig(const DynamicJsonDocument& doc) const;
     
     // Buffer configuration getters
     int getBufferMaxSize() const { return config.buffer.max_size; }

@@ -28,7 +28,6 @@ public:
     static bool hasConfigUpdate(const String& bikeId);
     static void markConfigSent(const String& bikeId);
     static String getConfigForBike(const String& bikeId);
-    static String generateDefaultConfig(const String& bikeId);
     static std::vector<String> getBikesWithUpdates();
     
     // Sincronização com CloudSync (apenas preparação de dados)

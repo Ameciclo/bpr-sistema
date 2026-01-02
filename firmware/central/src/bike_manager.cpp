@@ -383,66 +383,14 @@ String BikeManager::getConfigForBike(const String &bikeId)
 {
     if (!dataLoaded || !bikes.containsKey(bikeId) || bikes[bikeId]["config"].isNull())
     {
-        Serial.printf("⚠️ No config found for %s, using defaults\n", bikeId.c_str());
-        return generateDefaultConfig(bikeId);
+        Serial.printf("⚠️ No config found for %s, no config available\n", bikeId.c_str());
+        return ""; // Retorna vazio se não tem config
     }
 
     DynamicJsonDocument response(BIKE_CONFIG_BUFFER);
     response["type"] = "config_push";
     response["bike_id"] = bikeId;
     response["config"] = bikes[bikeId]["config"];
-
-    String result;
-    serializeJson(response, result);
-    return result;
-}
-
-// === HEARTBEAT RESPONSE MANAGEMENT ===
-String BikeManager::processHeartbeat(const String &bikeId, const JsonObject &heartbeatData)
-{
-    if (!dataLoaded)
-        return "";
-
-    // Extract heartbeat data
-    int batteryPercent = heartbeatData["battery_percent"] | 0;
-    int heap = heartbeatData["heap"] | 0;
-    bool hasData = heartbeatData["has_data"] | false;
-    int configVersion = heartbeatData["config_version"] | 0;
-
-    // Update heartbeat
-    updateHeartbeat(bikeId, batteryPercent, heap);
-
-    // Prepare response
-    DynamicJsonDocument response(BIKE_HEARTBEAT_BUFFER);
-    response["type"] = "heartbeat_response";
-    response["bike_id"] = bikeId;
-    response["timestamp"] = time(nullptr);
-
-    // Check if config update needed
-    if (hasConfigUpdate(bikeId))
-    {
-        response["config_update"] = true;
-        Serial.printf("⚙️ Config update available for %s\n", bikeId.c_str());
-    }
-
-    // Suggest next checkin interval based on battery
-    uint32_t nextCheckin = 300; // Default 5min
-    if (batteryPercent <= 15)
-    {
-        nextCheckin = 1200; // 20min for critical battery
-    }
-    else if (batteryPercent <= 25)
-    {
-        nextCheckin = 600; // 10min for low battery
-    }
-    response["next_checkin_sec"] = nextCheckin;
-
-    // Data upload confirmation
-    if (hasData)
-    {
-        response["ready_for_upload"] = true;
-        Serial.printf("📤 %s ready for data upload\n", bikeId.c_str());
-    }
 
     String result;
     serializeJson(response, result);

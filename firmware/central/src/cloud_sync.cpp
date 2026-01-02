@@ -8,6 +8,7 @@
 #include "buffer_manager.h"
 #include "bike_manager.h"
 #include "ble_server.h"
+#include "endpoints.h"
 
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
@@ -57,11 +58,10 @@ SyncResult CloudSync::update()
         bool centralConfigOk = downloadCentralConfig();
         bool bikeRegistryOk = downloadBikeRegistryData();
         bool bikeConfigsOk = downloadBikeConfigs();
-        bool bikeUploadOk = uploadBikeData();
         bool bufferOk = uploadBufferData();
         bool heartbeatOk = uploadHeartbeat();
 
-        success = centralConfigOk && bikeRegistryOk && bikeConfigsOk && bikeUploadOk && bufferOk && heartbeatOk;
+        success = centralConfigOk && bikeRegistryOk && bikeConfigsOk && bufferOk && heartbeatOk;
 
         // Marcar que o primeiro sync foi concluído
         if (success && configCredentials.isFirstSync())
@@ -159,17 +159,69 @@ void CloudSync::syncTime()
     }
 }
 
+bool CloudSync::needsConfigUpdate()
+{
+    HTTPClient http;
+    String url = Endpoints::getConfigVersion();
+
+    http.begin(url);
+    int httpCode = http.GET();
+
+    if (httpCode != HTTP_CODE_OK)
+    {
+        Serial.printf("⚠️ Version check failed: HTTP %d\n", httpCode);
+        http.end();
+        return true; // Se falhar, baixa por segurança
+    }
+
+    String response = http.getString();
+    http.end();
+
+    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
+    if (deserializeJson(doc, response) != DeserializationError::Ok)
+    {
+        Serial.println("⚠️ Version parse failed");
+        return true; // Se falhar, baixa por segurança
+    }
+
+    uint32_t remoteVersion = doc.as<uint32_t>();
+    const CentralConfig &config = configManager.getConfig();
+    bool needsUpdate = (remoteVersion > config.version);
+
+    Serial.printf("📋 Version check: local=%d, remote=%d -> %s\n",
+                  config.version, remoteVersion,
+                  needsUpdate ? "UPDATE NEEDED" : "UP TO DATE");
+
+    return needsUpdate;
+}
+
+void CloudSync::updateConfigFromFirebase(const DynamicJsonDocument &firebaseConfig)
+{
+    Serial.println("🔄 Updating config from Firebase...");
+    
+    // Converter DynamicJsonDocument para String
+    String jsonString;
+    serializeJson(firebaseConfig, jsonString);
+    
+    // Usar updateFromJson que já existe no ConfigManager
+    if (configManager.updateFromJson(jsonString)) {
+        Serial.println("✅ Config updated from Firebase and saved locally");
+    } else {
+        Serial.println("❌ Failed to update config from Firebase");
+    }
+}
+
 bool CloudSync::downloadCentralConfig()
 {
     // Verificar se precisa atualizar antes de baixar
-    if (!configManager.needsConfigUpdate())
+    if (!needsConfigUpdate())
     {
         Serial.println("📋 Config already up to date - skipping download");
         return true;
     }
 
     HTTPClient http;
-    String url = configManager.getCentralConfigUrl();
+    String url = Endpoints::getCentralConfig();
 
     Serial.printf("🔄 Downloading central config from Firebase...\n");
 
@@ -188,12 +240,16 @@ bool CloudSync::downloadCentralConfig()
     String json = http.getString();
     http.end();
 
-    // Delegar parsing/validation para ConfigManager
-    if (!configManager.updateFromJson(json))
+    // Parse e validação
+    DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
+    if (deserializeJson(doc, json) != DeserializationError::Ok)
     {
-        Serial.println("🚨 Failed to update config from JSON");
+        Serial.println("🚨 Config JSON parse failed");
         return false;
     }
+
+    // Aplicar configuração válida
+    updateConfigFromFirebase(doc);
 
     // Sucesso
     Serial.printf("✅ Central config downloaded successfully\n");
@@ -204,7 +260,7 @@ bool CloudSync::downloadCentralConfig()
 bool CloudSync::downloadBikeRegistryData()
 {
     HTTPClient http;
-    String url = configManager.getBikeRegistryUrl();
+    String url = Endpoints::getBikeRegistry();
 
     Serial.println("🔄 Downloading bike registry from Firebase...");
 
@@ -237,7 +293,7 @@ bool CloudSync::downloadBikeRegistryData()
 bool CloudSync::downloadBikeConfigs()
 {
     HTTPClient http;
-    String url = configManager.getBikeConfigsUrl();
+    String url = Endpoints::getBikeConfigs();
 
     Serial.println("🔄 Downloading bike configs from Firebase...");
 
@@ -273,7 +329,7 @@ bool CloudSync::uploadBufferData()
     }
 
     HTTPClient http;
-    String url = configManager.getBufferDataUrl();
+    String url = Endpoints::getBufferData();
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
@@ -303,7 +359,7 @@ bool CloudSync::uploadHeartbeat()
 {
     HTTPClient http;
 
-    String url = configManager.getHeartbeatUrl();
+    String url = Endpoints::getHeartbeat();
 
     // Obter timestamp e formato legível
     time_t now = time(nullptr);
