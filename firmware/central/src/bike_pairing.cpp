@@ -233,12 +233,6 @@ void BPRBLEServer::onBikeDataReceived(const String& bikeId, const String& jsonDa
             int batteryPercent = doc["battery_percent"] | 0;
             int heap = doc["heap"] | 0;
             BikeManager::updateHeartbeat(bikeId, batteryPercent, heap);
-            
-            // Resposta rápida de heartbeat
-            String response = BikeManager::processHeartbeat(bikeId, doc.as<JsonObject>());
-            if (!response.isEmpty()) {
-                BPRBLEServer::pushConfigToBike(bikeId, response);
-            }
         } else {
             BikeManager::recordPendingVisit(bikeId);
             Serial.printf("📝 Pending bike %s heartbeat - awaiting approval\n", bikeId.c_str());

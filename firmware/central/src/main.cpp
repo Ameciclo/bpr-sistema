@@ -1,13 +1,13 @@
 #include <Arduino.h>
 #include <LittleFS.h>
+#include "bike_pairing.h"
+#include "buffer_manager.h"
+#include "cloud_sync.h"
+#include "config_ap.h"
 #include "config_manager.h"
 #include "config_credentials.h"
 #include "constants.h"
-#include "config_ap.h"
-#include "bike_pairing.h"
-#include "cloud_sync.h"
 #include "led_controller.h"
-#include "buffer_manager.h"
 #include "self_check.h"
 #include "sync_monitor.h"
 
