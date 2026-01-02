@@ -82,6 +82,7 @@ struct BackupConfig {
 struct CentralConfig {
     char base_id[32];
     uint32_t version;
+    uint32_t last_update;  // Timestamp da última atualização
     LocationConfig location;
     IntervalsConfig intervals;
     TimeoutsConfig timeouts;

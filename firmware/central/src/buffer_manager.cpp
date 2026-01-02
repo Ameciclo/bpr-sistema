@@ -7,13 +7,23 @@
 
 extern ConfigManager configManager;
 
-BufferManager::BufferManager() : dataCount(0), lastSync(0) {}
+BufferManager::BufferManager() : lastSync(0) {}
 
 void BufferManager::begin()
 {
+    // Criar diretório buffer se não existir
+    if (!LittleFS.exists(BUFFER_DIR)) {
+        LittleFS.mkdir(BUFFER_DIR);
+        Serial.printf("📁 Created buffer directory: %s\n", BUFFER_DIR);
+    }
+    
     cleanupOldBackups();
-    loadBuffer();
-    Serial.printf("📥 DataBuffer initialized: %d items\n", dataCount);
+    loadAllBuffers();
+    Serial.printf("📥 DataBuffer initialized: %d total items\n", getTotalDataCount());
+}
+
+String BufferManager::getBikeBufferPath(const String &bikeId) {
+    return String(BUFFER_DIR) + "/" + bikeId + ".json";
 }
 
 bool BufferManager::addConfigData(const String &configType, const String &jsonData)
@@ -71,8 +81,17 @@ bool BufferManager::addBikeData(const String &bikeId, const String &jsonData)
 
 bool BufferManager::addData(const String &bikeId, const uint8_t *data, size_t length)
 {
-    if (dataCount >= MAX_BUFFER_SIZE || length > 256)
-    {
+    if (length > 256) {
+        Serial.printf("❌ Data too large: %d bytes\n", length);
+        return false;
+    }
+
+    // Carregar buffer da bike específica
+    BikeBuffer bikeBuffer;
+    loadBikeBuffer(bikeId, bikeBuffer);
+    
+    if (bikeBuffer.dataCount >= MAX_BUFFER_SIZE) {
+        Serial.printf("❌ Buffer full for bike %s\n", bikeId.c_str());
         return false;
     }
 
@@ -82,79 +101,78 @@ bool BufferManager::addData(const String &bikeId, const uint8_t *data, size_t le
     uint32_t checksum = crc.finalize();
 
     // Armazenar dados
-    buffer[dataCount].bikeId = bikeId;
-    buffer[dataCount].timestamp = time(nullptr);
-    buffer[dataCount].size = length;
-    buffer[dataCount].crc32 = checksum;
-    buffer[dataCount].uploaded = false;
-    buffer[dataCount].confirmed = false;
-    memcpy(buffer[dataCount].data, data, length);
-    dataCount++;
+    int index = bikeBuffer.dataCount;
+    bikeBuffer.buffer[index].bikeId = bikeId;
+    bikeBuffer.buffer[index].timestamp = time(nullptr);
+    bikeBuffer.buffer[index].size = length;
+    bikeBuffer.buffer[index].crc32 = checksum;
+    bikeBuffer.buffer[index].uploaded = false;
+    bikeBuffer.buffer[index].confirmed = false;
+    memcpy(bikeBuffer.buffer[index].data, data, length);
+    bikeBuffer.dataCount++;
 
     Serial.printf("📦 Data added: %s [%d bytes, CRC:%08X]\n", bikeId.c_str(), length, checksum);
 
-    // Auto-save periodicamente
-    if (dataCount % 5 == 0)
-    {
-        saveBuffer();
-    }
-
+    // Salvar buffer da bike
+    saveBikeBuffer(bikeId, bikeBuffer);
+    
     return true;
 }
 
 bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
 {
-    if (dataCount == 0)
-    {
+    int totalCount = getTotalDataCount();
+    if (totalCount == 0) {
         return false;
     }
 
     doc["timestamp"] = time(nullptr);
     doc["base_id"] = configManager.getBaseId();
-    doc["data_count"] = dataCount;
+    doc["data_count"] = totalCount;
 
     JsonArray dataArray = doc.createNestedArray("data");
 
-    for (int i = 0; i < dataCount; i++)
-    {
-        JsonObject item = dataArray.createNestedObject();
-        item["bike_id"] = buffer[i].bikeId;
-        item["ts"] = buffer[i].timestamp;
-        item["size"] = buffer[i].size;
-        item["crc32"] = String(buffer[i].crc32, HEX);
+    // Iterar por todos os arquivos de buffer
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String bikeId = fileName.substring(0, fileName.length() - 5); // Remove .json
+            
+            BikeBuffer bikeBuffer;
+            if (loadBikeBuffer(bikeId, bikeBuffer)) {
+                for (int i = 0; i < bikeBuffer.dataCount; i++) {
+                    JsonObject item = dataArray.createNestedObject();
+                    item["bike_id"] = bikeBuffer.buffer[i].bikeId;
+                    item["ts"] = bikeBuffer.buffer[i].timestamp;
+                    item["size"] = bikeBuffer.buffer[i].size;
+                    item["crc32"] = String(bikeBuffer.buffer[i].crc32, HEX);
 
-        // Convert hex data back to readable JSON
-        String hexData = "";
-        for (size_t j = 0; j < buffer[i].size; j++)
-        {
-            char hex[3];
-            sprintf(hex, "%02X", buffer[i].data[j]);
-            hexData += hex;
-        }
+                    // Convert data back to JSON
+                    String decodedData = "";
+                    for (size_t j = 0; j < bikeBuffer.buffer[i].size; j++) {
+                        decodedData += (char)bikeBuffer.buffer[i].data[j];
+                    }
 
-        // Try to decode hex back to JSON for readability
-        String decodedData = "";
-        for (size_t j = 0; j < hexData.length(); j += 2)
-        {
-            String byteString = hexData.substring(j, j + 2);
-            char byte = strtol(byteString.c_str(), NULL, 16);
-            decodedData += byte;
-        }
+                    // Test if decoded data is valid JSON
+                    DynamicJsonDocument testDoc(BIKE_HEARTBEAT_BUFFER);
+                    if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok) {
+                        item["data_decoded"] = testDoc;
+                    } else {
+                        item["data"] = decodedData;
+                    }
 
-        // Test if decoded data is valid JSON
-        DynamicJsonDocument testDoc(BIKE_HEARTBEAT_BUFFER);
-        if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok)
-        {
-            item["data_decoded"] = testDoc;
-            Serial.printf("📋 Decoded data for %s: %s\n", buffer[i].bikeId.c_str(), decodedData.c_str());
+                    // Marcar como enviado
+                    bikeBuffer.buffer[i].uploaded = true;
+                }
+                
+                // Salvar buffer atualizado
+                saveBikeBuffer(bikeId, bikeBuffer);
+            }
         }
-        else
-        {
-            item["data"] = hexData; // Fallback to hex if not JSON
-        }
-
-        // Marcar como enviado
-        buffer[i].uploaded = true;
+        file = root.openNextFile();
     }
 
     return true;
@@ -165,138 +183,203 @@ void BufferManager::markAsConfirmed()
     // Criar backup antes de limpar
     createBackup();
 
-    // Limpar dados confirmados
-    dataCount = 0;
-    lastSync = millis();
-    saveBuffer();
+    // Limpar todos os buffers de bikes
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String fullPath = String(BUFFER_DIR) + "/" + fileName;
+            LittleFS.remove(fullPath);
+            Serial.printf("🗑️ Removed buffer: %s\n", fullPath.c_str());
+        }
+        file = root.openNextFile();
+    }
 
-    Serial.println("✅ Buffer cleared after confirmed upload");
+    lastSync = millis();
+    Serial.println("✅ All buffers cleared after confirmed upload");
 }
 
 void BufferManager::rollbackUpload()
 {
-    // Marcar dados como não enviados em caso de falha
-    for (int i = 0; i < dataCount; i++)
-    {
-        buffer[i].uploaded = false;
+    // Marcar dados como não enviados em todos os buffers
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String bikeId = fileName.substring(0, fileName.length() - 5);
+            
+            BikeBuffer bikeBuffer;
+            if (loadBikeBuffer(bikeId, bikeBuffer)) {
+                for (int i = 0; i < bikeBuffer.dataCount; i++) {
+                    bikeBuffer.buffer[i].uploaded = false;
+                }
+                saveBikeBuffer(bikeId, bikeBuffer);
+            }
+        }
+        file = root.openNextFile();
     }
-    Serial.println("⚠️ Upload failed - data marked as pending");
+    
+    Serial.println("⚠️ Upload failed - all data marked as pending");
 }
 
-void BufferManager::loadBuffer()
-{
-    if (!LittleFS.exists(BUFFER_FILE))
-    {
-        dataCount = 0;
-        lastSync = 0;
-        return;
+bool BufferManager::loadBikeBuffer(const String &bikeId, BikeBuffer &bikeBuffer) {
+    String filePath = getBikeBufferPath(bikeId);
+    
+    bikeBuffer.dataCount = 0;
+    
+    if (!LittleFS.exists(filePath)) {
+        return true; // Buffer vazio é válido
     }
 
-    File file = LittleFS.open(BUFFER_FILE, "r");
-    if (!file)
-        return;
+    File file = LittleFS.open(filePath, "r");
+    if (!file) {
+        return false;
+    }
 
     DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
-    if (deserializeJson(doc, file) != DeserializationError::Ok)
-    {
+    if (deserializeJson(doc, file) != DeserializationError::Ok) {
         file.close();
-        return;
+        return false;
     }
     file.close();
 
-    dataCount = doc["data_count"] | 0;
-    lastSync = doc["last_sync"] | 0;
-
+    bikeBuffer.dataCount = doc["data_count"] | 0;
     JsonArray dataArray = doc["buffer"];
     int loadedCount = 0;
 
-    for (JsonObject item : dataArray)
-    {
-        if (loadedCount >= MAX_BUFFER_SIZE)
-            break;
+    for (JsonObject item : dataArray) {
+        if (loadedCount >= MAX_BUFFER_SIZE) break;
 
-        buffer[loadedCount].bikeId = item["bike_id"] | "unknown";
-        buffer[loadedCount].timestamp = item["ts"];
-        buffer[loadedCount].size = item["size"];
-        buffer[loadedCount].crc32 = strtoul(item["crc32"] | "0", NULL, 16);
-        buffer[loadedCount].uploaded = item["uploaded"] | false;
-        buffer[loadedCount].confirmed = item["confirmed"] | false;
+        bikeBuffer.buffer[loadedCount].bikeId = item["bike_id"] | "unknown";
+        bikeBuffer.buffer[loadedCount].timestamp = item["ts"];
+        bikeBuffer.buffer[loadedCount].size = item["size"];
+        bikeBuffer.buffer[loadedCount].crc32 = strtoul(item["crc32"] | "0", NULL, 16);
+        bikeBuffer.buffer[loadedCount].uploaded = item["uploaded"] | false;
+        bikeBuffer.buffer[loadedCount].confirmed = item["confirmed"] | false;
 
-        String hexData = item["data"];
-        size_t dataSize = hexData.length() / 2;
-
-        for (size_t i = 0; i < dataSize && i < 256; i++)
-        {
-            String byteString = hexData.substring(i * 2, i * 2 + 2);
-            buffer[loadedCount].data[i] = strtol(byteString.c_str(), NULL, 16);
+        String dataStr = item["data"];
+        size_t dataSize = dataStr.length();
+        
+        for (size_t i = 0; i < dataSize && i < 256; i++) {
+            bikeBuffer.buffer[loadedCount].data[i] = dataStr[i];
         }
 
         loadedCount++;
     }
 
-    dataCount = loadedCount;
+    bikeBuffer.dataCount = loadedCount;
+    return true;
 }
 
-void BufferManager::saveBuffer()
-{
+bool BufferManager::saveBikeBuffer(const String &bikeId, const BikeBuffer &bikeBuffer) {
+    String filePath = getBikeBufferPath(bikeId);
+    
+    if (bikeBuffer.dataCount == 0) {
+        // Se não há dados, remover arquivo
+        if (LittleFS.exists(filePath)) {
+            LittleFS.remove(filePath);
+        }
+        return true;
+    }
+    
     DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
-
-    doc["data_count"] = dataCount;
-    doc["last_sync"] = lastSync;
+    doc["bike_id"] = bikeId;
+    doc["data_count"] = bikeBuffer.dataCount;
+    doc["last_update"] = time(nullptr);
 
     JsonArray dataArray = doc.createNestedArray("buffer");
-    for (int i = 0; i < dataCount; i++)
-    {
+    for (int i = 0; i < bikeBuffer.dataCount; i++) {
         JsonObject item = dataArray.createNestedObject();
-        item["bike_id"] = buffer[i].bikeId;
-        item["ts"] = buffer[i].timestamp;
-        item["size"] = buffer[i].size;
-        item["crc32"] = String(buffer[i].crc32, HEX);
-        item["uploaded"] = buffer[i].uploaded;
-        item["confirmed"] = buffer[i].confirmed;
+        item["bike_id"] = bikeBuffer.buffer[i].bikeId;
+        item["ts"] = bikeBuffer.buffer[i].timestamp;
+        item["size"] = bikeBuffer.buffer[i].size;
+        item["crc32"] = String(bikeBuffer.buffer[i].crc32, HEX);
+        item["uploaded"] = bikeBuffer.buffer[i].uploaded;
+        item["confirmed"] = bikeBuffer.buffer[i].confirmed;
 
-        String hexData = "";
-        for (size_t j = 0; j < buffer[i].size; j++)
-        {
-            char hex[3];
-            sprintf(hex, "%02X", buffer[i].data[j]);
-            hexData += hex;
+        String dataStr = "";
+        for (size_t j = 0; j < bikeBuffer.buffer[i].size; j++) {
+            dataStr += (char)bikeBuffer.buffer[i].data[j];
         }
-        item["data"] = hexData;
+        item["data"] = dataStr;
     }
 
-    File file = LittleFS.open(BUFFER_FILE, "w");
-    if (file)
-    {
-        serializeJson(doc, file);
-        file.close();
+    File file = LittleFS.open(filePath, "w");
+    if (!file) {
+        return false;
     }
+    
+    serializeJson(doc, file);
+    file.close();
+    return true;
+}
+
+void BufferManager::loadAllBuffers() {
+    // Método para compatibilidade - não precisa fazer nada
+    // Os buffers são carregados sob demanda
+}
+
+void BufferManager::saveBuffer() {
+    // Método para compatibilidade - não precisa fazer nada
+    // Os buffers são salvos individualmente
 }
 
 void BufferManager::createBackup()
 {
-    if (dataCount == 0)
-        return;
+    int totalCount = getTotalDataCount();
+    if (totalCount == 0) return;
 
     char backupFile[64];
     sprintf(backupFile, "/backup_%lu.json", time(nullptr));
 
-    File source = LittleFS.open(BUFFER_FILE, "r");
-    File backup = LittleFS.open(backupFile, "w");
-
-    if (source && backup)
-    {
-        while (source.available())
-        {
-            backup.write(source.read());
+    // Criar backup consolidado de todos os buffers
+    DynamicJsonDocument backupDoc(BUFFER_PERSISTENCE_BUFFER);
+    backupDoc["timestamp"] = time(nullptr);
+    backupDoc["total_items"] = totalCount;
+    
+    JsonArray bikesArray = backupDoc.createNestedArray("bikes");
+    
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String bikeId = fileName.substring(0, fileName.length() - 5);
+            
+            BikeBuffer bikeBuffer;
+            if (loadBikeBuffer(bikeId, bikeBuffer) && bikeBuffer.dataCount > 0) {
+                JsonObject bikeObj = bikesArray.createNestedObject();
+                bikeObj["bike_id"] = bikeId;
+                bikeObj["data_count"] = bikeBuffer.dataCount;
+                
+                JsonArray dataArray = bikeObj.createNestedArray("data");
+                for (int i = 0; i < bikeBuffer.dataCount; i++) {
+                    JsonObject item = dataArray.createNestedObject();
+                    item["ts"] = bikeBuffer.buffer[i].timestamp;
+                    item["size"] = bikeBuffer.buffer[i].size;
+                    
+                    String dataStr = "";
+                    for (size_t j = 0; j < bikeBuffer.buffer[i].size; j++) {
+                        dataStr += (char)bikeBuffer.buffer[i].data[j];
+                    }
+                    item["data"] = dataStr;
+                }
+            }
         }
-        Serial.printf("💾 Backup created: %s\n", backupFile);
+        file = root.openNextFile();
     }
 
-    if (source)
-        source.close();
-    if (backup)
+    File backup = LittleFS.open(backupFile, "w");
+    if (backup) {
+        serializeJson(backupDoc, backup);
         backup.close();
+        Serial.printf("💾 Backup created: %s\n", backupFile);
+    }
 }
 
 void BufferManager::cleanupOldBackups()
@@ -340,28 +423,76 @@ void BufferManager::cleanupOldBackups()
 
 bool BufferManager::isFull()
 {
+    int totalCount = getTotalDataCount();
     int threshold = (MAX_BUFFER_SIZE * BUFFER_SYNC_THRESHOLD_PERCENT) / 100;
-    return dataCount >= threshold;
+    return totalCount >= threshold;
 }
 
 bool BufferManager::hasData()
 {
-    return dataCount > 0;
+    return getTotalDataCount() > 0;
 }
 
 int BufferManager::getDataCount()
 {
-    return dataCount;
+    return getTotalDataCount();
+}
+
+int BufferManager::getTotalDataCount()
+{
+    int totalCount = 0;
+    
+    if (!LittleFS.exists(BUFFER_DIR)) {
+        return 0;
+    }
+    
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String bikeId = fileName.substring(0, fileName.length() - 5);
+            
+            BikeBuffer bikeBuffer;
+            if (loadBikeBuffer(bikeId, bikeBuffer)) {
+                totalCount += bikeBuffer.dataCount;
+            }
+        }
+        file = root.openNextFile();
+    }
+    
+    return totalCount;
 }
 
 int BufferManager::getPendingCount()
 {
     int pending = 0;
-    for (int i = 0; i < dataCount; i++)
-    {
-        if (!buffer[i].uploaded)
-            pending++;
+    
+    if (!LittleFS.exists(BUFFER_DIR)) {
+        return 0;
     }
+    
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".json")) {
+            String bikeId = fileName.substring(0, fileName.length() - 5);
+            
+            BikeBuffer bikeBuffer;
+            if (loadBikeBuffer(bikeId, bikeBuffer)) {
+                for (int i = 0; i < bikeBuffer.dataCount; i++) {
+                    if (!bikeBuffer.buffer[i].uploaded) {
+                        pending++;
+                    }
+                }
+            }
+        }
+        file = root.openNextFile();
+    }
+    
     return pending;
 }
 
@@ -378,9 +509,30 @@ void BufferManager::printStorageInfo()
 
     // Listar arquivos principais
     Serial.printf("📄 Main Files:\n");
-    printFileSize(BUFFER_FILE);
     printFileSize(BIKE_REGISTRY_FILE);
+    printFileSize(BIKE_STATUS_FILE);
     printFileSize("/central_config.json");
+
+    // Contar buffers individuais
+    int bufferCount = 0;
+    size_t bufferSize = 0;
+    
+    if (LittleFS.exists(BUFFER_DIR)) {
+        File root = LittleFS.open(BUFFER_DIR);
+        File file = root.openNextFile();
+        
+        while (file) {
+            String fileName = file.name();
+            if (fileName.endsWith(".json")) {
+                bufferCount++;
+                bufferSize += file.size();
+            }
+            file = root.openNextFile();
+        }
+    }
+    
+    Serial.printf("📦 Buffers: %d files, %d KB, %d total items\n", 
+                  bufferCount, bufferSize / 1024, getTotalDataCount());
 
     // Contar backups
     int backupCount = 0;

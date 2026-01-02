@@ -21,7 +21,7 @@ bool BikeManager::init()
 
 bool BikeManager::loadData()
 {
-    if (!LittleFS.exists(BIKE_DATA_FILE))
+    if (!LittleFS.exists(BIKE_STATUS_FILE))
     {
         Serial.println("📄 Bike data not found, creating empty");
         bikes.clear();
@@ -29,7 +29,7 @@ bool BikeManager::loadData()
         return saveData();
     }
 
-    File file = LittleFS.open(BIKE_DATA_FILE, "r");
+    File file = LittleFS.open(BIKE_STATUS_FILE, "r");
     if (!file)
     {
         Serial.println("❌ Failed to open bike data");
@@ -68,7 +68,7 @@ bool BikeManager::loadData()
 
 bool BikeManager::saveData()
 {
-    File file = LittleFS.open(BIKE_DATA_FILE, "w");
+    File file = LittleFS.open(BIKE_STATUS_FILE, "w");
     if (!file)
     {
         Serial.println("❌ Failed to create bike data");

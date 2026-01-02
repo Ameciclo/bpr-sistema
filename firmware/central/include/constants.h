@@ -9,11 +9,11 @@
 // Files
 #define CONFIG_FILE "/config.json"
 #define CREDENTIALS_FILE "/config_credentials.json"
-#define BUFFER_FILE "/buffer.json"
+#define BUFFER_DIR "/buffer"
 #define BIKE_REGISTRY_FILE "/bike_registry.json"
-#define BIKE_DATA_FILE "/bike_data.json"
-#define BIKE_CONFIG_CACHE_FILE "/bike_config_versions.json"
+#define BIKE_STATUS_FILE "/bike_status.json"  // Renomeado de bike_data.json
 #define BIKE_CONFIGS_FILE "/bike_configs.json"
+// BIKE_CONFIG_CACHE_FILE removido - usar last_update nos configs
 
 // JSON Buffer sizes - Specific document types
 #define BIKE_REGISTRY_BUFFER 4096      // Multiple bikes with full data

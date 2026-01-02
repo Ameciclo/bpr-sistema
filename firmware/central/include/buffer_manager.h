@@ -12,6 +12,11 @@ struct DataItem {
     bool confirmed;
 };
 
+struct BikeBuffer {
+    DataItem buffer[50]; // Buffer individual por bike
+    uint16_t dataCount;
+};
+
 class BufferManager {
 public:
     BufferManager();
@@ -27,6 +32,7 @@ public:
     
     // Status
     int getDataCount();
+    int getTotalDataCount();
     int getPendingCount();
     bool isFull();
     bool hasData();
@@ -34,12 +40,15 @@ public:
     bool hasEnoughSpace();
 
 private:
-    DataItem buffer[50]; // Tamanho máximo, controlado por config
-    uint16_t dataCount;
     uint32_t lastSync;
     
-    // Persistência
-    void loadBuffer();
+    // Gerenciamento de buffers individuais
+    String getBikeBufferPath(const String& bikeId);
+    bool loadBikeBuffer(const String& bikeId, BikeBuffer& bikeBuffer);
+    bool saveBikeBuffer(const String& bikeId, const BikeBuffer& bikeBuffer);
+    
+    // Persistência (métodos de compatibilidade)
+    void loadAllBuffers();
     void saveBuffer();
     void createBackup();
     void cleanupOldBackups();
