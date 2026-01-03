@@ -38,6 +38,7 @@ static ConfigField configFields[] = {
     // Timeouts
     {"timeouts.wifi_sec", nullptr, UINT32, 0},
     {"timeouts.firebase_ms", nullptr, UINT32, 0},
+    {"timeouts.pairing_busy_ms", nullptr, UINT32, 0},
 
     // LED (8 campos - pin não é configurável via JSON)
     {"led.boot_ms", nullptr, UINT16, 0},
@@ -96,6 +97,7 @@ void initConfigFieldPointers(CentralConfig *config)
     INIT_CONFIG_FIELD(5, config, intervals.led_count_sec);
     INIT_CONFIG_FIELD(6, config, timeouts.wifi_sec);
     INIT_CONFIG_FIELD(7, config, timeouts.firebase_ms);
+    INIT_CONFIG_FIELD(8, config, timeouts.pairing_busy_ms);
     INIT_CONFIG_FIELD(8, config, led.boot_ms);
     INIT_CONFIG_FIELD(9, config, led.ble_ms);
     INIT_CONFIG_FIELD(10, config, led.sync_ms);
@@ -261,6 +263,7 @@ static const char *DEFAULT_CONFIG_JSON = R"({
     "timeouts": {
         "wifi_sec": 60,
         "firebase_ms": 10000,
+        "pairing_busy_ms": 10000,
         "config_ap_min": 15
     },
     "led": {

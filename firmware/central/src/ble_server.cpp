@@ -16,6 +16,12 @@ std::map<uint16_t, String> BPRBLEServer::connectedDevices;
 bool BPRBLEServer::isBusy = false;
 uint32_t BPRBLEServer::busyUntil = 0;
 
+// Callback pointers
+BPRBLEServer::DataCallback BPRBLEServer::dataCallback = nullptr;
+BPRBLEServer::ConnectCallback BPRBLEServer::connectCallback = nullptr;
+BPRBLEServer::DisconnectCallback BPRBLEServer::disconnectCallback = nullptr;
+BPRBLEServer::ConfigCallback BPRBLEServer::configCallback = nullptr;
+
 class ServerCallbacks : public NimBLEServerCallbacks
 {
     void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -58,10 +64,9 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
         NimBLEDevice::startAdvertising();
 
-        // Notificar bike_pairing sobre desconexão (só se conhece a bike)
-        if (!bikeId.isEmpty())
-        {
-            BPRBLEServer::onBikeDisconnected(bikeId);
+        // Notificar via callback se registrado
+        if (BPRBLEServer::disconnectCallback) {
+            BPRBLEServer::disconnectCallback(bikeId);
         }
     }
 };
@@ -97,14 +102,18 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
                 BPRBLEServer::connectedDevices[conn_handle] = bikeId;
                 Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
 
-                // Check for pending config and send immediately
-                BPRBLEServer::checkAndSendPendingConfig(bikeId, conn_handle);
+                // Notificar via callback se registrado
+                if (BPRBLEServer::connectCallback) {
+                    BPRBLEServer::connectCallback(bikeId);
+                }
             } else {
                 Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
             }
 
-            // Delegate processing to bike_pairing
-            BPRBLEServer::onBikeDataReceived(bikeId, String(value.c_str()));
+            // Delegate processing to callback
+            if (BPRBLEServer::dataCallback) {
+                BPRBLEServer::dataCallback(bikeId, String(value.c_str()));
+            }
         }
         else
         {
@@ -129,7 +138,9 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks
         if (!error && doc["bike_id"])
         {
             String bikeId = doc["bike_id"];
-            BPRBLEServer::onConfigRequest(bikeId, String(value.c_str()));
+            if (BPRBLEServer::configCallback) {
+                BPRBLEServer::configCallback(bikeId, String(value.c_str()));
+            }
         }
         else
         {
@@ -317,6 +328,22 @@ void BPRBLEServer::updateAdvertisingStatus() {
     pAdvertising->start();
     
     Serial.printf("📡 BLE Advertising updated: %s\n", deviceName.c_str());
+}
+
+void BPRBLEServer::setDataCallback(DataCallback callback) {
+    dataCallback = callback;
+}
+
+void BPRBLEServer::setConnectCallback(ConnectCallback callback) {
+    connectCallback = callback;
+}
+
+void BPRBLEServer::setDisconnectCallback(DisconnectCallback callback) {
+    disconnectCallback = callback;
+}
+
+void BPRBLEServer::setConfigCallback(ConfigCallback callback) {
+    configCallback = callback;
 }
 
 bool BPRBLEServer::isCentralBusy() {

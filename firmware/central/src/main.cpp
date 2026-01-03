@@ -219,54 +219,58 @@ void loop()
         break;
 
     case STATE_TEMP_CONFIG_AP:
-        ConfigAP::update();
-
-        // Check timeout for temporary CONFIG_AP mode
-        if (tempConfigApStartTime > 0)
-        {
-            uint32_t configApTimeout = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
-            if (millis() - tempConfigApStartTime > configApTimeout)
-            {
-                Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n",
-                              configManager.getConfig().fallback.config_ap_timeout_sec);
-                tempConfigApStartTime = 0;
-                changeState(STATE_BIKE_PAIRING);
-                return;
-            }
+        // Se não tem timeout ativo, executar update normalmente
+        if (tempConfigApStartTime <= 0) {
+            ConfigAP::update();
+            break;
         }
-        break;
-    case STATE_BIKE_PAIRING:
-        // Verificar se precisa sync urgente (buffer crítico)
-        if (bufferManager.isFull())
-        {
-            Serial.println("🚨 Buffer crítico - sync urgente!");
-            changeState(STATE_CLOUD_SYNC);
+        
+        // Verificar se timeout foi atingido
+        uint32_t configApTimeout = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
+        if (millis() - tempConfigApStartTime > configApTimeout) {
+            // Timeout atingido - voltar ao funcionamento normal
+            Serial.printf("⏰ TEMP_CONFIG_AP timeout (%ds) - voltando ao funcionamento normal\n",
+                          configManager.getConfig().fallback.config_ap_timeout_sec);
+            tempConfigApStartTime = 0;
+            changeState(STATE_BIKE_PAIRING);
             return;
         }
-        // Verificar timer de sync periódico
-        if (millis() - lastSyncCheck > configManager.getConfig().sync_interval_ms())
-        {
-            lastSyncCheck = millis();
-
-            if (!BikePairing::isSafeToExit())
-            {
-                Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
-            }
-            else if (bufferManager.hasData())
-            {
-                // Add memory check before sync
-                if (ESP.getFreeHeap() < 50000)
-                {
-                    Serial.printf("⚠️ Low memory before sync: %d bytes - forcing GC\n", ESP.getFreeHeap());
-                    delay(100); // Allow cleanup
-                }
-                Serial.println("🔄 Tempo de sync - transitioning to CLOUD_SYNC");
-                changeState(STATE_CLOUD_SYNC);
-                return;
-            }
-        }
-        BikePairing::update();
+        
+        // Timeout ativo mas não atingido - continuar no CONFIG_AP
+        ConfigAP::update();
         break;
+    case STATE_BIKE_PAIRING:
+        // Verificar timer de sync periódico
+        if (millis() - lastSyncCheck <= configManager.getConfig().sync_interval_ms()) {
+            BikePairing::update();
+            break;
+        }
+        
+        lastSyncCheck = millis();
+        
+        // Não pode sair - aguardar atividade terminar
+        if (!BikePairing::isSafeToExit()) {
+            Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
+            BikePairing::update();
+            break;
+        }
+        
+        // Pode sair mas não há dados - continuar no pairing
+        if (!bufferManager.hasData()) {
+            BikePairing::update();
+            break;
+        }
+        
+        // Verificar memória antes do sync
+        if (ESP.getFreeHeap() < 50000) {
+            Serial.printf("⚠️ Low memory before sync: %d bytes - forcing GC\n", ESP.getFreeHeap());
+            delay(100); // Allow cleanup
+        }
+        
+        // Tudo OK - iniciar sync
+        Serial.println("🔄 Tempo de sync - transitioning to CLOUD_SYNC");
+        changeState(STATE_CLOUD_SYNC);
+        return;
 
     case STATE_INITIAL_SYNC:
     {

@@ -34,3 +34,34 @@ void BPRJsonHelper::addBikeResponse(JsonDocument& doc, const String& type, const
     doc["bike_id"] = bikeId;
     doc["timestamp"] = time(nullptr);
 }
+String BPRJsonHelper::createProceedResponse() {
+    DynamicJsonDocument doc(256);
+    doc["type"] = "proceed";
+    doc["can_upload"] = true;
+    doc["can_clear_buffer"] = true;
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+String BPRJsonHelper::createBusyResponse(uint32_t retryAfterSec) {
+    DynamicJsonDocument doc(256);
+    doc["type"] = "busy";
+    doc["message"] = "Central busy - try again later";
+    doc["retry_after_sec"] = retryAfterSec;
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+String BPRJsonHelper::createConfigResponse(const String& bikeId, const JsonObject& config) {
+    DynamicJsonDocument doc(1024);
+    addBikeResponse(doc, "config_push", bikeId);
+    doc["config"] = config;
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}

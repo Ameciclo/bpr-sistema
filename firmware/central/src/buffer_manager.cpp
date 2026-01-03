@@ -24,7 +24,25 @@ void BufferManager::begin()
 }
 
 String BufferManager::getBikeBufferPath(const String &bikeId) {
-    return String(BUFFER_DIR) + "/" + bikeId + ".json";
+    // Encontrar próximo número sequencial
+    int nextNum = 1;
+    File root = LittleFS.open(BUFFER_DIR);
+    File file = root.openNextFile();
+    
+    while (file) {
+        String fileName = file.name();
+        if (fileName.startsWith("scan") && fileName.endsWith(".json")) {
+            int num = fileName.substring(4, fileName.length() - 5).toInt();
+            if (num >= nextNum) {
+                nextNum = num + 1;
+            }
+        }
+        file = root.openNextFile();
+    }
+    
+    char filename[32];
+    sprintf(filename, "/buffer/scan%03d.json", nextNum);
+    return String(filename);
 }
 
 bool BufferManager::addConfigData(const String &configType, const String &jsonData)
@@ -121,7 +139,9 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
     while (file) {
         String fileName = file.name();
         if (fileName.endsWith(".json")) {
-            String bikeId = fileName.substring(0, fileName.length() - 5); // Remove .json
+            // Extrair bikeId do formato: bikeId-timestamp.json
+            int dashPos = fileName.lastIndexOf('-');
+            String bikeId = (dashPos > 0) ? fileName.substring(0, dashPos) : fileName.substring(0, fileName.length() - 5);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer)) {
@@ -209,51 +229,9 @@ void BufferManager::rollbackUpload()
 }
 
 bool BufferManager::loadBikeBuffer(const String &bikeId, BikeBuffer &bikeBuffer) {
-    String filePath = getBikeBufferPath(bikeId);
-    
+    // Para arquivos sequenciais, sempre retorna buffer vazio
+    // Cada sync cria arquivo novo
     bikeBuffer.dataCount = 0;
-    
-    if (!LittleFS.exists(filePath)) {
-        return true; // Buffer vazio é válido
-    }
-
-    File file = LittleFS.open(filePath, "r");
-    if (!file) {
-        return false;
-    }
-
-    DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
-    if (deserializeJson(doc, file) != DeserializationError::Ok) {
-        file.close();
-        return false;
-    }
-    file.close();
-
-    bikeBuffer.dataCount = doc["data_count"] | 0;
-    JsonArray dataArray = doc["buffer"];
-    int loadedCount = 0;
-
-    for (JsonObject item : dataArray) {
-        if (loadedCount >= MAX_BUFFER_SIZE) break;
-
-        bikeBuffer.buffer[loadedCount].bikeId = item["bike_id"] | "unknown";
-        bikeBuffer.buffer[loadedCount].timestamp = item["ts"];
-        bikeBuffer.buffer[loadedCount].size = item["size"];
-        bikeBuffer.buffer[loadedCount].crc32 = strtoul(item["crc32"] | "0", NULL, 16);
-        bikeBuffer.buffer[loadedCount].uploaded = item["uploaded"] | false;
-        bikeBuffer.buffer[loadedCount].confirmed = item["confirmed"] | false;
-
-        String dataStr = item["data"];
-        size_t dataSize = dataStr.length();
-        
-        for (size_t i = 0; i < dataSize && i < 256; i++) {
-            bikeBuffer.buffer[loadedCount].data[i] = dataStr[i];
-        }
-
-        loadedCount++;
-    }
-
-    bikeBuffer.dataCount = loadedCount;
     return true;
 }
 
@@ -315,8 +293,13 @@ void BufferManager::createBackup()
     int totalCount = getTotalDataCount();
     if (totalCount == 0) return;
 
+    // Criar diretório backup se não existir
+    if (!LittleFS.exists("/backup")) {
+        LittleFS.mkdir("/backup");
+    }
+    
     char backupFile[64];
-    sprintf(backupFile, "/backup_%lu.json", time(nullptr));
+    sprintf(backupFile, "/backup/data.bkp");
 
     // Criar backup consolidado de todos os buffers
     DynamicJsonDocument backupDoc(BUFFER_PERSISTENCE_BUFFER);
@@ -382,21 +365,21 @@ void BufferManager::cleanupOldBackups()
     while (file)
     {
         String fileName = file.name();
-        if (fileName.startsWith("backup_"))
+        if (fileName.startsWith("backup/") && fileName.endsWith(".bkp"))
         {
-            // Extrair timestamp do nome do arquivo
-            int underscorePos = fileName.indexOf('_');
-            int dotPos = fileName.indexOf('.');
-            if (underscorePos > 0 && dotPos > underscorePos)
-            {
-                String timestampStr = fileName.substring(underscorePos + 1, dotPos);
-                uint32_t fileTime = timestampStr.toInt();
-
-                if (fileTime < cutoffTime)
-                {
-                    LittleFS.remove("/" + fileName);
-                    Serial.printf("🗑️ Old backup removed: %s\n", fileName.c_str());
+            // Extrair timestamp do conteúdo do arquivo para limpeza
+            String fullPath = "/" + fileName;
+            File backupFile = LittleFS.open(fullPath, "r");
+            if (backupFile) {
+                DynamicJsonDocument doc(256);
+                if (deserializeJson(doc, backupFile) == DeserializationError::Ok) {
+                    uint32_t fileTime = doc["timestamp"] | 0;
+                    if (fileTime > 0 && fileTime < cutoffTime) {
+                        LittleFS.remove(fullPath);
+                        Serial.printf("🗑️ Old backup removed: %s\n", fileName.c_str());
+                    }
                 }
+                backupFile.close();
             }
         }
         file = root.openNextFile();
@@ -519,18 +502,18 @@ void BufferManager::printStorageInfo()
     // Contar backups
     int backupCount = 0;
     size_t backupSize = 0;
-    File root = LittleFS.open("/");
-    File file = root.openNextFile();
-
-    while (file)
-    {
-        String fileName = file.name();
-        if (fileName.startsWith("backup_"))
-        {
-            backupCount++;
-            backupSize += file.size();
+    if (LittleFS.exists("/backup")) {
+        File backupRoot = LittleFS.open("/backup");
+        File backupFile = backupRoot.openNextFile();
+        
+        while (backupFile) {
+            String fileName = backupFile.name();
+            if (fileName.endsWith(".bkp")) {
+                backupCount++;
+                backupSize += backupFile.size();
+            }
+            backupFile = backupRoot.openNextFile();
         }
-        file = root.openNextFile();
     }
 
     Serial.printf("💾 Backups: %d files, %d KB\n", backupCount, backupSize / 1024);

@@ -109,3 +109,21 @@ enum SystemEvent
     EVENT_WAKE_UP,
     EVENT_ERROR
 };
+
+// Bike Pairing States
+enum PairingStatus {
+    PAIRING_IDLE,           // Nenhuma atividade crítica
+    PAIRING_RECEIVING_DATA, // Recebendo dados de bike
+    PAIRING_SENDING_CONFIG, // Enviando config para bike
+    PAIRING_BUSY           // Atividade geral (múltiplas bikes)
+};
+
+// Bike Events
+enum BikeEvent {
+    BIKE_ARRIVED,
+    BIKE_LEFT,
+    BIKE_COUNT_CHANGED
+};
+
+// Pairing timeouts
+#define BIKE_DATA_TIMEOUT_MS 30000     // 30s timeout por bike

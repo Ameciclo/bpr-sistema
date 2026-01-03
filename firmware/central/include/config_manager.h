@@ -41,6 +41,7 @@ struct IntervalsConfig {
 struct TimeoutsConfig {
     uint32_t wifi_sec;
     uint32_t firebase_ms;
+    uint32_t pairing_busy_ms;
     uint16_t config_ap_min;
 };
 
@@ -134,6 +135,7 @@ public:
     // Convenience methods
     String getBaseId() const { return String(config.base_id); }
     int getSyncInterval() const { return config.intervals.sync_sec; }
+    uint32_t getPairingBusyTimeout() const { return config.timeouts.pairing_busy_ms; }
 
 private:
     CentralConfig config;

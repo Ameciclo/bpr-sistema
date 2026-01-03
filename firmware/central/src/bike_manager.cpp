@@ -152,7 +152,8 @@ void BikeManager::addPendingBike(const String &bikeId)
     Serial.printf("📝 Bike %s added as pending (first seen: %s)\n", bikeId.c_str(), dateStr);
 }
 
-void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap)
+void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap, 
+                                   uint16_t sessions, uint32_t bytes, uint32_t oldestTs, uint8_t bufferPercent)
 {
     if (!dataLoaded || !bikes.containsKey(bikeId))
         return;
@@ -168,9 +169,15 @@ void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap)
     bikes[bikeId]["last_heartbeat"]["timestamp_human"] = dateStr;
     bikes[bikeId]["last_heartbeat"]["battery"] = battery;
     bikes[bikeId]["last_heartbeat"]["heap"] = heap;
+    
+    // Pending data information
+    bikes[bikeId]["last_heartbeat"]["pending_sessions"] = sessions;
+    bikes[bikeId]["last_heartbeat"]["pending_bytes"] = bytes;
+    bikes[bikeId]["last_heartbeat"]["oldest_session_ts"] = oldestTs;
+    bikes[bikeId]["last_heartbeat"]["buffer_usage_percent"] = bufferPercent;
 
-    Serial.printf("💓 Heartbeat updated: %s (bat:%d%%, heap:%d)\n",
-                  bikeId.c_str(), battery, heap);
+    Serial.printf("💓 Heartbeat updated: %s (bat:%d%%, heap:%d, pending:%d sessions/%d bytes)\n",
+                  bikeId.c_str(), battery, heap, sessions, bytes);
 }
 
 bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
@@ -388,24 +395,123 @@ String BikeManager::getConfigForBike(const String &bikeId)
         return ""; // Retorna vazio se não tem config
     }
 
-    DynamicJsonDocument response(BIKE_CONFIG_BUFFER);
-    BPRJsonHelper::addBikeResponse(response, "config_push", bikeId);
-    response["config"] = bikes[bikeId]["config"];
+    JsonObject config = bikes[bikeId]["config"];
+    return BPRJsonHelper::createConfigResponse(bikeId, config);
+}
 
+String BikeManager::generateSystemHeartbeat()
+{
+    if (!dataLoaded)
+        return "";
+        
+    DynamicJsonDocument heartbeat(CENTRAL_HEARTBEAT_BUFFER);
+    
+    uint32_t currentTime = millis() / 1000;
+    heartbeat["timestamp"] = currentTime;
+    heartbeat["uptime_sec"] = currentTime;
+    heartbeat["heap_free"] = ESP.getFreeHeap();
+    
+    // Popular dados das bikes
+    JsonArray bikes_array = heartbeat.createNestedArray("bikes");
+    populateHeartbeatData(bikes_array);
+    
+    // Estatísticas calculadas
+    heartbeat["total_bikes"] = bikes_array.size();
+    heartbeat["bikes_allowed"] = getAllowedCount();
+    heartbeat["bikes_pending"] = getPendingCount();
+    heartbeat["bikes_with_recent_contact"] = getConnectedCount();
+    
     String result;
-    serializeJson(response, result);
+    serializeJson(heartbeat, result);
     return result;
+}
+
+void BikeManager::saveSystemHeartbeat()
+{
+    String heartbeatData = generateSystemHeartbeat();
+    
+    if (!heartbeatData.isEmpty()) {
+        bufferManager.addConfigData("system_heartbeat", heartbeatData);
+        Serial.printf("💓 System heartbeat saved: %d allowed, %d pending, %d connected\n", 
+                      getAllowedCount(), getPendingCount(), getConnectedCount());
+    }
+}
+
+bool BikeManager::needsConfigUpdate(const String &bikeId, uint32_t bikeLastUpdate)
+{
+    if (!dataLoaded || !bikes.containsKey(bikeId))
+        return false;
+
+    // Se bike não tem config, não precisa atualizar
+    if (bikes[bikeId]["config"].isNull())
+        return false;
+
+    // Pegar last_update da config armazenada na central
+    uint32_t centralLastUpdate = bikes[bikeId]["config"]["last_update"] | 0;
+    
+    // Se central tem config mais nova que a bike
+    bool needsUpdate = centralLastUpdate > bikeLastUpdate;
+    
+    if (needsUpdate) {
+        Serial.printf("⚙️ Config update needed for %s: central=%lu, bike=%lu\n", 
+                      bikeId.c_str(), centralLastUpdate, bikeLastUpdate);
+    }
+    
+    return needsUpdate;
 }
 
 String BikeManager::confirmDataUpload(const String &bikeId)
 {
-    DynamicJsonDocument response(BIKE_HEARTBEAT_BUFFER);
-    BPRJsonHelper::addBikeResponse(response, "upload_confirmed", bikeId);
-    response["can_clear_buffer"] = true;
-
-    String result;
-    serializeJson(response, result);
-
+    String result = BPRJsonHelper::createProceedResponse();
     Serial.printf("✅ Data upload confirmed for %s - can clear buffer\n", bikeId.c_str());
     return result;
+}
+// Getters para BikePairing usar
+uint32_t BikeManager::getPendingBytes(const String &bikeId)
+{
+    if (!dataLoaded || !bikes.containsKey(bikeId))
+        return 0;
+    
+    JsonObject heartbeat = bikes[bikeId]["last_heartbeat"];
+    if (heartbeat.isNull())
+        return 0;
+        
+    return heartbeat["pending_bytes"] | 0;
+}
+
+uint16_t BikeManager::getPendingSessions(const String &bikeId)
+{
+    if (!dataLoaded || !bikes.containsKey(bikeId))
+        return 0;
+    
+    JsonObject heartbeat = bikes[bikeId]["last_heartbeat"];
+    if (heartbeat.isNull())
+        return 0;
+        
+    return heartbeat["pending_sessions"] | 0;
+}
+
+uint8_t BikeManager::getBufferUsage(const String &bikeId)
+{
+    if (!dataLoaded || !bikes.containsKey(bikeId))
+        return 0;
+    
+    JsonObject heartbeat = bikes[bikeId]["last_heartbeat"];
+    if (heartbeat.isNull())
+        return 0;
+        
+    return heartbeat["buffer_usage_percent"] | 0;
+}
+
+bool BikeManager::isBatteryLow(const String &bikeId)
+{
+    if (!dataLoaded || !bikes.containsKey(bikeId))
+        return false;
+    
+    JsonObject heartbeat = bikes[bikeId]["last_heartbeat"];
+    if (heartbeat.isNull())
+        return false;
+        
+    int battery = heartbeat["battery"] | 100;
+    return battery <= 25; // Bateria crítica <= 25%
 }

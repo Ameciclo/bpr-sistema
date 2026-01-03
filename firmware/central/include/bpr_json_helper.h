@@ -15,4 +15,9 @@ public:
     
     // Para respostas de bike
     static void addBikeResponse(JsonDocument& doc, const String& type, const String& bikeId);
+    
+    // Respostas padronizadas para bikes
+    static String createProceedResponse();
+    static String createBusyResponse(uint32_t retryAfterSec = 30);
+    static String createConfigResponse(const String& bikeId, const JsonObject& config);
 };
