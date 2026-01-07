@@ -219,6 +219,7 @@ void loop()
         break;
 
     case STATE_TEMP_CONFIG_AP:
+    {
         // Se não tem timeout ativo, executar update normalmente
         if (tempConfigApStartTime <= 0) {
             ConfigAP::update();
@@ -239,6 +240,7 @@ void loop()
         // Timeout ativo mas não atingido - continuar no CONFIG_AP
         ConfigAP::update();
         break;
+    }
     case STATE_BIKE_PAIRING:
         // Verificar timer de sync periódico
         if (millis() - lastSyncCheck <= configManager.getConfig().sync_interval_ms()) {
