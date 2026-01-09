@@ -105,7 +105,7 @@ void printStatus()
 {
     Serial.println("==================================================");
     Serial.printf("🏢 %s | Estado: %s | Uptime: %lus\n",
-                  configManager.getConfig().base_id,
+                  configCredentials.getBaseId().c_str(),
                   getStateName(currentState),
                   millis() / 1000);
 
@@ -151,12 +151,17 @@ void setup()
     Serial.println("\n🏢 BPR Central v1.0");
     Serial.println("=====================");
 
-    // Inicializar LittleFS
+    // Inicializar LittleFS com formatação automática se corrompido
     Serial.println("📂 Inicializando LittleFS...");
     if (!LittleFS.begin())
     {
-        Serial.println("❌ Falha no LittleFS. Reiniciando...");
-        ESP.restart();
+        Serial.println("❌ LittleFS corrompido - formatando...");
+        if (!LittleFS.begin(true)) // true = format if mount fails
+        {
+            Serial.println("❌ Falha crítica no LittleFS. Reiniciando...");
+            ESP.restart();
+        }
+        Serial.println("✅ LittleFS formatado com sucesso");
     }
     Serial.printf("✅ LittleFS OK: %lu/%lu bytes\n", LittleFS.usedBytes(), LittleFS.totalBytes());
 

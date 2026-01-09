@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
 
 enum class SyncResult {
     SUCCESS,
@@ -24,7 +23,7 @@ private:
     static bool needsConfigUpdate();
     static bool needsBikeRegistryUpdate();
     static bool needsBikeConfigsUpdate();
-    static void updateConfigFromFirebase(const DynamicJsonDocument& firebaseConfig);
+    static void updateConfigFromFirebase(const String& csvData);
     static bool downloadCentralConfig();
     static bool downloadBikeRegistryData();
     static bool downloadBikeConfigs();

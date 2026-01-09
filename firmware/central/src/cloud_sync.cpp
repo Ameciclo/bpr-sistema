@@ -3,6 +3,7 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "bike_manager.h"
+#include "binary_structs.h"
 #include "ble_server.h"
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
@@ -173,21 +174,7 @@ bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate,
     String response = http.getString();
     http.end();
 
-    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
-    if (deserializeJson(doc, response) != DeserializationError::Ok)
-    {
-        Serial.printf("⚠️ %s last_update parse failed\n", componentName.c_str());
-        return true; // Se falhar, baixa por segurança
-    }
-
-    // Buscar por "last_update" no JSON
-    if (!doc.containsKey("last_update"))
-    {
-        Serial.printf("⚠️ %s missing last_update field\n", componentName.c_str());
-        return true; // Se não tem campo, baixa por segurança
-    }
-
-    uint32_t remoteLastUpdate = doc["last_update"];
+    uint32_t remoteLastUpdate = response.toInt();
     bool needsUpdate = (remoteLastUpdate > localLastUpdate);
 
     Serial.printf("📋 %s last_update check: local=%d, remote=%d -> %s\n",
@@ -205,7 +192,7 @@ bool CloudSync::needsConfigUpdate()
 
 bool CloudSync::needsBikeRegistryUpdate()
 {
-    // Ler last_update do arquivo local bike_registry.json
+    // Ler last_update do arquivo local bike_registry.bin
     if (!LittleFS.exists(BIKE_REGISTRY_FILE))
     {
         Serial.println("📋 No local bike registry - needs download");
@@ -218,16 +205,16 @@ bool CloudSync::needsBikeRegistryUpdate()
         return true;
     }
 
-    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
-    if (deserializeJson(doc, file) != DeserializationError::Ok)
-    {
-        file.close();
-        return true;
-    }
+    BikeRegistryData registry;
+    size_t bytesRead = file.readBytes((char*)&registry, sizeof(registry));
     file.close();
 
-    uint32_t localLastUpdate = doc["last_update"] | 0;
-    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), localLastUpdate, "Bike registry");
+    if (bytesRead != sizeof(registry))
+    {
+        return true;
+    }
+
+    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), registry.last_update, "Bike registry");
 }
 
 bool CloudSync::needsBikeConfigsUpdate()
@@ -257,22 +244,18 @@ bool CloudSync::needsBikeConfigsUpdate()
     return checkLastUpdateTime(Endpoints::getBikeConfigsVersion(), localLastUpdate, "Bike configs");
 }
 
-void CloudSync::updateConfigFromFirebase(const DynamicJsonDocument &firebaseConfig)
+void CloudSync::updateConfigFromFirebase(const String &csvData)
 {
-    Serial.println("🔄 Updating config from Firebase...");
+    Serial.println("🔄 Updating config from Firebase CSV...");
 
-    // Converter DynamicJsonDocument para String
-    String jsonString;
-    serializeJson(firebaseConfig, jsonString);
-
-    // Usar updateFromJson que já existe no ConfigManager
-    if (configManager.updateFromJson(jsonString))
+    // Usar updateFromCSV que já existe no ConfigManager
+    if (configManager.updateFromCSV(csvData))
     {
-        Serial.println("✅ Config updated from Firebase and saved locally");
+        Serial.println("✅ Config updated from Firebase CSV and saved locally");
     }
     else
     {
-        Serial.println("❌ Failed to update config from Firebase");
+        Serial.println("❌ Failed to update config from Firebase CSV");
     }
 }
 
@@ -301,20 +284,12 @@ bool CloudSync::downloadCentralConfig()
         return false;
     }
 
-    // HTTP OK - processar resposta
-    String json = http.getString();
+    // HTTP OK - processar resposta CSV
+    String csvData = http.getString();
     http.end();
 
-    // Parse e validação
-    DynamicJsonDocument doc(CONFIG_JSON_BUFFER_SIZE);
-    if (deserializeJson(doc, json) != DeserializationError::Ok)
-    {
-        Serial.println("🚨 Config JSON parse failed");
-        return false;
-    }
-
     // Aplicar configuração válida
-    updateConfigFromFirebase(doc);
+    updateConfigFromFirebase(csvData);
 
     // Sucesso
     Serial.printf("✅ Central config downloaded successfully\n");
@@ -358,17 +333,30 @@ bool CloudSync::downloadBikeRegistryData()
         return false;
     }
 
-    // Adicionar last_update se não existir
-    if (!doc.containsKey("last_update"))
-    {
-        doc["last_update"] = time(nullptr);
+    // Converter JSON para struct binária
+    BikeRegistryData registry;
+    memset(&registry, 0, sizeof(registry));
+    registry.last_update = doc["last_update"] | time(nullptr);
+    
+    JsonObject bikes = doc["bikes"];
+    int bikeIndex = 0;
+    for (JsonPair bike : bikes) {
+        if (bikeIndex >= 10) break;
+        
+        String bikeId = bike.key().c_str();
+        strcpy(registry.bikes[bikeIndex], bikeId.c_str());
+        registry.statuses[bikeIndex] = bike.value()["status"] | STATUS_UNKNOWN;
+        registry.first_seen[bikeIndex] = bike.value()["first_seen"] | 0;
+        registry.last_heartbeat[bikeIndex] = bike.value()["last_heartbeat"] | 0;
+        bikeIndex++;
     }
+    registry.bike_count = bikeIndex;
 
-    // Salvar no arquivo local
+    // Salvar struct binária
     File file = LittleFS.open(BIKE_REGISTRY_FILE, "w");
     if (file)
     {
-        serializeJson(doc, file);
+        file.write((uint8_t*)&registry, sizeof(registry));
         file.close();
         Serial.println("💾 Bike registry saved locally");
     }
@@ -432,7 +420,7 @@ bool CloudSync::downloadBikeConfigs()
 
 bool CloudSync::uploadBufferData()
 {
-    DynamicJsonDocument doc(UPLOAD_BATCH_BUFFER);
+    DynamicJsonDocument doc(4096);
 
     // Early return se não há dados
     if (!bufferManager.getDataForUpload(doc))
@@ -474,8 +462,11 @@ bool CloudSync::uploadHeartbeat()
 
     String url = Endpoints::getHeartbeat();
 
-    DynamicJsonDocument doc(CENTRAL_HEARTBEAT_BUFFER);
-    BPRJsonHelper::addHeartbeatFields(doc);
+    DynamicJsonDocument doc(HEARTBEAT_BUFFER);
+    doc["timestamp"] = time(nullptr);
+    doc["bikes_connected"] = BikeManager::getConnectedCount();
+    doc["heap"] = ESP.getFreeHeap();
+    doc["uptime"] = millis() / 1000;
 
     http.begin(url);
     http.addHeader("Content-Type", "application/json");

@@ -1,6 +1,6 @@
-# BPR Central v2.0 - Central Redesenhada
+# BPR Central v2.0 - Central para ESP32-WROOM-32D
 
-Sistema central ESP32C3 redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase.
+Sistema central ESP32-WROOM-32D redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase.
 
 ## 🎯 Características Principais
 
@@ -49,6 +49,7 @@ stateDiagram-v2
         - AP: BPR_Hub_Config
         - Interface: 192.168.4.1
         - Timeout: 15 minutos
+        - LED: Pin 2 (built-in)
     end note
     
     note right of BLE_ONLY
@@ -56,6 +57,7 @@ stateDiagram-v2
         - Filtro: só bpr-* devices
         - Validação: allowed/pending/blocked
         - Push automático de configs
+        - LED: Pin 2 (built-in)
     end note
     
     note right of WIFI_SYNC
@@ -63,6 +65,7 @@ stateDiagram-v2
         - Upload: dados + heartbeat
         - NTP sync
         - Detecção de mudanças
+        - LED: Pin 2 (built-in)
     end note
 ```
 
@@ -152,7 +155,7 @@ flowchart TD
   "base_id": "base01",
   "sync_interval_sec": 300,
   "wifi_timeout_sec": 30,
-  "led_pin": 8,
+  "led_pin": 2,
   "firebase_batch_size": 8000,
   "ntp_server": "pool.ntp.org",
   "timezone_offset": -10800,
@@ -203,7 +206,7 @@ flowchart TD
 }
 ```
 
-## 💡 Sistema de LED Inteligente
+## 💡 Sistema de LED Inteligente (Pin 2 - Built-in)
 
 | Padrão | Intervalo | Significado |
 |--------|-----------|-------------|

@@ -7,27 +7,23 @@
 #define LED_PIN 8
 
 // Files
-#define CONFIG_FILE "/config.json"
-#define CREDENTIALS_FILE "/config_credentials.json"
+#define CONFIG_FILE "/config.bin"
+#define CREDENTIALS_FILE "/config_credentials.bin"
 #define BUFFER_DIR "/buffer"
-#define BIKE_REGISTRY_FILE "/bike_registry.json"
-#define BIKE_STATUS_FILE "/bike_status.json"  // Renomeado de bike_data.json
-#define BIKE_CONFIGS_FILE "/bike_configs.json"
+#define BIKE_REGISTRY_FILE "/bike_registry.bin"
+#define BIKE_STATUS_FILE "/bike_status.bin"
+#define BIKE_CONFIGS_FILE "/bike_configs.bin"
 // BIKE_CONFIG_CACHE_FILE removido - usar last_update nos configs
 
-// JSON Buffer sizes - Specific document types
-#define BIKE_REGISTRY_BUFFER 4096      // Multiple bikes with full data
-#define BIKE_CONFIG_BUFFER 1024        // Single bike configuration
-#define BIKE_DATA_BUFFER 1024          // Single bike data/scans
-#define BIKE_HEARTBEAT_BUFFER 512      // Heartbeat responses
+// Small buffers for minimal operations
 #define BLE_COMMAND_BUFFER 256         // Simple BLE commands
-#define CENTRAL_HEARTBEAT_BUFFER 512   // Central heartbeat data
-#define BUFFER_PERSISTENCE_BUFFER 8192 // Buffer save/load operations
-#define UPLOAD_BATCH_BUFFER 4096       // Firebase upload batches
+#define HEARTBEAT_BUFFER 512           // Heartbeat responses
+#define BIKE_DATA_BUFFER 1024          // Bike data parsing
 #define CONFIG_VERSION_BUFFER 256      // Version checking
-#define STATUS_RESPONSE_BUFFER 512     // Status/queue responses
-#define CONFIG_JSON_BUFFER_SIZE 1536
-#define CONFIG_CREDENTIALS_SIZE 512 // Credentials JSON buffer
+#define BIKE_REGISTRY_BUFFER 2048      // Bike registry data
+#define CENTRAL_HEARTBEAT_BUFFER 512   // Central heartbeat
+#define BUFFER_PERSISTENCE_BUFFER 4096 // Buffer persistence
+#define STATUS_RESPONSE_BUFFER 512     // Status response buffer
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000
@@ -123,6 +119,14 @@ enum BikeEvent {
     BIKE_ARRIVED,
     BIKE_LEFT,
     BIKE_COUNT_CHANGED
+};
+
+// Bike Status
+enum BikeStatus {
+    STATUS_UNKNOWN = 0,
+    STATUS_PENDING = 1,
+    STATUS_ALLOWED = 2,
+    STATUS_BLOCKED = 3
 };
 
 // Pairing timeouts

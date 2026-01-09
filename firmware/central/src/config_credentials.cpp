@@ -1,17 +1,6 @@
-#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include "config_credentials.h"
 #include "constants.h"
-
-#define CREDENTIAL_FIELDS            \
-    FIELD(base_id, "")               \
-    FIELD(wifi_ssid, "")             \
-    FIELD(wifi_password, "")         \
-    FIELD(firebase_database_url, "") \
-    FIELD(firebase_api_key, "")      \
-    FIELD(firebase_project_id, "")   \
-    FIELD_NUM(created_timestamp, 0)  \
-    FIELD_BOOL(first_sync, true)
 
 ConfigCredentials::ConfigCredentials()
 {
@@ -20,13 +9,14 @@ ConfigCredentials::ConfigCredentials()
 
 void ConfigCredentials::setDefaults()
 {
-#define FIELD(name, default_val) strcpy(credentials.name, default_val);
-#define FIELD_NUM(name, default_val) credentials.name = default_val;
-#define FIELD_BOOL(name, default_val) credentials.name = default_val;
-    CREDENTIAL_FIELDS
-#undef FIELD
-#undef FIELD_NUM
-#undef FIELD_BOOL
+    strcpy(credentials.base_id, "");
+    strcpy(credentials.wifi_ssid, "");
+    strcpy(credentials.wifi_password, "");
+    strcpy(credentials.firebase_database_url, "");
+    strcpy(credentials.firebase_api_key, "");
+    strcpy(credentials.firebase_project_id, "");
+    credentials.created_timestamp = 0;
+    credentials.first_sync = true;
 }
 
 bool ConfigCredentials::loadCredentials()
@@ -44,34 +34,36 @@ bool ConfigCredentials::loadCredentials()
         return false;
     }
 
-    DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
-
-    if (error)
-    {
-        Serial.printf("❌ Credentials parse error: %s\n", error.c_str());
+    // Verificar tamanho do arquivo
+    size_t fileSize = file.size();
+    size_t expectedSize = sizeof(CredentialsConfig);
+    
+    if (fileSize != expectedSize) {
+        Serial.printf("⚠️ File size mismatch: %d != %d, recreating\n", fileSize, expectedSize);
+        file.close();
         return false;
     }
 
-#define FIELD(name, default_val)                                             \
-    if (doc[#name])                                                          \
-    {                                                                        \
-        strncpy(credentials.name, doc[#name], sizeof(credentials.name) - 1); \
-        credentials.name[sizeof(credentials.name) - 1] = '\0';               \
+    // Ler com verificação de alinhamento
+    uint8_t* buffer = (uint8_t*)malloc(expectedSize);
+    if (!buffer) {
+        Serial.println("❌ Failed to allocate buffer");
+        file.close();
+        return false;
     }
-#define FIELD_NUM(name, default_val) \
-    if (doc[#name])                  \
-        credentials.name = doc[#name];
-#define FIELD_BOOL(name, default_val) \
-    if (doc[#name])                   \
-        credentials.name = doc[#name];
-
-    CREDENTIAL_FIELDS
-
-#undef FIELD
-#undef FIELD_NUM
-#undef FIELD_BOOL
+    
+    size_t bytesRead = file.readBytes((char*)buffer, expectedSize);
+    file.close();
+    
+    if (bytesRead != expectedSize) {
+        Serial.printf("❌ Read size mismatch: %d != %d\n", bytesRead, expectedSize);
+        free(buffer);
+        return false;
+    }
+    
+    // Copiar com segurança
+    memcpy(&credentials, buffer, expectedSize);
+    free(buffer);
 
     Serial.printf("✅ Credentials loaded: %s\n", credentials.base_id);
     return isCredentialsValid();
@@ -79,25 +71,34 @@ bool ConfigCredentials::loadCredentials()
 
 bool ConfigCredentials::saveCredentials()
 {
-    DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
-
-#define FIELD(name, default_val) doc[#name] = credentials.name;
-#define FIELD_NUM(name, default_val) doc[#name] = credentials.name;
-#define FIELD_BOOL(name, default_val) doc[#name] = credentials.name;
-    CREDENTIAL_FIELDS
-#undef FIELD
-#undef FIELD_NUM
-#undef FIELD_BOOL
-
+    // Usar buffer intermediário para segurança
+    size_t expectedSize = sizeof(CredentialsConfig);
+    uint8_t* buffer = (uint8_t*)malloc(expectedSize);
+    if (!buffer) {
+        Serial.println("❌ Failed to allocate buffer for save");
+        return false;
+    }
+    
+    // Copiar dados para buffer alinhado
+    memcpy(buffer, &credentials, expectedSize);
+    
     File file = LittleFS.open(CREDENTIALS_FILE, "w");
     if (!file)
     {
         Serial.println("❌ Failed to create credentials file");
+        free(buffer);
         return false;
     }
 
-    serializeJson(doc, file);
+    size_t bytesWritten = file.write(buffer, expectedSize);
     file.close();
+    free(buffer);
+
+    if (bytesWritten != expectedSize)
+    {
+        Serial.printf("❌ Failed to write credentials: %d != %d\n", bytesWritten, expectedSize);
+        return false;
+    }
 
     Serial.println("💾 Credentials saved");
     return true;
@@ -107,25 +108,34 @@ bool ConfigCredentials::isCredentialsValid()
 {
     bool valid = true;
 
-#define FIELD(name, default_val)                  \
-    if (strlen(credentials.name) == 0)            \
-    {                                             \
-        Serial.println("   - " #name " missing"); \
-        valid = false;                            \
+    if (strlen(credentials.base_id) == 0) {
+        Serial.println("   - base_id missing");
+        valid = false;
     }
-#define FIELD_NUM(name, default_val)  // Skip numeric fields
-#define FIELD_BOOL(name, default_val) // Skip boolean fields
+    if (strlen(credentials.wifi_ssid) == 0) {
+        Serial.println("   - wifi_ssid missing");
+        valid = false;
+    }
+    if (strlen(credentials.wifi_password) == 0) {
+        Serial.println("   - wifi_password missing");
+        valid = false;
+    }
+    if (strlen(credentials.firebase_database_url) == 0) {
+        Serial.println("   - firebase_database_url missing");
+        valid = false;
+    }
+    if (strlen(credentials.firebase_api_key) == 0) {
+        Serial.println("   - firebase_api_key missing");
+        valid = false;
+    }
+    if (strlen(credentials.firebase_project_id) == 0) {
+        Serial.println("   - firebase_project_id missing");
+        valid = false;
+    }
 
-    if (!valid)
+    if (!valid) {
         Serial.println("❌ Credentials invalid - missing required fields:");
-    CREDENTIAL_FIELDS
-
-#undef FIELD
-#undef FIELD_NUM
-#undef FIELD_BOOL
-
-    if (valid)
-    {
+    } else {
         Serial.printf("✅ Credentials valid: %s\n", credentials.base_id);
     }
 

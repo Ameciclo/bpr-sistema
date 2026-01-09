@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <ArduinoJson.h>
 
 struct WiFiConfig {
     char ssid[64];
@@ -40,7 +39,6 @@ struct IntervalsConfig {
 
 struct TimeoutsConfig {
     uint32_t wifi_sec;
-    uint32_t firebase_ms;
     uint32_t pairing_busy_ms;
     uint16_t config_ap_min;
 };
@@ -81,9 +79,8 @@ struct BackupConfig {
 };
 
 struct CentralConfig {
-    char base_id[32];
     uint32_t version;
-    uint32_t last_update;  // Timestamp da última atualização
+    uint32_t last_update;
     LocationConfig location;
     IntervalsConfig intervals;
     TimeoutsConfig timeouts;
@@ -94,11 +91,11 @@ struct CentralConfig {
     CompressionConfig compression;
     StorageConfig storage;
     BackupConfig backup;
+    uint8_t padding[4]; // Padding para alinhamento
     
-    // Compatibility methods
     uint32_t sync_interval_ms() const { return intervals.sync_sec * 1000; }
     int sync_interval_sec() const { return intervals.sync_sec; }
-};
+} __attribute__((packed, aligned(4)));
 
 class ConfigManager {
 public:
@@ -106,36 +103,16 @@ public:
     bool loadConfig();
     bool saveConfig();
     bool isConfigValid();
+    bool updateFromCSV(const String& csvData);
+    void setConfigValue(int index, const String& value);
     
     const CentralConfig& getConfig() const { return config; }
     CentralConfig& getConfig() { return config; }
     
-    // JSON parsing and validation
-    bool updateFromJson(const String& json);
-    
-    // Buffer configuration getters
-    int getBufferMaxSize() const { return config.buffer.max_size; }
-    int getBufferSyncThreshold() const { return config.buffer.sync_threshold_percent; }
-    int getAutoSaveInterval() const { return config.buffer.auto_save_interval; }
-    int getMaxItemSize() const { return config.buffer.max_item_size; }
-    
-    // Compression configuration
-    bool getCompressionEnabled() const { return config.compression.enabled; }
-    int getCompressionMinSize() const { return config.compression.min_size_bytes; }
-    
-    // Storage configuration
-    int getStorageMinFreeKB() const { return config.storage.min_free_kb; }
-    int getStorageWarningKB() const { return config.storage.warning_threshold_kb; }
-    float getAggressiveCleanupMultiplier() const { return config.storage.aggressive_cleanup_multiplier; }
-    
-    // Backup configuration
-    bool getBackupEnabled() const { return config.backup.enabled; }
-    int getBackupRetentionHours() const { return config.backup.retention_hours; }
-    
-    // Convenience methods
-    String getBaseId() const { return String(config.base_id); }
+    String getBaseId() const;
     int getSyncInterval() const { return config.intervals.sync_sec; }
     uint32_t getPairingBusyTimeout() const { return config.timeouts.pairing_busy_ms; }
+    int getBackupRetentionHours() const { return config.backup.retention_hours; }
 
 private:
     CentralConfig config;

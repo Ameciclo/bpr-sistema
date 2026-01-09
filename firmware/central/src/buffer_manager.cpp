@@ -1,12 +1,15 @@
 #include <ArduinoJson.h>
 #include <CRC32.h>
 #include <LittleFS.h>
+#include "binary_structs.h"
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
 #include "config_manager.h"
+#include "config_credentials.h"
 #include "constants.h"
 
 extern ConfigManager configManager;
+extern ConfigCredentials configCredentials;
 
 BufferManager::BufferManager() : lastSync(0) {}
 
@@ -31,8 +34,8 @@ String BufferManager::getBikeBufferPath(const String &bikeId) {
     
     while (file) {
         String fileName = file.name();
-        if (fileName.startsWith("scan") && fileName.endsWith(".json")) {
-            int num = fileName.substring(4, fileName.length() - 5).toInt();
+        if (fileName.startsWith("scan") && fileName.endsWith(".bin")) {
+            int num = fileName.substring(4, fileName.length() - 4).toInt();
             if (num >= nextNum) {
                 nextNum = num + 1;
             }
@@ -41,7 +44,7 @@ String BufferManager::getBikeBufferPath(const String &bikeId) {
     }
     
     char filename[32];
-    sprintf(filename, "/buffer/scan%03d.json", nextNum);
+    sprintf(filename, "/buffer/scan%03d.bin", nextNum);
     return String(filename);
 }
 
@@ -127,7 +130,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
     }
 
     BPRJsonHelper::addTimestamp(doc);
-    doc["base_id"] = configManager.getBaseId();
+    doc["base_id"] = configCredentials.getBaseId();
     doc["data_count"] = totalCount;
 
     JsonArray dataArray = doc.createNestedArray("data");
@@ -138,10 +141,10 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
-            // Extrair bikeId do formato: bikeId-timestamp.json
+        if (fileName.endsWith(".bin")) {
+            // Extrair bikeId do formato: bikeId-timestamp.bin
             int dashPos = fileName.lastIndexOf('-');
-            String bikeId = (dashPos > 0) ? fileName.substring(0, dashPos) : fileName.substring(0, fileName.length() - 5);
+            String bikeId = (dashPos > 0) ? fileName.substring(0, dashPos) : fileName.substring(0, fileName.length() - 4);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer)) {
@@ -159,7 +162,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
                     }
 
                     // Test if decoded data is valid JSON
-                    DynamicJsonDocument testDoc(BIKE_HEARTBEAT_BUFFER);
+                    DynamicJsonDocument testDoc(BIKE_DATA_BUFFER);
                     if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok) {
                         item["data_decoded"] = testDoc;
                     } else {
@@ -191,7 +194,7 @@ void BufferManager::markAsConfirmed()
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
+        if (fileName.endsWith(".bin")) {
             String fullPath = String(BUFFER_DIR) + "/" + fileName;
             LittleFS.remove(fullPath);
             Serial.printf("🗑️ Removed buffer: %s\n", fullPath.c_str());
@@ -211,8 +214,8 @@ void BufferManager::rollbackUpload()
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
-            String bikeId = fileName.substring(0, fileName.length() - 5);
+        if (fileName.endsWith(".bin")) {
+            String bikeId = fileName.substring(0, fileName.length() - 4);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer)) {
@@ -246,34 +249,34 @@ bool BufferManager::saveBikeBuffer(const String &bikeId, const BikeBuffer &bikeB
         return true;
     }
     
-    DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
-    doc["bike_id"] = bikeId;
-    doc["data_count"] = bikeBuffer.dataCount;
-    doc["last_update"] = time(nullptr);
-
-    JsonArray dataArray = doc.createNestedArray("buffer");
-    for (int i = 0; i < bikeBuffer.dataCount; i++) {
-        JsonObject item = dataArray.createNestedObject();
-        item["bike_id"] = bikeBuffer.buffer[i].bikeId;
-        item["ts"] = bikeBuffer.buffer[i].timestamp;
-        item["size"] = bikeBuffer.buffer[i].size;
-        item["crc32"] = String(bikeBuffer.buffer[i].crc32, HEX);
-        item["uploaded"] = bikeBuffer.buffer[i].uploaded;
-        item["confirmed"] = bikeBuffer.buffer[i].confirmed;
-
-        String dataStr = "";
-        for (size_t j = 0; j < bikeBuffer.buffer[i].size; j++) {
-            dataStr += (char)bikeBuffer.buffer[i].data[j];
-        }
-        item["data"] = dataStr;
-    }
-
     File file = LittleFS.open(filePath, "w");
     if (!file) {
         return false;
     }
     
-    serializeJson(doc, file);
+    // Escrever header
+    BufferFileHeader header;
+    header.magic = BUFFER_MAGIC;
+    header.version = BUFFER_VERSION;
+    header.item_count = bikeBuffer.dataCount;
+    header.last_update = time(nullptr);
+    
+    file.write((uint8_t*)&header, sizeof(header));
+    
+    // Escrever items
+    for (int i = 0; i < bikeBuffer.dataCount; i++) {
+        BufferItemBin item;
+        strcpy(item.bikeId, bikeBuffer.buffer[i].bikeId.c_str());
+        item.timestamp = bikeBuffer.buffer[i].timestamp;
+        item.size = bikeBuffer.buffer[i].size;
+        item.crc32 = bikeBuffer.buffer[i].crc32;
+        item.uploaded = bikeBuffer.buffer[i].uploaded;
+        item.confirmed = bikeBuffer.buffer[i].confirmed;
+        memcpy(item.data, bikeBuffer.buffer[i].data, bikeBuffer.buffer[i].size);
+        
+        file.write((uint8_t*)&item, sizeof(item));
+    }
+    
     file.close();
     return true;
 }
@@ -416,8 +419,8 @@ int BufferManager::getTotalDataCount()
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
-            String bikeId = fileName.substring(0, fileName.length() - 5);
+        if (fileName.endsWith(".bin")) {
+            String bikeId = fileName.substring(0, fileName.length() - 4);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer)) {
@@ -443,8 +446,8 @@ int BufferManager::getPendingCount()
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
-            String bikeId = fileName.substring(0, fileName.length() - 5);
+        if (fileName.endsWith(".bin")) {
+            String bikeId = fileName.substring(0, fileName.length() - 4);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer)) {
@@ -488,7 +491,7 @@ void BufferManager::printStorageInfo()
         
         while (file) {
             String fileName = file.name();
-            if (fileName.endsWith(".json")) {
+            if (fileName.endsWith(".bin")) {
                 bufferCount++;
                 bufferSize += file.size();
             }

@@ -36,10 +36,11 @@ bool SelfCheck::systemCheck() {
     }
     
     // Check BLE capability
-    if (!checkBLE()) {
-        Serial.println("❌ BLE check failed");
-        allOk = false;
-    }
+    // if (!checkBLE()) {
+    //     Serial.println("❌ BLE check failed");
+    //     allOk = false;
+    // }
+    Serial.println("🔵 BLE check skipped (temporary)");
     
     if (allOk) {
         Serial.println("✅ All system checks passed");

@@ -10,7 +10,8 @@ struct CredentialsConfig {
     char firebase_project_id[64];
     uint32_t created_timestamp;
     bool first_sync;
-};
+    uint8_t padding[3]; // Padding para alinhamento de 4 bytes
+} __attribute__((packed, aligned(4)));
 
 class ConfigCredentials {
 public:

@@ -32,9 +32,41 @@ void ConfigAP::enter(bool isInitialMode)
         Serial.println("⚠️ Modo AP por falha de sync");
     }
 
-    WiFi.mode(WIFI_AP);
-    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    // ESP32C3 specific WiFi initialization sequence
+    Serial.println("🔧 Inicializando WiFi para ESP32C3...");
+    
+    // Garantir que WiFi está completamente desligado
+    WiFi.mode(WIFI_OFF);
+    delay(1000);
+    
+    // Configurar modo AP com sequência específica para ESP32C3
+    if (!WiFi.mode(WIFI_AP)) {
+        Serial.println("❌ Falha ao configurar modo AP - tentando novamente...");
+        delay(2000);
+        if (!WiFi.mode(WIFI_AP)) {
+            Serial.println("❌ Falha crítica no WiFi AP - modo desabilitado");
+            apStartTime = millis();
+            return;
+        }
+    }
+    
+    delay(1000);
+    
+    // Configurar IP antes do softAP
+    if (!WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET)) {
+        Serial.println("❌ Falha na configuração de IP");
+    }
+    
+    delay(500);
+    
+    // Iniciar AP
+    if (!WiFi.softAP(AP_SSID, AP_PASSWORD)) {
+        Serial.println("❌ Falha ao iniciar AP");
+        apStartTime = millis();
+        return;
+    }
+    
+    delay(1000);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
     // Configurar callbacks para conexões
@@ -58,6 +90,14 @@ void ConfigAP::enter(bool isInitialMode)
 void ConfigAP::update()
 {
     server.handleClient();
+
+    // Imprimir status a cada 30 segundos para debug
+    static uint32_t lastDebugPrint = 0;
+    if (millis() - lastDebugPrint > 30000) {
+        Serial.printf("📱 ConfigAP ativo há %lus - Heap: %d\n", 
+                      (millis() - apStartTime) / 1000, ESP.getFreeHeap());
+        lastDebugPrint = millis();
+    }
 
     if (!isInitialConfigMode)
     {
@@ -144,7 +184,7 @@ bool ConfigAP::tryUpdateWiFiInFirebase()
     HTTPClient http;
     String url = Endpoints::getWiFiConfig();
 
-    DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
+    DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
     doc["ssid"] = creds.wifi_ssid;
     doc["password"] = creds.wifi_password;
 
@@ -309,7 +349,7 @@ void ConfigAP::setupWebServer()
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
         uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
         
-        DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
+        DynamicJsonDocument doc(STATUS_RESPONSE_BUFFER);
         doc["status"] = "config_mode";
         doc["uptime_ms"] = millis();
         doc["config_time_remaining_ms"] = remaining;
@@ -332,7 +372,7 @@ void ConfigAP::setupWebServer()
         Serial.println(jsonStr);
         Serial.println("---");
         
-        DynamicJsonDocument doc(CONFIG_CREDENTIALS_SIZE);
+        DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
         DeserializationError error = deserializeJson(doc, jsonStr);
         
         if (error) {
