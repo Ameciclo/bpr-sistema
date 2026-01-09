@@ -29,6 +29,8 @@ public:
     static void setBusyStatus(bool busy, uint32_t durationSeconds = 300);
     static void updateAdvertisingStatus();
     static bool isCentralBusy();
+    static void printBLEInfo();
+    static void checkAdvertisingStatus();
     
     // Callbacks - agora como ponteiros para funções externas
     static DataCallback dataCallback;

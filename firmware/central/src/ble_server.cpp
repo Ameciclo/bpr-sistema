@@ -296,32 +296,50 @@ void BPRBLEServer::forceDisconnectBike(const String &bikeId)
 void BPRBLEServer::setBusyStatus(bool busy, uint32_t durationSeconds) {
     isBusy = busy;
     if (busy) {
-        busyUntil = millis() + (durationSeconds * 1000);
-        Serial.printf("🔵 BLE Status: BUSY for %d seconds\n", durationSeconds);
+        if (durationSeconds == 0) {
+            busyUntil = UINT32_MAX; // Permanent busy (OFF mode)
+            Serial.println("🔵 BLE Status: OFF (permanent)");
+        } else {
+            busyUntil = millis() + (durationSeconds * 1000);
+            Serial.printf("🔵 BLE Status: BUSY for %d seconds\n", durationSeconds);
+        }
     } else {
         busyUntil = 0;
         Serial.println("🔵 BLE Status: READY");
     }
     updateAdvertisingStatus();
+    
+    // Imprimir info do BLE após atualizar status
+    printBLEInfo();
 }
 
 void BPRBLEServer::updateAdvertisingStatus() {
     if (!pServer) return;
     
-    // Check if busy period expired
-    if (isBusy && millis() > busyUntil) {
+    // Check if busy period expired (but not if permanent)
+    if (isBusy && busyUntil != UINT32_MAX && millis() > busyUntil) {
         isBusy = false;
         Serial.println("🔵 BLE BUSY period expired - back to READY");
     }
     
     // Update device name based on status
-    String deviceName = isBusy ? "BPR Central BUSY" : "BPR Central";
+    String deviceName;
+    if (busyUntil == UINT32_MAX) {
+        deviceName = "BPR Central OFF";  // Permanent OFF mode
+    } else if (isBusy) {
+        deviceName = "BPR Central BUSY"; // Temporary busy
+    } else {
+        deviceName = "BPR Central";      // Ready
+    }
     
     // Stop current advertising
     pServer->getAdvertising()->stop();
     
-    // Restart advertising with updated name
+    // Simpler approach: just restart advertising with setName
     NimBLEAdvertising *pAdvertising = pServer->getAdvertising();
+    
+    // Clear existing data and set new name
+    pAdvertising->reset();
     pAdvertising->setName(deviceName.c_str());
     pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
@@ -347,8 +365,33 @@ void BPRBLEServer::setConfigCallback(ConfigCallback callback) {
 }
 
 bool BPRBLEServer::isCentralBusy() {
-    if (isBusy && millis() > busyUntil) {
+    if (isBusy && busyUntil != UINT32_MAX && millis() > busyUntil) {
         isBusy = false;
     }
     return isBusy;
+}
+
+void BPRBLEServer::printBLEInfo() {
+    if (NimBLEDevice::getInitialized()) {
+        Serial.printf("📱 BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
+        
+        if (NimBLEDevice::getAdvertising()->isAdvertising()) {
+            Serial.println("✅ BLE Advertising is ACTIVE");
+        } else {
+            Serial.println("❌ BLE Advertising is NOT ACTIVE!");
+        }
+    } else {
+        Serial.println("❌ BLE not initialized!");
+    }
+}
+
+void BPRBLEServer::checkAdvertisingStatus() {
+    if (!pServer) return;
+    
+    if (NimBLEDevice::getAdvertising() && NimBLEDevice::getAdvertising()->isAdvertising()) {
+        Serial.println("✅ BLE Advertising is still ACTIVE");
+    } else {
+        Serial.println("❌ BLE Advertising STOPPED! Restarting...");
+        setBusyStatus(true, 0); // Force restart
+    }
 }

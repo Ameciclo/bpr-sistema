@@ -50,8 +50,8 @@
 // Config AP
 #define AP_SSID "BPR Central"
 #define AP_PASSWORD "botaprarodar"
-#define AP_IP IPAddress(192, 168, 1, 1)  // IP mais amigável: 192.168.1.1
-#define AP_GATEWAY IPAddress(192, 168, 1, 1)
+#define AP_IP IPAddress(192, 168, 4, 1)  // IP padrão ESP32: 192.168.4.1
+#define AP_GATEWAY IPAddress(192, 168, 4, 1)
 #define AP_SUBNET IPAddress(255, 255, 255, 0)
 #define CONFIG_TIMEOUT_MS 900000 // 15 minutos
 

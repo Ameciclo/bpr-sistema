@@ -1,8 +1,8 @@
 #include <ArduinoJson.h>
-#include <DNSServer.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include "ble_server.h"
 #include "config_ap.h"
 #include "config_credentials.h"
 #include "config_manager.h"
@@ -13,7 +13,6 @@ extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
 
 static WebServer server(80);
-static DNSServer dnsServer;
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
 
@@ -25,17 +24,22 @@ void ConfigAP::enter(bool isInitialMode)
     {
         Serial.println("🔧 Config inválida, entrando no modo AP");
         Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha: botaprarodar)");
-        Serial.println("🌐 Acesse: http://192.168.1.1 para configurar");
+        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
     }
     else
     {
-        Serial.println("⚠️ Modo AP por falha de sync");
+        Serial.println("🔧 Modo AP por falha de sync");
+        Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha: botaprarodar)");
+        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
     }
 
     // Simplified WiFi AP initialization
     Serial.println("🔧 Inicializando WiFi AP...");
     
     WiFi.mode(WIFI_AP);
+    
+    // Configurar IP customizado para o AP
+    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
     
     if (!WiFi.softAP(AP_SSID, AP_PASSWORD)) {
         Serial.println("❌ Falha ao iniciar AP");
@@ -44,9 +48,25 @@ void ConfigAP::enter(bool isInitialMode)
     }
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    // Start DNS server for captive portal
-    dnsServer.start(53, "*", WiFi.softAPIP());
-    Serial.println("📡 DNS captive portal started");
+    // Start BLE advertising with OFF status using existing infrastructure
+    Serial.println("🔵 Starting BLE advertising (OFF mode)...");
+    Serial.printf("💾 Free heap before BLE: %d bytes\n", ESP.getFreeHeap());
+    
+    if (BPRBLEServer::start()) {
+        Serial.println("✅ BLE server started successfully");
+        
+        // Aguardar um pouco para BLE estabilizar
+        delay(1000);
+        
+        BPRBLEServer::setBusyStatus(true, 0); // Permanent busy = OFF mode
+        Serial.println("🔵 BLE Status: OFF (permanent)");
+        Serial.println("📡 BLE advertising: BPR Central OFF");
+        Serial.println("📱 Scan for 'BPR Central OFF' on your phone");
+        Serial.printf("💾 Free heap after BLE: %d bytes\n", ESP.getFreeHeap());
+    } else {
+        Serial.println("❌ Failed to start BLE server");
+        Serial.println("⚠️ WiFi AP + BLE conflict? Try BLE scanner anyway");
+    }
 
     setupWebServer();
     server.begin();
@@ -55,7 +75,6 @@ void ConfigAP::enter(bool isInitialMode)
 
 void ConfigAP::update()
 {
-    dnsServer.processNextRequest();
     server.handleClient();
 
     // Imprimir status a cada 30 segundos para debug
@@ -63,6 +82,16 @@ void ConfigAP::update()
     if (millis() - lastDebugPrint > 30000) {
         Serial.printf("📱 ConfigAP ativo há %lus - Heap: %d\n", 
                       (millis() - apStartTime) / 1000, ESP.getFreeHeap());
+        Serial.println("🔵 BLE Status: Should be advertising as 'BPR Central OFF'");
+        
+        // Verificar se BLE ainda está ativo
+        if (BPRBLEServer::isCentralBusy()) {
+            Serial.println("✅ BLE server still running and busy (OFF mode)");
+            BPRBLEServer::checkAdvertisingStatus();
+        } else {
+            Serial.println("❌ BLE server not busy - something wrong!");
+        }
+        
         lastDebugPrint = millis();
     }
 
@@ -91,7 +120,10 @@ void ConfigAP::update()
 
 void ConfigAP::exit()
 {
-    dnsServer.stop();
+    // Stop BLE server
+    BPRBLEServer::stop();
+    Serial.println("🔵 BLE server stopped");
+    
     server.stop();
     WiFi.softAPdisconnect(true);
     Serial.println("🔚 ConfigAP: Saindo do modo AP");
@@ -101,7 +133,7 @@ void ConfigAP::printStatus()
 {
     Serial.println("📱 Modo Configuração Ativo:");
     Serial.println("   WiFi: BPR Central (senha: botaprarodar)");
-    Serial.println("   URL: http://192.168.1.1");
+    Serial.println("   URL: http://192.168.4.1");
 }
 
 bool ConfigAP::tryUpdateWiFiInFirebase()
@@ -165,7 +197,7 @@ void ConfigAP::setupWebServer()
         html += "button:hover{background:#2980b9}.info{background:#e8f4fd;padding:15px;border-radius:4px;margin-bottom:20px;border-left:4px solid #3498db}";
         html += ".warning{background:#fff3cd;padding:10px;border-radius:4px;margin-top:15px;border-left:4px solid #ffc107}</style></head><body>";
         html += "<div class='container'><h1>🏢 BPR Central - Configuração</h1>";
-        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR Central<br>Senha: botaprarodar<br>Acesse: 192.168.1.1</div>";
+        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR Central<br>Senha: botaprarodar<br>Acesse: 192.168.4.1</div>";
         
         // Tabs para alternar entre formulário e JSON
         html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
@@ -192,11 +224,11 @@ void ConfigAP::setupWebServer()
         currentJson += "  \"firebase_api_key\": \"" + String(currentCreds.firebase_api_key) + "\"\n";
         currentJson += "}";
         
-        // Configuração via JSON com valores pré-preenchidos
+        // Configuração via JSON
         html += "<div id='jsonDiv' style='display:none'><form action='/save-json' method='post'>";
         html += "<label>Cole o JSON de configuração:</label><br>";
-        html += "<p><strong>Formato esperado:</strong></p><pre style='background:#f8f9fa;padding:10px;border-radius:4px;font-size:11px'>" + currentJson + "</pre>";
-        html += "<textarea name='config_json' rows='10' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
+        html += "<button type='button' onclick='clearJson()' style='background:#e74c3c;color:white;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;margin-bottom:10px'>🗑️ Limpar</button><br>";
+        html += "<textarea name='config_json' id='jsonTextarea' rows='8' style='width:100%;font-family:monospace;font-size:12px' placeholder='{\n  \"base_id\": \"base01\",\n  \"wifi\": {\n    \"ssid\": \"MinhaRede\",\n    \"password\": \"senha123\"\n  },\n  \"firebase\": {\n    \"database_url\": \"https://projeto.firebaseio.com\",\n    \"api_key\": \"AIza...\"\n  }\n}' required></textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
         if (isInitialConfigMode) {
@@ -207,7 +239,8 @@ void ConfigAP::setupWebServer()
         
         // JavaScript para alternar tabs
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
-        html += "function showJson(){document.getElementById('formDiv').style.display='none';document.getElementById('jsonDiv').style.display='block';document.getElementById('formBtn').style.background='#95a5a6';document.getElementById('jsonBtn').style.background='#3498db';}</script>";
+        html += "function showJson(){document.getElementById('formDiv').style.display='none';document.getElementById('jsonDiv').style.display='block';document.getElementById('formBtn').style.background='#95a5a6';document.getElementById('jsonBtn').style.background='#3498db';}";
+        html += "function clearJson(){document.getElementById('jsonTextarea').value='';}</script>";
         html += "</div></body></html>";
         server.send(200, "text/html", html); });
 
@@ -318,7 +351,7 @@ void ConfigAP::setupWebServer()
         Serial.println(jsonStr);
         Serial.println("---");
         
-        DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
+        StaticJsonDocument<512> doc;
         DeserializationError error = deserializeJson(doc, jsonStr);
         
         if (error) {
@@ -351,9 +384,22 @@ void ConfigAP::setupWebServer()
             strcpy(creds.firebase_database_url, doc["firebase_database_url"]);
             Serial.printf("   Firebase URL: %s\n", creds.firebase_database_url);
         }
-        if (doc["firebase_api_key"]) {
-            strcpy(creds.firebase_api_key, doc["firebase_api_key"]);
-            Serial.printf("   Firebase Key: %s\n", creds.firebase_api_key);
+        // Suporte para formato aninhado
+        if (doc["wifi"]["ssid"]) {
+            strcpy(creds.wifi_ssid, doc["wifi"]["ssid"]);
+            Serial.printf("   WiFi SSID (nested): %s\n", creds.wifi_ssid);
+        }
+        if (doc["wifi"]["password"]) {
+            strcpy(creds.wifi_password, doc["wifi"]["password"]);
+            Serial.printf("   WiFi Password (nested): %s\n", creds.wifi_password);
+        }
+        if (doc["firebase"]["database_url"]) {
+            strcpy(creds.firebase_database_url, doc["firebase"]["database_url"]);
+            Serial.printf("   Firebase URL (nested): %s\n", creds.firebase_database_url);
+        }
+        if (doc["firebase"]["api_key"]) {
+            strcpy(creds.firebase_api_key, doc["firebase"]["api_key"]);
+            Serial.printf("   Firebase Key (nested): %s\n", creds.firebase_api_key);
         }
         
         // Extrair project_id da URL automaticamente
