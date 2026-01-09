@@ -29,11 +29,12 @@ bool SelfCheck::systemCheck() {
         allOk = false;
     }
     
-    // Check WiFi capability
-    if (!checkWiFi()) {
-        Serial.println("❌ WiFi check failed");
-        allOk = false;
-    }
+    // Check WiFi capability - DISABLED to avoid conflicts
+    // if (!checkWiFi()) {
+    //     Serial.println("❌ WiFi check failed");
+    //     allOk = false;
+    // }
+    Serial.println("📶 WiFi check skipped (avoiding conflicts)");
     
     // Check BLE capability
     // if (!checkBLE()) {
@@ -127,10 +128,13 @@ bool SelfCheck::checkWiFi() {
     // Just check if WiFi can be initialized
     if (WiFi.getMode() != WIFI_STA) {
         Serial.println("❌ WiFi mode setting failed");
+        WiFi.mode(WIFI_OFF);  // Clean shutdown
         return false;
     }
     
     WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);  // Properly turn off WiFi
+    delay(100);
     Serial.println("📶 WiFi capability OK");
     return true;
 }

@@ -1,4 +1,5 @@
 #include <ArduinoJson.h>
+#include <DNSServer.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -12,10 +13,9 @@ extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
 
 static WebServer server(80);
+static DNSServer dnsServer;
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
-static wifi_event_id_t wifiConnectEventId = 0;
-static wifi_event_id_t wifiDisconnectEventId = 0;
 
 void ConfigAP::enter(bool isInitialMode)
 {
@@ -24,7 +24,7 @@ void ConfigAP::enter(bool isInitialMode)
     if (isInitialMode)
     {
         Serial.println("🔧 Config inválida, entrando no modo AP");
-        Serial.println("📱 Conecte-se ao WiFi: BPR_Central_Config (senha: botaprarodar)");
+        Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha: botaprarodar)");
         Serial.println("🌐 Acesse: http://192.168.1.1 para configurar");
     }
     else
@@ -32,55 +32,21 @@ void ConfigAP::enter(bool isInitialMode)
         Serial.println("⚠️ Modo AP por falha de sync");
     }
 
-    // ESP32C3 specific WiFi initialization sequence
-    Serial.println("🔧 Inicializando WiFi para ESP32C3...");
+    // Simplified WiFi AP initialization
+    Serial.println("🔧 Inicializando WiFi AP...");
     
-    // Garantir que WiFi está completamente desligado
-    WiFi.mode(WIFI_OFF);
-    delay(1000);
+    WiFi.mode(WIFI_AP);
     
-    // Configurar modo AP com sequência específica para ESP32C3
-    if (!WiFi.mode(WIFI_AP)) {
-        Serial.println("❌ Falha ao configurar modo AP - tentando novamente...");
-        delay(2000);
-        if (!WiFi.mode(WIFI_AP)) {
-            Serial.println("❌ Falha crítica no WiFi AP - modo desabilitado");
-            apStartTime = millis();
-            return;
-        }
-    }
-    
-    delay(1000);
-    
-    // Configurar IP antes do softAP
-    if (!WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET)) {
-        Serial.println("❌ Falha na configuração de IP");
-    }
-    
-    delay(500);
-    
-    // Iniciar AP
     if (!WiFi.softAP(AP_SSID, AP_PASSWORD)) {
         Serial.println("❌ Falha ao iniciar AP");
         apStartTime = millis();
         return;
     }
-    
-    delay(1000);
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    // Configurar callbacks para conexões
-    wifiConnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
-                                      { Serial.printf("📱 Dispositivo conectado ao AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                                                      info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
-                                                      info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
-                                                      info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5]); }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
-
-    wifiDisconnectEventId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info)
-                                         { Serial.printf("📵 Dispositivo desconectado do AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                                                         info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
-                                                         info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
-                                                         info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5]); }, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
+    // Start DNS server for captive portal
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    Serial.println("📡 DNS captive portal started");
 
     setupWebServer();
     server.begin();
@@ -89,6 +55,7 @@ void ConfigAP::enter(bool isInitialMode)
 
 void ConfigAP::update()
 {
+    dnsServer.processNextRequest();
     server.handleClient();
 
     // Imprimir status a cada 30 segundos para debug
@@ -104,52 +71,30 @@ void ConfigAP::update()
         static uint32_t lastTimeoutWarning = 0;
         uint32_t elapsed = millis() - apStartTime;
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
-        uint32_t remaining = timeoutMs - elapsed;
-
+        
         if (millis() - lastTimeoutWarning > 60000)
         { // A cada minuto
+            uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
             Serial.printf("⏰ Modo CONFIG_AP (fallback) - Tempo restante: %lu min\n", remaining / 60000);
             lastTimeoutWarning = millis();
         }
 
         if (elapsed > timeoutMs)
         {
-            if (isInitialConfigMode)
-            {
-                // Config inicial falhou - restart necessário
-                Serial.printf("⏰ Timeout CONFIG_AP inicial (%d min) - Reiniciando...\n",
-                              configManager.getConfig().timeouts.config_ap_min);
-                ESP.restart();
-            }
-            else
-            {
-                // Fallback - voltar para operação normal
-                Serial.println("⏰ Timeout CONFIG_AP (fallback) - Voltando para BIKE_PAIRING");
-                // main.cpp vai detectar e mudar estado
-                return;
-            }
+            // Fallback - voltar para operação normal
+            Serial.println("⏰ Timeout CONFIG_AP (fallback) - Voltando para BIKE_PAIRING");
+            // main.cpp vai detectar e mudar estado
+            return;
         }
     }
 }
 
 void ConfigAP::exit()
 {
+    dnsServer.stop();
     server.stop();
     WiFi.softAPdisconnect(true);
-
-    // Remover callbacks WiFi específicos
-    if (wifiConnectEventId != 0)
-    {
-        WiFi.removeEvent(wifiConnectEventId);
-        wifiConnectEventId = 0;
-    }
-    if (wifiDisconnectEventId != 0)
-    {
-        WiFi.removeEvent(wifiDisconnectEventId);
-        wifiDisconnectEventId = 0;
-    }
-
-    Serial.println("🔚 ConfigAP: Callbacks WiFi removidos, saindo do modo AP");
+    Serial.println("🔚 ConfigAP: Saindo do modo AP");
 }
 
 void ConfigAP::printStatus()
@@ -220,7 +165,7 @@ void ConfigAP::setupWebServer()
         html += "button:hover{background:#2980b9}.info{background:#e8f4fd;padding:15px;border-radius:4px;margin-bottom:20px;border-left:4px solid #3498db}";
         html += ".warning{background:#fff3cd;padding:10px;border-radius:4px;margin-top:15px;border-left:4px solid #ffc107}</style></head><body>";
         html += "<div class='container'><h1>🏢 BPR Central - Configuração</h1>";
-        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR_Central_Config<br>Senha: botaprarodar<br>Acesse: 192.168.1.1</div>";
+        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR Central<br>Senha: botaprarodar<br>Acesse: 192.168.1.1</div>";
         
         // Tabs para alternar entre formulário e JSON
         html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
@@ -250,7 +195,8 @@ void ConfigAP::setupWebServer()
         // Configuração via JSON com valores pré-preenchidos
         html += "<div id='jsonDiv' style='display:none'><form action='/save-json' method='post'>";
         html += "<label>Cole o JSON de configuração:</label><br>";
-        html += "<textarea name='config_json' rows='15' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
+        html += "<p><strong>Formato esperado:</strong></p><pre style='background:#f8f9fa;padding:10px;border-radius:4px;font-size:11px'>" + currentJson + "</pre>";
+        html += "<textarea name='config_json' rows='10' style='width:100%;font-family:monospace;font-size:12px' required>" + currentJson + "</textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
         
         if (isInitialConfigMode) {
