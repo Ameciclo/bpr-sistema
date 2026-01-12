@@ -284,12 +284,16 @@ bool CloudSync::downloadCentralConfig()
         return false;
     }
 
-    // HTTP OK - processar resposta CSV
-    String csvData = http.getString();
+    // HTTP OK - processar resposta JSON array
+    String jsonArray = http.getString();
     http.end();
 
+    // Converter JSON array para CSV: [90,60,15,...] -> 90,60,15,...
+    jsonArray.replace("[", "");
+    jsonArray.replace("]", "");
+    
     // Aplicar configuração válida
-    updateConfigFromFirebase(csvData);
+    updateConfigFromFirebase(jsonArray);
 
     // Sucesso
     Serial.printf("✅ Central config downloaded successfully\n");
@@ -299,7 +303,6 @@ bool CloudSync::downloadCentralConfig()
 
 bool CloudSync::downloadBikeRegistryData()
 {
-    // Verificar se precisa atualizar antes de baixar
     if (!needsBikeRegistryUpdate())
     {
         Serial.println("🚲 Bike registry already up to date - skipping download");
@@ -321,38 +324,43 @@ bool CloudSync::downloadBikeRegistryData()
         return false;
     }
 
-    String json = http.getString();
+    String csvData = http.getString();
     http.end();
 
-    DynamicJsonDocument doc(BIKE_REGISTRY_BUFFER);
-    DeserializationError error = deserializeJson(doc, json);
-
-    if (error)
-    {
-        Serial.printf("❌ Registry parse error: %s\n", error.c_str());
-        return false;
-    }
-
-    // Converter JSON para struct binária
+    // Parse CSV: "bike01,1,intenso,1,bike99,0" -> só bikes com status=1 (approved)
     BikeRegistryData registry;
     memset(&registry, 0, sizeof(registry));
-    registry.last_update = doc["last_update"] | time(nullptr);
+    registry.last_update = time(nullptr);
     
-    JsonObject bikes = doc["bikes"];
     int bikeIndex = 0;
-    for (JsonPair bike : bikes) {
-        if (bikeIndex >= 10) break;
+    int startPos = 0;
+    
+    while (startPos < csvData.length() && bikeIndex < 10) {
+        // Parse: bikeId,status
+        int commaPos = csvData.indexOf(',', startPos);
+        if (commaPos == -1) break;
         
-        String bikeId = bike.key().c_str();
-        strcpy(registry.bikes[bikeIndex], bikeId.c_str());
-        registry.statuses[bikeIndex] = bike.value()["status"] | STATUS_UNKNOWN;
-        registry.first_seen[bikeIndex] = bike.value()["first_seen"] | 0;
-        registry.last_heartbeat[bikeIndex] = bike.value()["last_heartbeat"] | 0;
-        bikeIndex++;
+        String bikeId = csvData.substring(startPos, commaPos);
+        startPos = commaPos + 1;
+        
+        commaPos = csvData.indexOf(',', startPos);
+        int status = csvData.substring(startPos, commaPos == -1 ? csvData.length() : commaPos).toInt();
+        
+        // Só bikes aprovadas (status=1)
+        if (status == 1) {
+            strcpy(registry.bikes[bikeIndex], bikeId.c_str());
+            registry.statuses[bikeIndex] = STATUS_ALLOWED;
+            registry.first_seen[bikeIndex] = time(nullptr);
+            registry.last_heartbeat[bikeIndex] = 0;
+            bikeIndex++;
+        }
+        
+        startPos = (commaPos == -1) ? csvData.length() : commaPos + 1;
     }
+    
     registry.bike_count = bikeIndex;
 
-    // Salvar struct binária
+    // Save binary struct
     File file = LittleFS.open(BIKE_REGISTRY_FILE, "w");
     if (file)
     {
@@ -361,13 +369,12 @@ bool CloudSync::downloadBikeRegistryData()
         Serial.println("💾 Bike registry saved locally");
     }
 
-    Serial.println("✅ Bike registry downloaded successfully!");
+    Serial.printf("✅ Bike registry downloaded: %d approved bikes\n", bikeIndex);
     return true;
 }
 
 bool CloudSync::downloadBikeConfigs()
 {
-    // Verificar se precisa atualizar antes de baixar
     if (!needsBikeConfigsUpdate())
     {
         Serial.println("⚙️ Bike configs already up to date - skipping download");
@@ -389,30 +396,17 @@ bool CloudSync::downloadBikeConfigs()
         return false;
     }
 
-    String json = http.getString();
+    String csvData = http.getString();
     http.end();
 
-    // Parse e adicionar last_update se necessário
-    DynamicJsonDocument doc(BIKE_REGISTRY_BUFFER);
-    if (deserializeJson(doc, json) == DeserializationError::Ok)
+    // Salvar CSV direto no arquivo para uso posterior
+    File file = LittleFS.open(BIKE_CONFIGS_FILE, "w");
+    if (file)
     {
-        if (!doc.containsKey("last_update"))
-        {
-            doc["last_update"] = time(nullptr);
-        }
-
-        // Salvar no arquivo local
-        File file = LittleFS.open(BIKE_CONFIGS_FILE, "w");
-        if (file)
-        {
-            serializeJson(doc, file);
-            file.close();
-            Serial.println("💾 Bike configs saved locally");
-        }
+        file.print(csvData);
+        file.close();
+        Serial.println("💾 Bike configs saved locally");
     }
-
-    // Salvar configs no buffer_manager para distribuição
-    bufferManager.addConfigData("bike_configs", json);
 
     Serial.println("✅ Bike configs downloaded successfully!");
     return true;

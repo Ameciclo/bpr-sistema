@@ -107,9 +107,13 @@ void BikePairing::enter()
 void BikePairing::update()
 {
     uint32_t now = millis();
+    static uint32_t lastAdvertisingUpdate = 0;
 
-    // Atualizar status do BLE (verificar se busy expirou)
-    BPRBLEServer::updateAdvertisingStatus();
+    // Atualizar status do BLE apenas a cada 5 segundos para evitar spam
+    if (now - lastAdvertisingUpdate > 5000) {
+        BPRBLEServer::updateAdvertisingStatus();
+        lastAdvertisingUpdate = now;
+    }
 
     // Processar fila de dados sequencialmente
     processDataQueue();

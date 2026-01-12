@@ -94,37 +94,30 @@ bool BikeManager::canConnect(const String &bikeId)
         return false;
 
     // Verificar se é formato válido BPR
-    if (!bikeId.startsWith("bpr-") || bikeId.length() != 10)
+    if (!bikeId.startsWith("bpr-") && !bikeId.startsWith("bike") && !bikeId.startsWith("intenso"))
     {
         Serial.printf("❌ Invalid bike ID format: %s\n", bikeId.c_str());
         return false;
     }
 
-    // Procurar bike na struct
-    int bikeIndex = -1;
+    // Procurar bike na struct (só bikes aprovadas estão aqui)
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
         if (String(bikeStatus.bike_ids[i]) == bikeId)
         {
-            bikeIndex = i;
-            break;
+            BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
+            bool canConnect = (status == STATUS_ALLOWED);
+            
+            Serial.printf("🔍 Bike %s found in registry: %s\n",
+                          bikeId.c_str(), canConnect ? "✅ Can connect" : "❌ Blocked");
+            
+            return canConnect;
         }
     }
 
-    if (bikeIndex == -1)
-    {
-        Serial.printf("🆕 New bike detected: %s - allowing connection + adding as pending\n", bikeId.c_str());
-        addPendingBike(bikeId);
-        return true; // Permite conexão de bikes novas
-    }
-
-    BikeStatus status = (BikeStatus)bikeStatus.statuses[bikeIndex];
-    bool canConnect = (status != STATUS_BLOCKED);
-
-    Serial.printf("🔍 Bike %s status: %d (%s)\n",
-                  bikeId.c_str(), status, canConnect ? "✅ Can connect" : "❌ Blocked");
-
-    return canConnect;
+    // Bike não está no registry - rejeitar
+    Serial.printf("❌ Bike %s not in registry - connection rejected\n", bikeId.c_str());
+    return false;
 }
 
 bool BikeManager::isAllowed(const String &bikeId)
@@ -132,23 +125,23 @@ bool BikeManager::isAllowed(const String &bikeId)
     if (!dataLoaded)
         return false;
 
-    // Verificar se é formato válido BPR
-    if (!bikeId.startsWith("bpr-") || bikeId.length() != 10)
+    // Verificar se é formato válido
+    if (!bikeId.startsWith("bpr-") && !bikeId.startsWith("bike") && !bikeId.startsWith("intenso"))
     {
         return false;
     }
 
-    // Procurar bike na struct
+    // Procurar bike na struct (só bikes aprovadas)
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
         if (String(bikeStatus.bike_ids[i]) == bikeId)
         {
             BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-            return (status == STATUS_ALLOWED); // Só bikes ALLOWED podem enviar dados
+            return (status == STATUS_ALLOWED);
         }
     }
 
-    return false; // Bikes novas NÃO podem enviar dados (só pending)
+    return false; // Bike não está no registry
 }
 
 void BikeManager::addPendingBike(const String &bikeId)

@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <WiFi.h>
 #include "bike_pairing.h"
+#include "ble_server.h"
 #include "buffer_manager.h"
 #include "cloud_sync.h"
 #include "config_ap.h"
@@ -28,6 +30,13 @@ unsigned long lastHeartbeat = 0;
 static uint32_t lastSyncCheck = 0;
 static uint8_t syncFailureCount = 0;
 static uint32_t tempConfigApStartTime = 0;
+
+// Flag para restart seguro
+bool pendingRestart = false;
+uint32_t restartRequestTime = 0;
+
+// Buffer initialization flag
+static bool bufferInitialized = false;
 
 // Callback para eventos de bike
 void onBikeEvent(BikeEvent event, uint8_t bikeCount) {
@@ -60,6 +69,10 @@ void changeState(SystemState newState)
         break;
     case STATE_BIKE_PAIRING:
         BikePairing::exit();
+        // Limpar buffer dinâmico ao sair do pairing
+        bufferManager.cleanup();
+        // Reset buffer initialization flag
+        bufferInitialized = false;
         break;
     case STATE_INITIAL_SYNC:
     case STATE_CLOUD_SYNC:
@@ -89,6 +102,17 @@ void changeState(SystemState newState)
     case STATE_BIKE_PAIRING:
         ledController.pairingPattern();
         BikePairing::setEventCallback(onBikeEvent);
+        
+        // Inicializar buffer dinâmico baseado no heap disponível
+        if (!bufferInitialized) {
+            if (bufferManager.beginWithAvailableHeap()) {
+                Serial.println("✅ Buffer dinâmico inicializado");
+                bufferInitialized = true;
+            } else {
+                Serial.println("⚠️ Buffer dinâmico falhou - modo degradado");
+            }
+        }
+        
         BikePairing::enter();
         break;
     case STATE_INITIAL_SYNC:
@@ -140,7 +164,7 @@ void setup()
     Serial.begin(115200);
     Serial.println("🚀 Iniciando Serial...");
 
-    int waitTime = 5;
+    int waitTime = 3;
     for (int i = 0; i < waitTime; ++i)
     {
         Serial.println("🔄 Iniciando em: " + String(waitTime - i));
@@ -182,9 +206,8 @@ void setup()
     bool configLoaded = configManager.loadConfig();
     Serial.printf("📋 Config loaded: %s\n", configLoaded ? "OK" : "FALHA");
 
-    Serial.println("💾 Inicializando buffer manager...");
-    bufferManager.begin();
-    Serial.println("✅ Buffer manager OK");
+    Serial.println("💾 Buffer manager initialization deferred to BIKE_PAIRING state");
+    Serial.println("✅ Buffer manager deferred (LAZY INIT)");
 
     Serial.println("💡 Inicializando LED controller...");
     ledController.begin();
@@ -192,16 +215,34 @@ void setup()
     Serial.println("✅ LED controller OK");
 
     // Verificar se precisa de configuração
-    if (!credsLoaded || !configCredentials.isCredentialsValid() || !configLoaded || !configManager.isConfigValid())
+    if (!credsLoaded || !configCredentials.isCredentialsValid())
     {
-        Serial.println("⚠️ Config/Credentials inválidas - entrando em modo CONFIG_AP obrigatório");
+        Serial.println("⚠️ Credentials inválidas - entrando em modo CONFIG_AP obrigatório");
         changeState(STATE_INITIAL_CONFIG_AP);
+    }
+    else if (!configLoaded || !configManager.isConfigValid())
+    {
+        Serial.println("⚠️ Config inválida - criando config padrão e fazendo primeiro sync");
+        // Salvar config padrão para evitar loop infinito
+        if (!configManager.saveConfig()) {
+            Serial.println("❌ Erro ao salvar config padrão - entrando em CONFIG_AP");
+            changeState(STATE_INITIAL_CONFIG_AP);
+            return;
+        }
+        Serial.println("🔄 Iniciando primeiro sync obrigatório...");
+        changeState(STATE_INITIAL_SYNC);
     }
     else
     {
         Serial.println("✅ Config e Credentials válidas encontradas");
-        Serial.println("🔄 Iniciando sync obrigatório para validar configuração...");
-        changeState(STATE_INITIAL_SYNC);
+        // Verificar se é primeiro sync
+        if (configCredentials.isFirstSync()) {
+            Serial.println("🔄 Primeiro sync necessário...");
+            changeState(STATE_INITIAL_SYNC);
+        } else {
+            Serial.println("🔄 Iniciando modo BIKE_PAIRING...");
+            changeState(STATE_BIKE_PAIRING);
+        }
     }
 
     Serial.println("✅ Central inicializado com sucesso");
@@ -211,6 +252,15 @@ void setup()
 void loop()
 {
     static unsigned long lastStatusPrint = 0;
+
+    // Verificar se há restart pendente
+    if (pendingRestart && (millis() - restartRequestTime) > 2000) {
+        Serial.println("🔄 Executando restart seguro...");
+        BPRBLEServer::stop();
+        WiFi.disconnect(true);
+        delay(1000);
+        ESP.restart();
+    }
 
     // Atualizar módulos
     ledController.update();
@@ -247,100 +297,49 @@ void loop()
         break;
     }
     case STATE_BIKE_PAIRING:
-        // Verificar timer de sync periódico
-        if (millis() - lastSyncCheck <= configManager.getConfig().sync_interval_ms()) {
-            BikePairing::update();
-            break;
+        BikePairing::update();
+        
+        // Verificar se precisa fazer sync
+        if (BikePairing::isSafeToExit()) {
+            uint32_t elapsed = millis() - stateStartTime;
+            uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
+            
+            if (elapsed >= syncInterval || bufferManager.isFull()) {
+                Serial.println("🔄 Iniciando sync programada...");
+                changeState(STATE_CLOUD_SYNC);
+            }
         }
-        
-        lastSyncCheck = millis();
-        
-        // Não pode sair - aguardar atividade terminar
-        if (!BikePairing::isSafeToExit()) {
-            Serial.printf("⏳ Sync pendente - aguardando fim da atividade (status: %d)\n", BikePairing::getStatus());
-            BikePairing::update();
-            break;
-        }
-        
-        // Pode sair mas não há dados - continuar no pairing
-        if (!bufferManager.hasData()) {
-            BikePairing::update();
-            break;
-        }
-        
-        // Verificar memória antes do sync
-        if (ESP.getFreeHeap() < 50000) {
-            Serial.printf("⚠️ Low memory before sync: %d bytes - forcing GC\n", ESP.getFreeHeap());
-            delay(100); // Allow cleanup
-        }
-        
-        // Tudo OK - iniciar sync
-        Serial.println("🔄 Tempo de sync - transitioning to CLOUD_SYNC");
-        changeState(STATE_CLOUD_SYNC);
-        return;
+        break;
 
     case STATE_INITIAL_SYNC:
-    {
-        SyncResult result = CloudSync::update();
-        if (result == SyncResult::SUCCESS)
-        {
-            Serial.println("✅ INITIAL_SYNC successful - transitioning to BIKE_PAIRING");
-            changeState(STATE_BIKE_PAIRING);
-            break;
-        }
-
-        if (result == SyncResult::IN_PROGRESS)
-        {
-            break;
-        }
-
-        if (result == SyncResult::FAILURE)
-        {
-            Serial.println("🚨 INITIAL_SYNC FALHOU - config inválida ou sem conectividade");
-            Serial.println("🚨 ERRO CRÍTICO: Retornando ao modo CONFIG_AP obrigatório");
-            changeState(STATE_INITIAL_CONFIG_AP);
-        }
-        break;
-    }
-
     case STATE_CLOUD_SYNC:
-    {
-        SyncResult result = CloudSync::update();
-        if (result == SyncResult::SUCCESS)
         {
-            Serial.println("✅ CLOUD_SYNC successful - transitioning to BIKE_PAIRING");
-            syncFailureCount = 0; // Reset counter on success
-            changeState(STATE_BIKE_PAIRING);
-            break;
-        }
-
-        if (result == SyncResult::IN_PROGRESS)
-        {
-            break;
-        }
-
-        if (result == SyncResult::FAILURE)
-        {
-            syncFailureCount++;
-            Serial.printf("⚠️ CLOUD_SYNC falhou (tentativa %d/%d)\n",
-                          syncFailureCount,
-                          configManager.getConfig().fallback.sync_max_retries);
-
-            if (syncFailureCount >= configManager.getConfig().fallback.sync_max_retries)
-            {
-                Serial.printf("🚨 %d falhas consecutivas - entrando em CONFIG_AP temporário\n",
-                              syncFailureCount);
-                syncFailureCount = 0;
-                changeState(STATE_TEMP_CONFIG_AP);
-            }
-            else
-            {
-                Serial.println("⚠️ Continuando com última config válida");
+            SyncResult result = CloudSync::update();
+            if (result == SyncResult::SUCCESS) {
+                Serial.println("✅ Sync concluída com sucesso");
+                SyncMonitor::recordSuccess();
                 changeState(STATE_BIKE_PAIRING);
+            } else if (result == SyncResult::FAILURE) {
+                Serial.println("❌ Sync falhou");
+                SyncMonitor::recordFailure();
+                
+                if (SyncMonitor::shouldFallback()) {
+                    Serial.println("⚠️ Muitas falhas de sync - entrando em modo CONFIG_AP temporário");
+                    changeState(STATE_TEMP_CONFIG_AP);
+                } else {
+                    // Retry após delay não-bloqueante
+                    static uint32_t lastRetryTime = 0;
+                    if (millis() - lastRetryTime > 30000) {
+                        Serial.println("🔄 Tentando sync novamente...");
+                        lastRetryTime = millis();
+                        // Reset para tentar novamente
+                        changeState(STATE_CLOUD_SYNC);
+                    }
+                }
             }
+            // Se IN_PROGRESS, continua no próximo loop
         }
         break;
-    }
 
     default:
         break;

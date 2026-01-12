@@ -8,5 +8,5 @@ public:
     static void exit();
     static void printStatus();
     static void setupWebServer();
-    static bool tryUpdateWiFiInFirebase();
+
 };

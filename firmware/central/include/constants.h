@@ -12,7 +12,7 @@
 #define BUFFER_DIR "/buffer"
 #define BIKE_REGISTRY_FILE "/bike_registry.bin"
 #define BIKE_STATUS_FILE "/bike_status.bin"
-#define BIKE_CONFIGS_FILE "/bike_configs.bin"
+#define BIKE_CONFIGS_FILE "/bike_configs.csv"
 // BIKE_CONFIG_CACHE_FILE removido - usar last_update nos configs
 
 // Small buffers for minimal operations

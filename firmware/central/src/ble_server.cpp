@@ -322,6 +322,17 @@ void BPRBLEServer::updateAdvertisingStatus() {
         Serial.println("🔵 BLE BUSY period expired - back to READY");
     }
     
+    // Only update advertising if status actually changed
+    static bool lastBusyState = false;
+    static uint32_t lastBusyUntil = 0;
+    
+    if (isBusy == lastBusyState && busyUntil == lastBusyUntil) {
+        return; // No change, skip update
+    }
+    
+    lastBusyState = isBusy;
+    lastBusyUntil = busyUntil;
+    
     // Update device name based on status
     String deviceName;
     if (busyUntil == UINT32_MAX) {

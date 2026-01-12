@@ -11,7 +11,40 @@
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
 
-BufferManager::BufferManager() : lastSync(0) {}
+BufferManager::BufferManager() : maxCapacity(0), currentUsage(0), initialized(false), lastSync(0) {}
+
+bool BufferManager::beginWithAvailableHeap() {
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t systemReserve = 30000;  // 30KB para sistema/BLE/etc
+    
+    if (freeHeap < systemReserve + 10000) {
+        Serial.printf("❌ Heap insuficiente: %d bytes\n", freeHeap);
+        return false;
+    }
+    
+    maxCapacity = calculateCapacity();
+    currentUsage = 0;
+    initialized = true;
+    
+    Serial.printf("📊 Buffer dinâmico: %d bytes disponíveis\n", maxCapacity);
+    Serial.printf("   Capacidade: ~%d items\n", maxCapacity / 128);
+    
+    return true;
+}
+
+uint32_t BufferManager::calculateCapacity() {
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t systemReserve = 30000;  // BLE + sistema
+    uint32_t available = freeHeap - systemReserve;
+    
+    // 70% da memória disponível para buffer (margem de segurança)
+    return available * 0.7;
+}
+
+void BufferManager::cleanup() {
+    currentUsage = 0;
+    Serial.printf("🧹 Buffer limpo - %d bytes liberados\n", maxCapacity);
+}
 
 void BufferManager::begin()
 {
@@ -44,7 +77,7 @@ String BufferManager::getBikeBufferPath(const String &bikeId) {
     }
     
     char filename[32];
-    sprintf(filename, "/buffer/scan%03d.bin", nextNum);
+    snprintf(filename, sizeof(filename), "/buffer/scan%03d.bin", nextNum);
     return String(filename);
 }
 
@@ -84,7 +117,7 @@ bool BufferManager::addBikeData(const String &bikeId, const String &jsonData)
 
 bool BufferManager::addData(const String &bikeId, const uint8_t *data, size_t length)
 {
-    if (length > 256) {
+    if (length > 128) {
         Serial.printf("❌ Data too large: %d bytes\n", length);
         return false;
     }
@@ -93,7 +126,7 @@ bool BufferManager::addData(const String &bikeId, const uint8_t *data, size_t le
     BikeBuffer bikeBuffer;
     loadBikeBuffer(bikeId, bikeBuffer);
     
-    if (bikeBuffer.dataCount >= MAX_BUFFER_SIZE) {
+    if (bikeBuffer.dataCount >= 10) {
         Serial.printf("❌ Buffer full for bike %s\n", bikeId.c_str());
         return false;
     }
@@ -137,6 +170,9 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
 
     // Iterar por todos os arquivos de buffer
     File root = LittleFS.open(BUFFER_DIR);
+    if (!root) return false;
+    
+    DynamicJsonDocument testDoc(BIKE_DATA_BUFFER); // Move outside loop
     File file = root.openNextFile();
     
     while (file) {
@@ -162,7 +198,7 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
                     }
 
                     // Test if decoded data is valid JSON
-                    DynamicJsonDocument testDoc(BIKE_DATA_BUFFER);
+                    testDoc.clear();
                     if (deserializeJson(testDoc, decodedData) == DeserializationError::Ok) {
                         item["data_decoded"] = testDoc;
                     } else {
@@ -177,8 +213,10 @@ bool BufferManager::getDataForUpload(DynamicJsonDocument &doc)
                 saveBikeBuffer(bikeId, bikeBuffer);
             }
         }
+        file.close();
         file = root.openNextFile();
     }
+    root.close();
 
     return true;
 }
@@ -232,9 +270,58 @@ void BufferManager::rollbackUpload()
 }
 
 bool BufferManager::loadBikeBuffer(const String &bikeId, BikeBuffer &bikeBuffer) {
-    // Para arquivos sequenciais, sempre retorna buffer vazio
-    // Cada sync cria arquivo novo
     bikeBuffer.dataCount = 0;
+    
+    // Find the most recent file for this bikeId
+    File root = LittleFS.open(BUFFER_DIR);
+    if (!root) return false;
+    
+    String targetFile = "";
+    File file = root.openNextFile();
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".bin") && fileName.indexOf(bikeId) >= 0) {
+            targetFile = String(BUFFER_DIR) + "/" + fileName;
+            break;
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+    
+    if (targetFile.isEmpty()) return true; // No file found, empty buffer is OK
+    
+    File bufferFile = LittleFS.open(targetFile, "r");
+    if (!bufferFile) return false;
+    
+    // Read header
+    BufferFileHeader header;
+    if (bufferFile.readBytes((char*)&header, sizeof(header)) != sizeof(header)) {
+        bufferFile.close();
+        return false;
+    }
+    
+    if (header.magic != BUFFER_MAGIC || header.item_count > MAX_BUFFER_SIZE) {
+        bufferFile.close();
+        return false;
+    }
+    
+    // Read items
+    for (uint32_t i = 0; i < header.item_count && i < MAX_BUFFER_SIZE; i++) {
+        BufferItemBin item;
+        if (bufferFile.readBytes((char*)&item, sizeof(item)) != sizeof(item)) break;
+        
+        bikeBuffer.buffer[i].bikeId = String(item.bikeId);
+        bikeBuffer.buffer[i].timestamp = item.timestamp;
+        bikeBuffer.buffer[i].size = item.size;
+        bikeBuffer.buffer[i].crc32 = item.crc32;
+        bikeBuffer.buffer[i].uploaded = item.uploaded;
+        bikeBuffer.buffer[i].confirmed = item.confirmed;
+        memcpy(bikeBuffer.buffer[i].data, item.data, min(item.size, (uint16_t)128));
+        bikeBuffer.dataCount++;
+    }
+    
+    bufferFile.close();
     return true;
 }
 
@@ -266,7 +353,8 @@ bool BufferManager::saveBikeBuffer(const String &bikeId, const BikeBuffer &bikeB
     // Escrever items
     for (int i = 0; i < bikeBuffer.dataCount; i++) {
         BufferItemBin item;
-        strcpy(item.bikeId, bikeBuffer.buffer[i].bikeId.c_str());
+        strncpy(item.bikeId, bikeBuffer.buffer[i].bikeId.c_str(), sizeof(item.bikeId) - 1);
+        item.bikeId[sizeof(item.bikeId) - 1] = '\0';
         item.timestamp = bikeBuffer.buffer[i].timestamp;
         item.size = bikeBuffer.buffer[i].size;
         item.crc32 = bikeBuffer.buffer[i].crc32;
@@ -316,8 +404,8 @@ void BufferManager::createBackup()
     
     while (file) {
         String fileName = file.name();
-        if (fileName.endsWith(".json")) {
-            String bikeId = fileName.substring(0, fileName.length() - 5);
+        if (fileName.endsWith(".bin")) {
+            String bikeId = fileName.substring(0, fileName.length() - 4);
             
             BikeBuffer bikeBuffer;
             if (loadBikeBuffer(bikeId, bikeBuffer) && bikeBuffer.dataCount > 0) {

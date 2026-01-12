@@ -32,7 +32,7 @@ struct BufferItemBin {
     uint32_t crc32;
     uint8_t uploaded;
     uint8_t confirmed;
-    uint8_t data[256];
+    uint8_t data[128];
 } __attribute__((packed, aligned(4)));
 
 // Buffer File Header

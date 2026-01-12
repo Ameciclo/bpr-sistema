@@ -12,6 +12,10 @@
 extern ConfigManager configManager;
 extern ConfigCredentials configCredentials;
 
+// Flag externa para restart seguro
+extern bool pendingRestart;
+extern uint32_t restartRequestTime;
+
 static WebServer server(80);
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
@@ -48,25 +52,10 @@ void ConfigAP::enter(bool isInitialMode)
     }
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    // Start BLE advertising with OFF status using existing infrastructure
-    Serial.println("🔵 Starting BLE advertising (OFF mode)...");
-    Serial.printf("💾 Free heap before BLE: %d bytes\n", ESP.getFreeHeap());
-    
-    if (BPRBLEServer::start()) {
-        Serial.println("✅ BLE server started successfully");
-        
-        // Aguardar um pouco para BLE estabilizar
-        delay(1000);
-        
-        BPRBLEServer::setBusyStatus(true, 0); // Permanent busy = OFF mode
-        Serial.println("🔵 BLE Status: OFF (permanent)");
-        Serial.println("📡 BLE advertising: BPR Central OFF");
-        Serial.println("📱 Scan for 'BPR Central OFF' on your phone");
-        Serial.printf("💾 Free heap after BLE: %d bytes\n", ESP.getFreeHeap());
-    } else {
-        Serial.println("❌ Failed to start BLE server");
-        Serial.println("⚠️ WiFi AP + BLE conflict? Try BLE scanner anyway");
-    }
+    // BLE desabilitado durante CONFIG_AP para evitar crashes
+    Serial.println("🔵 BLE desabilitado durante CONFIG_AP para evitar crashes");
+    Serial.println("⚠️ Use apenas WiFi AP para configuração");
+    Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
 
     setupWebServer();
     server.begin();
@@ -82,15 +71,7 @@ void ConfigAP::update()
     if (millis() - lastDebugPrint > 30000) {
         Serial.printf("📱 ConfigAP ativo há %lus - Heap: %d\n", 
                       (millis() - apStartTime) / 1000, ESP.getFreeHeap());
-        Serial.println("🔵 BLE Status: Should be advertising as 'BPR Central OFF'");
-        
-        // Verificar se BLE ainda está ativo
-        if (BPRBLEServer::isCentralBusy()) {
-            Serial.println("✅ BLE server still running and busy (OFF mode)");
-            BPRBLEServer::checkAdvertisingStatus();
-        } else {
-            Serial.println("❌ BLE server not busy - something wrong!");
-        }
+        Serial.println("🔵 BLE desabilitado durante CONFIG_AP");
         
         lastDebugPrint = millis();
     }
@@ -120,9 +101,8 @@ void ConfigAP::update()
 
 void ConfigAP::exit()
 {
-    // Stop BLE server
-    BPRBLEServer::stop();
-    Serial.println("🔵 BLE server stopped");
+    // BLE já está desabilitado durante CONFIG_AP
+    Serial.println("🔵 BLE não precisa ser parado (já desabilitado)");
     
     server.stop();
     WiFi.softAPdisconnect(true);
@@ -136,54 +116,7 @@ void ConfigAP::printStatus()
     Serial.println("   URL: http://192.168.4.1");
 }
 
-bool ConfigAP::tryUpdateWiFiInFirebase()
-{
-    const CredentialsConfig &creds = configCredentials.getCredentials();
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(creds.wifi_ssid, creds.wifi_password);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30)
-    {
-        delay(500);
-        attempts++;
-    }
-
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP(AP_SSID, AP_PASSWORD);
-        return false;
-    }
-
-    HTTPClient http;
-    String url = Endpoints::getWiFiConfig();
-
-    DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
-    doc["ssid"] = creds.wifi_ssid;
-    doc["password"] = creds.wifi_password;
-
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    int httpCode = http.PUT(jsonString);
-    bool success = (httpCode == HTTP_CODE_OK);
-
-    http.end();
-
-    // Voltar para modo AP com IP customizado
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_AP);
-    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-
-    return success;
-}
 
 void ConfigAP::setupWebServer()
 {
@@ -292,15 +225,8 @@ void ConfigAP::setupWebServer()
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais salvas com sucesso!");
             
-            // Tentar atualizar WiFi no Firebase imediatamente
-            if (strlen(creds.wifi_ssid) > 0 && strlen(creds.firebase_database_url) > 0) {
-                Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
-                if (tryUpdateWiFiInFirebase()) {
-                    Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
-                } else {
-                    Serial.println("⚠️ Falha ao atualizar WiFi no Firebase (será tentado no próximo sync)");
-                }
-            }
+            // WiFi será sincronizado no próximo cloud sync
+            Serial.println("💾 Credenciais salvas - WiFi será sincronizado automaticamente");
             
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
@@ -308,8 +234,11 @@ void ConfigAP::setupWebServer()
             html += "<div class='success'><h1>✅ Credenciais Salvas!</h1><p>🔄 A Central está reiniciando...</p>";
             html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
             server.send(200, "text/html", html);
-            delay(2000);
-            ESP.restart();
+            
+            // Usar flag para restart seguro
+            pendingRestart = true;
+            restartRequestTime = millis();
+            Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
             Serial.println("❌ Erro ao salvar credenciais!");
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
@@ -423,15 +352,8 @@ void ConfigAP::setupWebServer()
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais JSON salvas com sucesso!");
             
-            // Tentar atualizar WiFi no Firebase imediatamente
-            if (strlen(creds.wifi_ssid) > 0 && strlen(creds.firebase_database_url) > 0) {
-                Serial.println("🔄 Tentando atualizar WiFi no Firebase...");
-                if (tryUpdateWiFiInFirebase()) {
-                    Serial.println("✅ WiFi atualizado no Firebase com sucesso!");
-                } else {
-                    Serial.println("⚠️ Falha ao atualizar WiFi no Firebase (será tentado no próximo sync)");
-                }
-            }
+            // WiFi será sincronizado no próximo cloud sync
+            Serial.println("💾 Credenciais JSON salvas - WiFi será sincronizado automaticamente");
             
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>JSON Salvo</title>";
             html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
@@ -439,8 +361,11 @@ void ConfigAP::setupWebServer()
             html += "<div class='success'><h1>✅ JSON Processado!</h1><p>🔄 A Central está reiniciando...</p>";
             html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
             server.send(200, "text/html", html);
-            delay(2000);
-            ESP.restart();
+            
+            // Usar flag para restart seguro
+            pendingRestart = true;
+            restartRequestTime = millis();
+            Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
             Serial.println("❌ Erro ao salvar credenciais JSON!");
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
