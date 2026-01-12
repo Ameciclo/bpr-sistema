@@ -1,6 +1,6 @@
-# BPR Hub Station v2.0 - Central Redesenhada
+# BPR Central v2.0 - Central para ESP32-WROOM-32D
 
-Sistema central ESP32C3 redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase.
+Sistema central ESP32-WROOM-32D redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase.
 
 ## 🎯 Características Principais
 
@@ -9,23 +9,26 @@ Sistema central ESP32C3 redesenhado com arquitetura modular baseada em estados, 
 - **Configuração Dinâmica**: Configs por bike baixadas do Firebase
 - **Push Automático**: Configs enviadas automaticamente via BLE
 - **Validação Rigorosa**: Só bikes autorizadas podem enviar dados
-- **Timestamps Precisos**: Hub adiciona timestamp de recebimento
+- **Timestamps Precisos**: Central adiciona timestamp de recebimento
 - **Self-Check**: Diagnóstico automático de hardware
 
 ## 📁 Estrutura de Arquivos
 
 ```
-hub/src/
+central/src/
 ├── main.cpp                    # 🚀 Entry point + self-check
-├── state_machine.cpp           # 🔄 Coordenador de estados
-├── config_manager.cpp          # ⚙️ Configurações do hub
+├── config_manager.cpp          # ⚙️ Configurações da central
 ├── config_ap.cpp               # 📱 Estado: Configuração via AP
-├── ble_only.cpp                # 🔵 Estado: Servidor BLE + filtros
-├── wifi_sync.cpp               # 📡 Estado: Sincronização completa
+├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
+├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
 ├── buffer_manager.cpp          # 📦 Buffer local de dados
 ├── led_controller.cpp          # 💡 Padrões de LED inteligentes
-├── bike_registry.cpp           # 🚲 Registro e validação de bikes
-├── bike_config_manager.cpp     # ⚙️ Configs dinâmicas por bike
+├── bike_manager.cpp            # 🚲 Registro e validação de bikes
+├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
+├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
+├── sync_monitor.cpp            # 📊 Monitor de sincronização
+├── time_sync.cpp               # ⏰ Sincronização de tempo NTP
+├── upload_queue.cpp            # 📤 Fila de upload para Firebase
 └── self_check.cpp              # 🔧 Diagnóstico de hardware
 ```
 
@@ -34,35 +37,42 @@ hub/src/
 ```mermaid
 stateDiagram-v2
     [*] --> BOOT
-    BOOT --> CONFIG_AP : Config inválida
-    BOOT --> WIFI_SYNC : Config válida (primeira sync)
+    BOOT --> INITIAL_CONFIG_AP : Config inválida
+    BOOT --> INITIAL_SYNC : Config válida (primeira sync)
     
-    CONFIG_AP --> WIFI_SYNC : Config salva
-    CONFIG_AP --> CONFIG_AP : Timeout (15min) → Restart
+    INITIAL_CONFIG_AP --> INITIAL_SYNC : Config salva
+    INITIAL_CONFIG_AP --> INITIAL_CONFIG_AP : Timeout (15min) → Restart
     
-    WIFI_SYNC --> BLE_ONLY : Sync sucesso
-    WIFI_SYNC --> CONFIG_AP : Primeira sync falhou
+    INITIAL_SYNC --> BIKE_PAIRING : Sync sucesso
+    INITIAL_SYNC --> INITIAL_CONFIG_AP : Primeira sync falhou
     
-    BLE_ONLY --> WIFI_SYNC : Timer (300s) ou Buffer cheio
+    BIKE_PAIRING --> CLOUD_SYNC : Timer (300s) ou Buffer cheio
+    CLOUD_SYNC --> BIKE_PAIRING : Sync sucesso
+    CLOUD_SYNC --> TEMP_CONFIG_AP : Muitas falhas
     
-    note right of CONFIG_AP
+    TEMP_CONFIG_AP --> BIKE_PAIRING : Timeout ou config salva
+    
+    note right of INITIAL_CONFIG_AP
         - AP: BPR_Hub_Config
         - Interface: 192.168.4.1
         - Timeout: 15 minutos
+        - LED: Pin 2 (built-in)
     end note
     
-    note right of BLE_ONLY
+    note right of BIKE_PAIRING
         - Servidor BLE ativo
         - Filtro: só bpr-* devices
         - Validação: allowed/pending/blocked
         - Push automático de configs
+        - LED: Pin 2 (built-in)
     end note
     
-    note right of WIFI_SYNC
-        - Download: configs hub + bikes
+    note right of CLOUD_SYNC
+        - Download: configs Central + bikes
         - Upload: dados + heartbeat
         - NTP sync
         - Detecção de mudanças
+        - LED: Pin 2 (built-in)
     end note
 ```
 
@@ -125,7 +135,7 @@ flowchart TD
     "scan_timeout_ms": 5000
   },
   "ble": {
-    "base_name": "BPR Hub Station",
+    "base_name": "BPR Central",
     "scan_time_sec": 5
   },
   "power": {
@@ -139,20 +149,20 @@ flowchart TD
 ```
 
 ### **Push Automático:**
-1. **WiFi Sync**: Hub baixa configs e detecta mudanças por `version`
-2. **Bike conecta**: Hub verifica se tem config nova
+1. **WiFi Sync**: Central baixa configs e detecta mudanças por `version`
+2. **Bike conecta**: Central verifica se tem config nova
 3. **Push automático**: Envia via BLE NOTIFY se `version` mudou
 4. **Bike aplica**: Recebe e aplica nova config silenciosamente
 
 ## 📊 Estrutura de Dados Completa
 
-### **Configuração do Hub:**
+### **Configuração da central:**
 ```json
 /bases/{base_id}/configs = {
   "base_id": "base01",
   "sync_interval_sec": 300,
   "wifi_timeout_sec": 30,
-  "led_pin": 8,
+  "led_pin": 2,
   "firebase_batch_size": 8000,
   "ntp_server": "pool.ntp.org",
   "timezone_offset": -10800,
@@ -177,7 +187,7 @@ flowchart TD
 }
 ```
 
-### **Dados das Bikes (com timestamp do hub):**
+### **Dados das Bikes (com timestamp da central):**
 ```json
 {
   "bike_id": "bpr-a1b2c3",
@@ -192,7 +202,7 @@ flowchart TD
 }
 ```
 
-### **Heartbeat do Hub:**
+### **Heartbeat da central:**
 ```json
 /bases/{base_id}/last_heartbeat = {
   "timestamp": 1733459800,
@@ -203,7 +213,7 @@ flowchart TD
 }
 ```
 
-## 💡 Sistema de LED Inteligente
+## 💡 Sistema de LED Inteligente (Pin 2 - Built-in)
 
 | Padrão | Intervalo | Significado |
 |--------|-----------|-------------|
@@ -220,7 +230,7 @@ flowchart TD
 
 ### **Setup Inicial:**
 ```bash
-cd firmware/hub
+cd firmware/central
 
 # 1. Configurar credenciais WiFi e Firebase
 ./setup.sh
@@ -236,16 +246,16 @@ pio device monitor
 ```
 
 ### **Primeira Execução:**
-1. **Hub inicia** → Modo CONFIG_AP (config inválida)
+1. **Central inicia** → Modo CONFIG_AP (config inválida)
 2. **Conectar WiFi**: `BPR_Hub_Config` (senha: `botaprarodar`)
 3. **Acessar**: http://192.168.4.1
 4. **Configurar**: WiFi, Firebase URL, API Key, Base ID
-5. **Salvar** → Hub reinicia → Primeira sync obrigatória
+5. **Salvar** → Central reinicia → Primeira sync obrigatória
 6. **Sync sucesso** → Modo BLE_ONLY ativo
 
 ### **Funcionamento Normal:**
 ```
-BLE_ONLY (300s) → WIFI_SYNC (30s) → BLE_ONLY (300s) → ...
+BIKE_PAIRING (300s) → CLOUD_SYNC (30s) → BIKE_PAIRING (300s) → ...
 ```
 
 ## 🛡️ Validação e Segurança
@@ -258,7 +268,7 @@ BLE_ONLY (300s) → WIFI_SYNC (30s) → BLE_ONLY (300s) → ...
 ### **Validação de Dados:**
 - ✅ **JSON válido**: Dados devem ter `bike_id`
 - ✅ **Bike autorizada**: Só `allowed` pode enviar dados
-- ✅ **Timestamp**: Hub adiciona timestamp de recebimento
+- ✅ **Timestamp**: Central adiciona timestamp de recebimento
 
 ### **Recuperação de Erros:**
 - ✅ **Config inválida**: Volta para CONFIG_AP
@@ -284,7 +294,7 @@ BLE_ONLY (300s) → WIFI_SYNC (30s) → BLE_ONLY (300s) → ...
 - **BLE**: Capacidade de inicialização
 
 ### **Métricas Firebase:**
-- **Heartbeat**: Status do hub a cada minuto
+- **Heartbeat**: Status da central a cada minuto
 - **Bike registry**: Registro de todas as tentativas
 - **Config logs**: Histórico de configurações enviadas
 
