@@ -6,126 +6,173 @@ Sistema completo de monitoramento de bicicletas com WiFi scanning, bot Telegram 
 
 ```
 bpr-sistema/
-├── firmware/           # Códigos para ESP8266/ESP32
-│   ├── bici/          # Firmware da bicicleta v2.0 (WiFi scanner)
-│   ├── central/           # Firmware da central/central redesenhado
-│   └── bike/          # Firmware legado da bicicleta
+├── firmware/           # Códigos para ESP32
+│   ├── bici/          # Firmware da bicicleta v2.0 (WiFi scanner + BLE)
+│   ├── central/       # Firmware da central v2.0 (ESP32-WROOM-32D)
+│   └── common/        # Definições compartilhadas (BLE protocol)
 ├── bot/               # Bot do Telegram (@prarodarbot)
-├── web/               # Site em Remix (botaprarodar)
-├── emulator/          # Emulador completo do sistema
-├── shared/            # Código/configs compartilhados
-├── docs/              # Documentação geral
-└── scripts/           # Scripts de deploy/build
+├── web/               # Dashboard web (Remix)
+├── shared/            # Recursos compartilhados
+├── docs/              # Documentação técnica
+└── scripts/           # Scripts de configuração e deploy
 ```
 
 ## 🚀 Componentes
 
-### 🚲 Firmware Bicicleta
-- **Scanner WiFi automático** com intervalos configuráveis
+### 🚲 Firmware Bicicleta (ESP32)
+- **Máquina de estados** bem definida (BOOT → CONFIG_REQUEST → SCANNING → AT_BASE → SLEEP)
+- **Scanner WiFi automático** com intervalos configuráveis via Firebase
 - **Cliente BLE** para comunicação com central
 - **Gerenciamento de energia** com deep sleep inteligente
 - **Monitor de bateria** com alertas automáticos
-- **Upload via BLE** quando detecta base
-- **Configuração dinâmica** recebida da central
+- **Buffer local persistente** no LittleFS
+- **Configuração dinâmica** recebida da central via BLE
+- **ID único automático** baseado no chip ID (bpr-XXXXXX)
 
-#### 📁 Estrutura Firmware Bike
+#### 📁 Estrutura Firmware Bici
 ```
-firmware/bike/src/
-├── main.cpp              # 🚀 Loop principal e máquina de estados
-├── wifi_scanner.cpp      # 📡 Scanner WiFi com cache local
-├── ble_client.cpp        # 🔵 Cliente BLE para comunicação
-├── battery_monitor.cpp   # 🔋 Monitor de bateria e alertas
-├── power_manager.cpp     # ⚡ Gerenciamento de energia/sleep
-└── config_manager.cpp    # ⚙️ Configurações dinâmicas
+firmware/bici/src/
+├── main.cpp              # 🚀 Máquina de estados principal
+├── scanning.cpp          # 📡 Scanner WiFi com filtros RSSI
+├── at_base.cpp           # 🔵 Cliente BLE para central
+├── power_manager.cpp     # ⚡ Coordenação de rádios e sleep
+├── config_manager.cpp    # ⚙️ Configurações dinâmicas
+├── buffer_manager.cpp    # 📦 Buffer persistente LittleFS
+├── lost.cpp              # 🔍 Estado de busca por central
+└── utils.cpp             # 🛠️ Utilitários gerais
 ```
 
-### 🏢 Firmware Central
-- **Servidor BLE** para descoberta e comunicação com bikes
-- **Descoberta automática** de bikes novas (prefixo BPR_*)
-- **Sistema de aprovação** via dashboard/bot
-- **Configuração dinâmica** por base via Firebase
-- **LED inteligente** com padrões de status
+### 🏢 Firmware Central (ESP32-WROOM-32D)
+- **Arquitetura modular** baseada em estados bem definidos
+- **Servidor BLE** para comunicação com bikes autorizadas
+- **Sistema de validação** rigoroso (allowed/pending/blocked)
+- **Configuração dinâmica** por base e por bike via Firebase
+- **Push automático** de configurações via BLE
+- **LED inteligente** com padrões de status (Pin 2 built-in)
 - **Heartbeat automático** para monitoramento
-- **Cache local** com sync WiFi sob demanda
-- **Máquina de estados** (BLE Only → WiFi Sync → Shutdown)
+- **Self-check** de hardware no boot
+- **Máquina de estados** (INITIAL_CONFIG_AP → INITIAL_SYNC → BIKE_PAIRING ↔ CLOUD_SYNC)
+- **Timestamps precisos** adicionados pela central
 
 #### 📁 Estrutura Firmware Central
 ```
 firmware/central/src/
-├── main.cpp              # 🚀 Ponto de entrada e máquina de estados
-├── ble_simple.cpp        # 🔵 Servidor BLE simplificado
-├── bike_manager.cpp      # 🚲 Gerenciamento de bikes conectadas
-├── bike_discovery.cpp    # 🔍 Descoberta de bikes novas
-├── firebase_manager.cpp  # 🔥 Sync com Firebase
-├── led_controller.cpp    # 💡 Controle de LED com padrões
-├── state_machine.cpp     # 🔄 Máquina de estados do sistema
-├── config_manager.cpp    # ⚙️ Configurações dinâmicas
-├── ntp_manager.cpp       # ⏰ Sincronização de horário
-└── setup_server.cpp      # 🌐 AP para configuração inicial
+├── main.cpp                    # 🚀 Entry point + self-check
+├── config_manager.cpp          # ⚙️ Configurações da central
+├── config_ap.cpp               # 📱 Estado: Configuração via AP
+├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
+├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
+├── buffer_manager.cpp          # 📦 Buffer local de dados
+├── led_controller.cpp          # 💡 Padrões de LED inteligentes
+├── bike_manager.cpp            # 🚲 Registro e validação de bikes
+├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
+├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
+├── sync_monitor.cpp            # 📊 Monitor de sincronização
+├── time_sync.cpp               # ⏰ Sincronização de tempo NTP
+├── upload_queue.cpp            # 📤 Fila de upload para Firebase
+└── self_check.cpp              # 🔧 Diagnóstico de hardware
 ```
 
-#### 🚨 Sistema de LED (ESP32C3 SuperMini)
-- **Inicializando**: Piscar rápido (100ms)
-- **BLE Ativo**: Piscar lento (2s)
-- **Bike Chegou**: 3 piscadas rápidas
-- **Bike Saiu**: 1 piscada longa
-- **Contagem**: N piscadas = N bikes (a cada 30s)
-- **Sincronizando**: Piscar médio (500ms)
-- **Erro**: Piscar muito rápido (50ms)
+#### 🚨 Sistema de LED (Pin 2 Built-in)
+
+| Padrão | Intervalo | Significado |
+|--------|-----------|-------------|
+| **Boot** | 100ms | Inicializando sistema |
+| **Config AP** | 200ms | Modo configuração ativo |
+| **BLE Ready** | 2000ms | Aguardando bikes |
+| **Bike Arrived** | 3x 150ms | Nova bike conectou |
+| **Bike Left** | 1x 800ms | Bike desconectou |
+| **Count** | N piscadas | N bikes conectadas (a cada 30s) |
+| **Sync** | 500ms | Sincronizando com Firebase |
+| **Error** | 50ms | Erro crítico |
 
 #### ⚙️ Sistema de Configuração da Central
 
-##### **Configuração Inicial:**
+#### ⚙️ Sistema de Configuração da Central
+
+##### **Setup Inicial:**
 ```bash
 cd firmware/central
-./setup.sh  # Configura WiFi, Firebase e ID da base
-pio run --target uploadfs  # Upload configuração
-pio run --target upload     # Upload firmware
+
+# 1. Configurar credenciais WiFi e Firebase
+./setup.sh
+
+# 2. Upload filesystem (configs)
+pio run --target uploadfs
+
+# 3. Upload firmware
+pio run --target upload
+
+# 4. Monitor serial
+pio device monitor
 ```
 
-##### **Fluxo de Configuração:**
-1. **Setup Script** → Cria `config.json` básico com WiFi e `central.id`
-2. **Primeira Execução** → Central lê `central.id` e baixa config completa do Firebase
-3. **Auto-Update** → Substitui config básica pela completa automaticamente
-4. **Funcionamento** → Usa configurações dinâmicas para todos os parâmetros
+##### **Primeira Execução:**
+1. **Central inicia** → Modo CONFIG_AP (config inválida)
+2. **Conectar WiFi**: `BPR_Hub_Config` (senha: `botaprarodar`)
+3. **Acessar**: http://192.168.4.1
+4. **Configurar**: WiFi, Firebase URL, API Key, Base ID
+5. **Salvar** → Central reinicia → Primeira sync obrigatória
+6. **Sync sucesso** → Modo BLE_ONLY ativo
+
+##### **Funcionamento Normal:**
+```
+BIKE_PAIRING (300s) → CLOUD_SYNC (30s) → BIKE_PAIRING (300s) → ...
+```
 
 ##### **Configurações Disponíveis:**
-- **base_id** - Identificador único da central (ameciclo, cepas, ctresiste)
+- **base_id** - Identificador único da central
 - **sync_interval_sec** - Intervalo de sincronização (padrão: 300s)
 - **wifi_timeout_sec** - Timeout de conexão WiFi (padrão: 30s)
-- **led_pin** - Pino do LED de status (padrão: 8)
+- **led_pin** - Pino do LED de status (padrão: 2)
 - **firebase_batch_size** - Tamanho máximo do batch (padrão: 8000 bytes)
 - **ntp_server** - Servidor NTP (padrão: pool.ntp.org)
 - **timezone_offset** - Fuso horário em segundos (padrão: -10800 = GMT-3)
 - **led.*** - Configurações específicas de cada padrão de LED
+- **limits.max_bikes** - Máximo de bikes por central
+- **fallback.*** - Configurações de recuperação de erro
 
 ##### **Estrutura no Firebase:**
 ```
-/bases/
-├── ameciclo.json    # Config completa da Ameciclo
-├── cepas.json       # Config completa da CEPAS
-└── ctresiste.json   # Config completa da CTResiste
+/bases/{base_id}/
+├── configs/         # Configurações da central
+├── bikes/          # Registro de bikes (allowed/pending/blocked)
+└── last_heartbeat/ # Status da central
+
+/bike_configs/{bike_id}/  # Configurações por bike
 ```
 
 ##### **Upload das Configurações:**
 ```bash
 cd scripts
+cp central_configs.json.example central_configs.json
+# Editar senhas WiFi
 node upload_central_configs.js  # Sobe configs para Firebase
 ```
 
-##### **Heartbeat Automático:**
+##### **Sistema de Gerenciamento de Bikes:**
+
+**Estados das Bikes:**
+- **`allowed`**: Pode conectar e enviar dados
+- **`pending`**: Pode conectar, dados ignorados (só registra visitas)
+- **`blocked`**: Não consegue conectar
+
+**Heartbeat Automático:**
 Cada central envia heartbeat para `/bases/{base_id}/last_heartbeat` contendo:
-- **timestamp** - Quando foi enviado
+- **timestamp** - Quando foi enviado (com timestamp_human)
 - **bikes_connected** - Quantas bikes estão conectadas
 - **heap** - Memória livre (para debug)
 - **uptime** - Tempo ligada em segundos
 
-##### **Vantagens:**
-- ✅ **Configuração remota** - Muda parâmetros sem acesso físico
-- ✅ **Específica por base** - Cada central tem suas configurações
-- ✅ **Fallbacks seguros** - Valores padrão se não conseguir baixar
-- ✅ **Auto-sincronização** - Download automático de atualizações
-- ✅ **Monitoramento** - Heartbeat para verificar status
+##### **Vantagens da Arquitetura v2.0:**
+- ✅ **Modular**: Cada arquivo tem responsabilidade única
+- ✅ **Configurável**: Zero hardcoding, tudo via Firebase
+- ✅ **Inteligente**: Push automático de configs
+- ✅ **Seguro**: Validação rigorosa de bikes
+- ✅ **Robusto**: Self-check e recuperação de erros
+- ✅ **Eficiente**: Buffer local e sync otimizada
+- ✅ **Escalável**: Fácil adicionar novas funcionalidades
+- ✅ **Observável**: Logs estruturados e métricas
 
 ### 🤖 Bot Telegram (@prarodarbot)
 - **Monitoramento em tempo real** de bicicletas via Firebase
@@ -258,18 +305,32 @@ bot/src/
 }
 ```
 
-### 🌐 Site Web
-- Dashboard de monitoramento
-- Gestão de bicicletas
-- Relatórios e análises
+### 🌐 Dashboard Web (Remix)
+- **Framework**: Remix com Vite
+- **Status**: 🚧 Em desenvolvimento inicial
+- **Estrutura básica**: Componente raiz implementado
+- **Integração Firebase**: Planejada
+- **Próximos passos**: Dashboard principal, mapas, relatórios
+
+#### 📁 Estrutura Web
+```
+web/
+├── app/
+│   └── root.jsx          # 🚀 Componente raiz básico
+├── package.json          # 📦 Dependências Remix
+├── vite.config.js        # ⚙️ Configuração Vite
+└── README.md            # 📚 Documentação específica
+```
 
 ## 🛠️ Desenvolvimento
 
 ### Pré-requisitos
-- **PlatformIO** (para firmware ESP8266/ESP32)
+- **PlatformIO** (para firmware ESP32)
 - **Node.js 18+** (para bot e web)
 - **Firebase CLI** (para deploy de functions)
 - **Google Cloud Account** (para Geolocation API)
+- **ESP32-WROOM-32D** (para central)
+- **ESP32** genérico (para bicicletas)
 
 ### Setup Inicial
 ```bash
@@ -277,9 +338,19 @@ bot/src/
 git clone <repo-url>
 cd bpr-sistema
 
-# Setup firmware
-cd firmware/bike
-pio run
+# Setup workspace (monorepo)
+npm install
+
+# Setup firmware bicicleta
+cd firmware/bici
+pio run --target upload
+pio run --target uploadfs
+
+# Setup firmware central
+cd ../central
+./setup.sh  # Configurar WiFi e Firebase
+pio run --target uploadfs
+pio run --target upload
 
 # Setup bot
 cd ../../bot
@@ -290,6 +361,7 @@ node scripts/test/check-env.js  # Testar configuração
 # Setup web
 cd ../web
 npm install
+npm run dev  # Estrutura básica disponível
 ```
 
 ### 🤖 Configuração do Bot
@@ -330,12 +402,21 @@ node scripts/webhook/check-webhook.js  # Verificar webhook
 
 Cada componente tem seu próprio processo de deploy:
 
-### 🚲 Firmware
+### 🚲 Firmware Bicicleta
 ```bash
-cd firmware/bike
-./setup.sh                    # Configurar WiFi e Firebase
-pio run --target uploadfs     # Upload sistema de arquivos
+cd firmware/bici
+pio run --target uploadfs     # Upload config.json
 pio run --target upload       # Upload código
+pio device monitor            # Monitor serial
+```
+
+### 🏢 Firmware Central
+```bash
+cd firmware/central
+./setup.sh                    # Configurar WiFi, Firebase e Base ID
+pio run --target uploadfs     # Upload configurações
+pio run --target upload       # Upload código
+pio device monitor            # Monitor serial
 ```
 
 ### 🤖 Bot Telegram
@@ -359,7 +440,7 @@ docker run -d --env-file .env prarodarbot
 ```bash
 cd web
 npm run build
-npm run deploy  # Vercel/Netlify
+# Deploy: Vercel/Netlify (configurar manualmente)
 ```
 
 ## 🔗 Integrações
@@ -367,55 +448,57 @@ npm run deploy  # Vercel/Netlify
 Todos os componentes se integram via:
 
 ### 🔥 Firebase Realtime Database
-- **Firmware** → Escreve dados de scans e status
-- **Bot** → Escuta mudanças em tempo real
+- **Central** → Escreve dados de bikes com timestamp preciso
+- **Bicicletas** → Enviam dados via BLE para central
+- **Bot** → Escuta mudanças em tempo real e processa geolocalização
 - **Web** → Dashboard com dados consolidados
-- **Configurações** → Centralizadas por base/bike
+- **Configurações** → Centralizadas por base e por bike
+- **Validação** → Sistema rigoroso de allowed/pending/blocked
 
 ### 🌐 APIs Externas
 - **Google Geolocation API** → Conversão WiFi para coordenadas
 - **Telegram Bot API** → Notificações e comandos
 - **NTP Servers** → Sincronização de horário
 
-### 📡 Fluxo de Dados
+### 📡 Fluxo de Dados Atualizado
 ```mermaid
-graph TB
+flowchart TD
     subgraph "🚲 Bicicleta (ESP32)"
-        A[WiFi Scanner] --> B[Coleta Redes]
-        B --> C[Armazena Local]
-        C --> D[Detecta Base]
-        D --> E[Upload Firebase]
+        A1[WiFi Scanner] --> A2[Buffer Local LittleFS]
+        A2 --> A3[Detecta Central BLE]
+        A3 --> A4[Envia via BLE]
+    end
+    
+    subgraph "🏢 Central (ESP32-WROOM-32D)"
+        A4 --> B1[Valida Bike]
+        B1 --> B2{Status?}
+        B2 -->|allowed| B3[Processa Dados]
+        B2 -->|pending| B4[Registra Visita]
+        B2 -->|blocked| B5[Rejeita]
+        B3 --> B6[Adiciona Timestamp]
+        B6 --> B7[Buffer Local]
+        B7 --> B8[Sync Firebase]
     end
     
     subgraph "🔥 Firebase"
-        E --> F[Realtime Database]
-        F --> G[/bikes/{id}/sessions]
-        F --> H[/bikes/{id}/status]
+        B8 --> C1[Realtime Database]
+        C1 --> C2[/bases/{id}/bikes]
+        C1 --> C3[/bike_configs/{id}]
+        C1 --> C4[/bikes/{id}/sessions]
     end
     
     subgraph "🤖 Bot Telegram"
-        G --> I[Monitor Sessões]
-        H --> J[Monitor Status]
-        I --> K[Nova Sessão?]
-        J --> L[Mudança Status?]
-        K --> M[Processar Scans]
-        L --> N[Notificar Admin]
-        M --> O[Google Geolocation]
-        O --> P[Calcular Posição]
-        P --> Q[Enviar Notificação]
-    end
-    
-    subgraph "👤 Usuários"
-        Q --> R[Telegram Chat]
-        R --> S[Comandos]
-        S --> T[/status /rota /bikes]
-        T --> U[Consultar Firebase]
-        U --> V[Resposta Formatada]
+        C4 --> D1[Monitor Sessões]
+        D1 --> D2[Processar Scans]
+        D2 --> D3[Google Geolocation]
+        D3 --> D4[Calcular Viagens]
+        D4 --> D5[Notificar Usuários]
+        D5 --> D6[Canal Público]
     end
     
     subgraph "🌐 Dashboard Web"
-        F --> W[Interface Visual]
-        W --> X[Mapas e Gráficos]
+        C1 --> E1[Interface Remix]
+        E1 --> E2[Mapas e Métricas]
     end
 ```
 
@@ -428,27 +511,26 @@ O bot monitora e processa os seguintes dados em tempo real:
 #### `/bikes/{bikeId}/sessions/{sessionId}` - Sessões Ativas
 ```json
 {
-  "start": 1733459200,
-  "end": null,
-  "mode": "normal",
+  "bike_id": "bpr-a1b2c3",
+  "session_start_millis": 45000,
   "scans": [
-    [1733459205, [["NET_5G", "AA:BB:CC:11:22:33", -70, 6]]],
-    [1733459230, [["CLARO_WIFI", "CC:DD:EE:44:55:66", -82, 11]]]
+    [47000, [["NET_5G", "AA:BB:CC:11:22:33", -70, 6]]],
+    [52000, [["CLARO_WIFI", "CC:DD:EE:44:55:66", -82, 11]]]
   ],
-  "battery": [[9685, 82], [9710, 81]],
-  "connections": [
-    [1733459195, "connect", "BASE_WIFI_1", "192.168.252.4"],
-    [1733459200, "disconnect", "BASE_WIFI_1", null]
-  ]
+  "battery": [[47000, 85], [52000, 84]],
+  "hub_receive_timestamp": 1733459800,
+  "hub_receive_timestamp_human": "2024-12-06 10:30:00 UTC-3"
 }
 ```
 
 #### Processamento pelo Bot
-1. **Monitor de Sessões**: Escuta `child_changed` em `/bikes`
-2. **Monitor de Scans**: Escuta `child_added` em `/bikes/{id}/sessions/{session}/scans`
+1. **Monitor de Sessões**: Escuta mudanças em `/bikes/{id}/sessions`
+2. **Monitor de Scans**: Processa novos scans WiFi em tempo real
 3. **Geolocalização**: Converte arrays WiFi para coordenadas via Google API
-4. **Notificações**: Envia alertas automáticos para admin
-5. **Comandos**: Responde consultas de usuários com dados processados
+4. **Cálculo de Viagens**: Distância, CO₂ economizado, duração
+5. **Sistema de Assinaturas**: Notificações personalizadas por usuário
+6. **Canal Público**: Publicações automáticas para @prarodar_updates
+7. **Comandos**: Responde consultas com dados processados e formatados
 
 ## 🗄️ Estrutura de Dados (Firebase)
 
@@ -460,91 +542,103 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
 
 ### Principais Coleções:
 
-#### `/config` - Configurações Globais
+#### `/bases/{base_id}/configs` - Configurações da Central
 ```json
 {
-  "config": {
-    "version": 3,
-    "wifi_scan_interval_sec": 25,
-    "wifi_scan_interval_low_batt_sec": 60,
-    "deep_sleep_after_sec": 300,
-    "ble_ping_interval_sec": 5,
-    "min_battery_voltage": 3.45,
-    "update_timestamp": 1733459200
+  "base_id": "base01",
+  "sync_interval_sec": 300,
+  "wifi_timeout_sec": 30,
+  "led_pin": 2,
+  "firebase_batch_size": 8000,
+  "ntp_server": "pool.ntp.org",
+  "timezone_offset": -10800,
+  "led": {
+    "boot_ms": 100,
+    "ble_ready_ms": 2000,
+    "wifi_sync_ms": 500
+  },
+  "limits": {
+    "max_bikes": 10,
+    "batch_size": 8000
   }
 }
 ```
 
-#### `/central_configs` - Configurações por Central
+#### `/bike_configs/{bike_id}` - Configurações por Bike
 ```json
 {
-  "base01": {
-    "base_id": "base01",
-    "sync_interval_sec": 300,
-    "wifi_timeout_sec": 30,
-    "led_pin": 8,
-    "ntp_server": "pool.ntp.org",
-    "timezone_offset": -10800,
-    "firebase_batch_size": 8000,
-    "led": {
-      "boot_ms": 100,
-      "ble_ready_ms": 2000,
-      "wifi_sync_ms": 500
+  "version": 2,
+  "bike_name": "Bike Centro 01",
+  "dev_mode": false,
+  "wifi": {
+    "scan_interval_sec": 300,
+    "scan_timeout_ms": 5000,
+    "max_networks": 20,
+    "rssi_threshold": -90
+  },
+  "ble": {
+    "base_name": "BPR Central",
+    "scan_time_sec": 5
+  },
+  "power": {
+    "deep_sleep_duration_sec": 3600,
+    "radio_coordination_delay_ms": 300
+  },
+  "battery": {
+    "critical_voltage": 3.2,
+    "low_voltage": 3.45
+  }
+}
+```
+
+#### `/bases/{base_id}/bikes` - Registro de Bikes
+```json
+{
+  "bpr-a1b2c3": {
+    "status": "allowed",
+    "first_seen": 1733459200,
+    "last_heartbeat": {
+      "timestamp": 1733459800,
+      "timestamp_human": "2024-12-06 10:30:00 UTC-3",
+      "battery": 85,
+      "heap": 45000
     }
+  },
+  "bpr-x7y9z1": {
+    "status": "pending",
+    "first_seen": 1733459300,
+    "last_visit": 1733459800,
+    "visit_count": 3
   }
 }
 ```
 
-#### `/bases` - Centrais/Bases
+#### `/bikes/{bike_id}` - Dados das Bicicletas
 ```json
 {
-  "bases": {
-    "base01": {
-      "name": "Base Centro",
-      "max_bikes": 10,
-      "wifi_ssid": "BPR_Base01",
-      "wifi_password": "senha_base01",
-      "location": {
-        "lat": -8.062,
-        "lng": -34.881
-      },
-      "last_sync": 1733459210
-    }
-  }
-}
-```
-
-#### `/bikes` - Bicicletas
-```json
-{
-  "bikes": {
-    "bike07": {
-      "base_id": "base01",
-      "uid": "bike07",
-      "battery_voltage": 3.82,
-      "status": "active",
-      "last_ble_contact": 1733459190,
-      "last_wifi_scan": 1733459205,
-      "last_position": {
-        "lat": -8.064,
-        "lng": -34.882,
-        "source": "wifi",
-        "accuracy": 50
-      },
-      "metrics": {
-        "km_total": 213.4,
-        "rides_total": 58
-      },
-      "sessions": {
-        "session_1733459200": {
-          "start": 1733459200,
-          "end": null,
-          "mode": "normal",
-          "scans": [...],
-          "battery": [...],
-          "connections": [...]
-        }
-      }
+  "base_id": "base01",
+  "uid": "bpr-a1b2c3",
+  "battery_voltage": 3.82,
+  "status": "active",
+  "last_ble_contact": 1733459190,
+  "last_position": {
+    "lat": -8.064,
+    "lng": -34.882,
+    "source": "wifi",
+    "accuracy": 50
+  },
+  "metrics": {
+    "km_total": 213.4,
+    "rides_total": 58,
+    "co2_saved_total_g": 30930
+  },
+  "sessions": {
+    "session_1733459200": {
+      "bike_id": "bpr-a1b2c3",
+      "session_start_millis": 45000,
+      "scans": [...],
+      "battery": [...],
+      "hub_receive_timestamp": 1733459800
     }
   }
 }
@@ -627,20 +721,20 @@ O Firebase Realtime Database é estruturado como uma árvore JSON otimizada para
 ### 📁 Estrutura Completa
 ```
 bpr-sistema/
-├── 🚲 firmware/           # Códigos ESP8266/ESP32
+├── 🚲 firmware/           # Códigos ESP32
 │   ├── bici/              # Firmware bicicleta v2.0 (máquina de estados)
-│   ├── central/               # Firmware central redesenhado (modular)
-│   └── bike/              # Firmware legado da bicicleta
+│   ├── central/           # Firmware central v2.0 (ESP32-WROOM-32D)
+│   └── common/            # Definições compartilhadas (BLE protocol)
 ├── 🤖 bot/                # Bot Telegram (@prarodarbot)
 │   ├── src/               # Código principal organizado
 │   ├── functions/         # Firebase Functions (deploy)
 │   ├── scripts/           # Utilitários e testes
-│   └── tools/             # Ferramentas auxiliares
-├── 🌐 web/                # Dashboard web (Remix)
-├── 📊 shared/             # Configurações compartilhadas
-├── 🧪 emulator/           # Emulador completo do sistema v2.0
-├── 📚 docs/               # Documentação geral
-└── 🔧 scripts/            # Scripts de deploy/build
+│   ├── tools/             # Ferramentas auxiliares
+│   └── docs/              # Documentação específica
+├── 🌐 web/                # Dashboard web (Remix + Vite)
+├── 📊 shared/             # Recursos compartilhados
+├── 📚 docs/               # Documentação técnica
+└── 🔧 scripts/            # Scripts de configuração e deploy
 ```
 
 ### 🔄 Fluxo Completo do Sistema
@@ -827,34 +921,60 @@ stateDiagram-v2
 
 ### 📖 Documentação Detalhada
 - [🤖 Bot README](bot/README.md) - Configuração e uso do bot
-- [🚲 Firmware Bike](firmware/bike/README.md) - Scanner WiFi
+- [🚲 Firmware Bici](firmware/bici/README.md) - Scanner WiFi
 - [🏢 Firmware Central](firmware/central/README.md) - Base de coleta
+- [🔗 Firmware Common](firmware/common/README.md) - Protocolo BLE compartilhado
 - [🌐 Web Dashboard](web/README.md) - Interface web
 - [📊 Estrutura Firebase](docs/FIREBASE.md) - Banco de dados
 - [🔧 Scripts Utilitários](scripts/README.md) - Automação
 
 ## 🚀 Roadmap e Melhorias
 
-### 🎯 Curto Prazo (1-2 meses)
-- [ ] **Cache inteligente**: Evitar chamadas desnecessárias à Google API
-- [ ] **Filtros de qualidade**: Ignorar redes WiFi com RSSI muito baixo
-- [ ] **Alertas de bateria**: Notificações quando bateria < 20%
-- [ ] **Timeout inteligente**: Alertar se bike não se conecta há muito tempo
-- [ ] **Múltiplas bikes**: Suporte automático para novas bicicletas
+### 🎯 Funcionalidades Implementadas
 
-### 🎨 Médio Prazo (3-6 meses)
-- [ ] **Dashboard web integrado**: Interface visual para monitoramento
-- [ ] **Histórico de rotas**: Armazenar e consultar trajetos anteriores
-- [ ] **Estatísticas avançadas**: Relatórios de uso, distância total, CO2 economizado
-- [ ] **Integração com mapas**: Visualização de rotas no Google Maps
-- [ ] **API REST**: Endpoints para integração com outros sistemas
+#### ✅ **Sistema Completo v2.0**
+- **Firmware modular**: Arquitetura baseada em estados bem definidos
+- **Configuração dinâmica**: Configs por base e por bike via Firebase
+- **Sistema de validação**: allowed/pending/blocked para bikes
+- **Push automático**: Configurações enviadas via BLE
+- **Timestamps precisos**: Central adiciona timestamp de recebimento
+- **Self-check**: Diagnóstico automático de hardware
+- **LED inteligente**: Padrões visuais de status
+- **Buffer persistente**: LittleFS para dados locais
 
-### 🔮 Longo Prazo (6+ meses)
-- [ ] **Machine Learning**: Predição de rotas e padrões de uso
-- [ ] **Alertas inteligentes**: Detecção automática de anomalias
-- [ ] **App mobile nativo**: Aplicativo dedicado para usuários
-- [ ] **Integração IoT**: Sensores adicionais (GPS, acelerômetro, etc.)
-- [ ] **Blockchain**: Sistema de recompensas por uso sustentável
+#### ✅ **Bot Telegram Avançado**
+- **Sistema de assinaturas**: Notificações personalizadas
+- **Cálculo de viagens**: Distância, CO₂, duração automáticos
+- **Monitor de estações**: Heartbeats e status das centrais
+- **Canal público**: @prarodar_updates com publicações automáticas
+- **Geolocalização**: Conversão WiFi → coordenadas via Google API
+- **Comandos interativos**: /status, /rota, /bikes, /seguir, etc.
+
+#### ✅ **Dashboard Web**
+- **Framework moderno**: Remix com Vite
+- **Estrutura inicial**: Componente raiz implementado
+- **Licença**: AGPL-3.0
+- **Status**: 🚧 Desenvolvimento inicial
+
+### 🔮 Próximas Melhorias
+
+#### **Curto Prazo**
+- [ ] **OTA Updates**: Atualização de firmware via Firebase
+- [ ] **Cache inteligente**: Otimização de chamadas Google API
+- [ ] **Relatórios mensais**: Envio automático para assinantes
+- [ ] **Mapas interativos**: Visualização de rotas no dashboard
+
+#### **Médio Prazo**
+- [ ] **API REST**: Endpoints para integração externa
+- [ ] **Mesh Network**: Comunicação entre centrais
+- [ ] **Edge Analytics**: Processamento local de dados
+- [ ] **Sistema de gamificação**: Ranking de usuários
+
+#### **Longo Prazo**
+- [ ] **Machine Learning**: Predição de demanda e rotas
+- [ ] **App mobile nativo**: Aplicativo dedicado
+- [ ] **Integração IoT**: Sensores adicionais (GPS, acelerômetro)
+- [ ] **Blockchain**: Sistema de recompensas descentralizado
 
 ## 🤝 Contribuição
 

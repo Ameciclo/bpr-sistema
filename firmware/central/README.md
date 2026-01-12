@@ -15,17 +15,20 @@ Sistema central ESP32-WROOM-32D redesenhado com arquitetura modular baseada em e
 ## 📁 Estrutura de Arquivos
 
 ```
-Central/src/
+central/src/
 ├── main.cpp                    # 🚀 Entry point + self-check
-├── state_machine.cpp           # 🔄 Coordenador de estados
 ├── config_manager.cpp          # ⚙️ Configurações da central
 ├── config_ap.cpp               # 📱 Estado: Configuração via AP
-├── ble_only.cpp                # 🔵 Estado: Servidor BLE + filtros
-├── wifi_sync.cpp               # 📡 Estado: Sincronização completa
+├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
+├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
 ├── buffer_manager.cpp          # 📦 Buffer local de dados
 ├── led_controller.cpp          # 💡 Padrões de LED inteligentes
-├── bike_registry.cpp           # 🚲 Registro e validação de bikes
-├── bike_config_manager.cpp     # ⚙️ Configs dinâmicas por bike
+├── bike_manager.cpp            # 🚲 Registro e validação de bikes
+├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
+├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
+├── sync_monitor.cpp            # 📊 Monitor de sincronização
+├── time_sync.cpp               # ⏰ Sincronização de tempo NTP
+├── upload_queue.cpp            # 📤 Fila de upload para Firebase
 └── self_check.cpp              # 🔧 Diagnóstico de hardware
 ```
 
@@ -34,25 +37,29 @@ Central/src/
 ```mermaid
 stateDiagram-v2
     [*] --> BOOT
-    BOOT --> CONFIG_AP : Config inválida
-    BOOT --> WIFI_SYNC : Config válida (primeira sync)
+    BOOT --> INITIAL_CONFIG_AP : Config inválida
+    BOOT --> INITIAL_SYNC : Config válida (primeira sync)
     
-    CONFIG_AP --> WIFI_SYNC : Config salva
-    CONFIG_AP --> CONFIG_AP : Timeout (15min) → Restart
+    INITIAL_CONFIG_AP --> INITIAL_SYNC : Config salva
+    INITIAL_CONFIG_AP --> INITIAL_CONFIG_AP : Timeout (15min) → Restart
     
-    WIFI_SYNC --> BLE_ONLY : Sync sucesso
-    WIFI_SYNC --> CONFIG_AP : Primeira sync falhou
+    INITIAL_SYNC --> BIKE_PAIRING : Sync sucesso
+    INITIAL_SYNC --> INITIAL_CONFIG_AP : Primeira sync falhou
     
-    BLE_ONLY --> WIFI_SYNC : Timer (300s) ou Buffer cheio
+    BIKE_PAIRING --> CLOUD_SYNC : Timer (300s) ou Buffer cheio
+    CLOUD_SYNC --> BIKE_PAIRING : Sync sucesso
+    CLOUD_SYNC --> TEMP_CONFIG_AP : Muitas falhas
     
-    note right of CONFIG_AP
+    TEMP_CONFIG_AP --> BIKE_PAIRING : Timeout ou config salva
+    
+    note right of INITIAL_CONFIG_AP
         - AP: BPR_Hub_Config
         - Interface: 192.168.4.1
         - Timeout: 15 minutos
         - LED: Pin 2 (built-in)
     end note
     
-    note right of BLE_ONLY
+    note right of BIKE_PAIRING
         - Servidor BLE ativo
         - Filtro: só bpr-* devices
         - Validação: allowed/pending/blocked
@@ -60,7 +67,7 @@ stateDiagram-v2
         - LED: Pin 2 (built-in)
     end note
     
-    note right of WIFI_SYNC
+    note right of CLOUD_SYNC
         - Download: configs Central + bikes
         - Upload: dados + heartbeat
         - NTP sync
@@ -223,7 +230,7 @@ flowchart TD
 
 ### **Setup Inicial:**
 ```bash
-cd firmware/Central
+cd firmware/central
 
 # 1. Configurar credenciais WiFi e Firebase
 ./setup.sh
@@ -248,7 +255,7 @@ pio device monitor
 
 ### **Funcionamento Normal:**
 ```
-BLE_ONLY (300s) → WIFI_SYNC (30s) → BLE_ONLY (300s) → ...
+BIKE_PAIRING (300s) → CLOUD_SYNC (30s) → BIKE_PAIRING (300s) → ...
 ```
 
 ## 🛡️ Validação e Segurança

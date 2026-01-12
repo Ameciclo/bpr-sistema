@@ -6,9 +6,13 @@ Firmware para bicicletas ESP32 compatível com o sistema BPR Central.
 
 - **BOOT**: Inicialização e verificação de bateria
 - **CONFIG_REQUEST**: Primeira conexão, solicita configuração da central
+- **WAKE_CHECK**: Verifica se está na base após acordar
 - **SCANNING**: Coleta dados WiFi e procura central
 - **AT_BASE**: Conectado à central, sincronizando dados
-- **SLEEP**: Modo de economia de energia
+- **DATA_UPLOAD**: Enviando dados para central
+- **LOW_BATTERY**: Modo de economia de energia
+- **SLEEPING**: Deep sleep
+- **LOST**: Procurando central perdida
 
 ## 🔵 Protocolo BLE
 

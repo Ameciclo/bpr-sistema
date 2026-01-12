@@ -85,35 +85,27 @@ node scripts/test/check-env.js
 node scripts/webhook/set-webhook.js
 ```
 
-## 📊 Estrutura dos Dados
-
 ### 📊 Estrutura de Dados Monitorada
 
-#### Sessões Ativas
+#### Sessões Ativas (`/bikes/{bikeId}/sessions/{sessionId}`)
 ```json
 {
-  "bikes": {
-    "intenso": {
-      "sessions": {
-        "session_1733459200": {
-          "start": 1733459200,
-          "end": null,
-          "mode": "normal",
-          "scans": [
-            [1733459205, [["NET_5G", "AA:BB:CC:11:22:33", -70, 6]]]
-          ],
-          "battery": [[9685, 82]],
-          "connections": [
-            [1733459195, "connect", "BASE_WIFI_1", "192.168.252.4"]
-          ]
-        }
-      }
-    }
-  }
+  "bike_id": "bpr-a1b2c3",
+  "session_start_millis": 45000,
+  "scans": [
+    [47000, [["NET_5G", "AA:BB:CC:11:22:33", -70, 6]]],
+    [52000, [["CLARO_WIFI", "CC:DD:EE:44:55:66", -82, 11]]]
+  ],
+  "battery": [[47000, 85], [52000, 84]],
+  "connections": [
+    [47195, "connect", "BASE_WIFI_1", "192.168.252.4"]
+  ],
+  "hub_receive_timestamp": 1733459800,
+  "hub_receive_timestamp_human": "2024-12-06 10:30:00 UTC-3"
 }
 ```
 
-#### Viagens Concluídas
+#### Viagens Concluídas (`/rides/{bikeId}/{rideId}`)
 ```json
 {
   "rides": {
@@ -135,7 +127,7 @@ node scripts/webhook/set-webhook.js
 }
 ```
 
-#### Assinaturas de Usuários
+#### Assinaturas de Usuários (`/subscriptions/{userId}`)
 ```json
 {
   "subscriptions": {
@@ -321,21 +313,23 @@ node scripts/webhook/set-webhook.js
 
 ### 🌐 **Links Úteis**
 - Canal Público: [@prarodar_updates](https://t.me/prarodar_updates)
-- Site do Projeto: [prarodar.org](https://prarodar.org)
-- Dashboard: [dashboard.prarodar.org](https://dashboard.prarodar.org)
-- API Docs: [api.prarodar.org/docs](https://api.prarodar.org/docs)
+- Bot Principal: [@prarodarbot](https://t.me/prarodarbot)
+- Repositório: [GitHub](https://github.com/prarodar/bpr-sistema)
+- Documentação: [README Principal](../README.md)
 
 ## 🤝 Contribuição
 
 ### 🛠️ **Como Contribuir**
 1. **Fork** o repositório
-2. **Clone** localmente: `git clone https://github.com/seu-usuario/bpr-sistema.git`
-3. **Instale** dependências: `npm install`
-4. **Configure** variáveis: `cp .env.example .env`
-5. **Teste** localmente: `npm run dev`
-6. **Crie** branch: `git checkout -b feature/nova-funcionalidade`
-7. **Commit** mudanças: `git commit -m "feat: adiciona nova funcionalidade"`
-8. **Push** e abra **Pull Request**
+2. **Clone** localmente: `git clone <repo-url>`
+3. **Entre no diretório**: `cd bpr-sistema/bot`
+4. **Instale** dependências: `npm install`
+5. **Configure** variáveis: `cp .env.example .env`
+6. **Teste** configuração: `node scripts/test/check-env.js`
+7. **Teste** localmente: `npm run dev`
+8. **Crie** branch: `git checkout -b feature/nova-funcionalidade`
+9. **Commit** mudanças: `git commit -m "feat: adiciona nova funcionalidade"`
+10. **Push** e abra **Pull Request**
 
 ### 📋 **Padrões de Código**
 - **ESLint + Prettier** para formatação
@@ -351,7 +345,7 @@ node scripts/webhook/set-webhook.js
 
 ## 📄 Licença
 
-**MIT License** - veja o arquivo [LICENSE](../../LICENSE) para detalhes.
+**AGPL-3.0 License** - veja o arquivo [LICENSE](../../LICENSE) para detalhes.
 
 ### 📞 **Suporte**
 - **Issues**: [GitHub Issues](../../issues)

@@ -21,8 +21,8 @@ class ChannelPublisher {
       
       if (rideData.points_count > 0) {
         message += `📍 Pontos coletados: ${rideData.points_count}\n`;
-        // Link para visualizar rota (a ser implementado)
-        message += `🗺️ [Ver rota](https://prarodar.org/ride/${bikeId}/${rideData.start_ts})\n`;
+        // Link para visualizar rota (futuro)
+        message += `🗺️ Use /rota ${bikeId} para detalhes\n`;
       }
     }
 
