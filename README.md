@@ -885,7 +885,7 @@ stateDiagram-v2
 
 ## 📄 Licença
 
-**MIT License** - veja o arquivo [LICENSE](LICENSE) para detalhes.
+**AGPL-3.0 License** - veja o arquivo [LICENSE](LICENSE) para detalhes.
 
 ### 📞 Contato e Suporte
 - **Issues**: [Gitcentral Issues](https://gitcentral.com/projeto/bpr-sistema/issues)
