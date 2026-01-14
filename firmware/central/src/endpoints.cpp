@@ -10,7 +10,7 @@ String Endpoints::buildUrl(const String& path) {
 
 String Endpoints::getConfigVersion() {
     const String& baseId = configCredentials.getBaseId();
-    return buildUrl("/bases/" + baseId + "/configs/last_update.txt");
+    return buildUrl("/bases/" + baseId + "/configs/last_update.json");
 }
 
 String Endpoints::getCentralConfig() {
@@ -25,7 +25,7 @@ String Endpoints::getWiFiConfig() {
 
 String Endpoints::getBikeRegistry() {
     const String& baseId = configCredentials.getBaseId();
-    return buildUrl("/bases/" + baseId + "/bikes/registry.csv");
+    return buildUrl("/bases/" + baseId + "/bike_registry.json");
 }
 
 String Endpoints::getBikeConfigs() {
@@ -35,7 +35,7 @@ String Endpoints::getBikeConfigs() {
 
 String Endpoints::getBikeRegistryVersion() {
     const String& baseId = configCredentials.getBaseId();
-    return buildUrl("/bases/" + baseId + "/bikes/registry_last_update.txt");
+    return buildUrl("/bases/" + baseId + "/bike_registry/last_update.json");
 }
 
 String Endpoints::getBikeConfigsVersion() {

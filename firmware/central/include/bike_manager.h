@@ -31,6 +31,12 @@ public:
     static uint8_t getBufferUsage(const String& bikeId);
     static bool isBatteryLow(const String& bikeId);
     
+    // Bike configs (binary format)
+    static bool loadBikeConfigs();
+    static bool saveBikeConfigs();
+    static bool downloadSingleBikeConfig(const String& bikeId);
+    static bool updateBikeConfigFromCSV(const String& bikeId, const String& csvData);
+    
     // Configurações (ex-BikeConfigManager)
     static bool hasConfigUpdate(const String& bikeId);
     static void markConfigSent(const String& bikeId);

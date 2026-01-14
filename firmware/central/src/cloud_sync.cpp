@@ -219,29 +219,8 @@ bool CloudSync::needsBikeRegistryUpdate()
 
 bool CloudSync::needsBikeConfigsUpdate()
 {
-    // Ler last_update do arquivo local bike_configs.json
-    if (!LittleFS.exists(BIKE_CONFIGS_FILE))
-    {
-        Serial.println("📋 No local bike configs - needs download");
-        return true;
-    }
-
-    File file = LittleFS.open(BIKE_CONFIGS_FILE, "r");
-    if (!file)
-    {
-        return true;
-    }
-
-    DynamicJsonDocument doc(CONFIG_VERSION_BUFFER);
-    if (deserializeJson(doc, file) != DeserializationError::Ok)
-    {
-        file.close();
-        return true;
-    }
-    file.close();
-
-    uint32_t localLastUpdate = doc["last_update"] | 0;
-    return checkLastUpdateTime(Endpoints::getBikeConfigsVersion(), localLastUpdate, "Bike configs");
+    // Com download individual, sempre verificar se há bikes para atualizar
+    return (BikeManager::getConnectedCount() > 0);
 }
 
 void CloudSync::updateConfigFromFirebase(const String &csvData)
@@ -327,35 +306,46 @@ bool CloudSync::downloadBikeRegistryData()
     String csvData = http.getString();
     http.end();
 
-    // Parse CSV: "bike01,1,intenso,1,bike99,0" -> só bikes com status=1 (approved)
+    // Parse JSON array: ["bike01",2,"AA:BB:CC:DD:EE:01",1733400000,1733459000,"bike02",2,"AA:BB:CC:DD:EE:02",1733400000,1733458000]
     BikeRegistryData registry;
     memset(&registry, 0, sizeof(registry));
     registry.last_update = time(nullptr);
     
+    // Remove brackets and quotes
+    csvData.replace("[", "");
+    csvData.replace("]", "");
+    csvData.replace("\"", ""); // Remove quotes
+    
     int bikeIndex = 0;
     int startPos = 0;
+    int fieldIndex = 0;
     
     while (startPos < csvData.length() && bikeIndex < 10) {
-        // Parse: bikeId,status
         int commaPos = csvData.indexOf(',', startPos);
-        if (commaPos == -1) break;
+        String value = (commaPos == -1) ? csvData.substring(startPos) : csvData.substring(startPos, commaPos);
         
-        String bikeId = csvData.substring(startPos, commaPos);
-        startPos = commaPos + 1;
-        
-        commaPos = csvData.indexOf(',', startPos);
-        int status = csvData.substring(startPos, commaPos == -1 ? csvData.length() : commaPos).toInt();
-        
-        // Só bikes aprovadas (status=1)
-        if (status == 1) {
-            strcpy(registry.bikes[bikeIndex], bikeId.c_str());
-            registry.statuses[bikeIndex] = STATUS_ALLOWED;
-            registry.first_seen[bikeIndex] = time(nullptr);
-            registry.last_heartbeat[bikeIndex] = 0;
-            bikeIndex++;
+        switch (fieldIndex % 5) {
+            case 0: // bike_id
+                registry.bikes[bikeIndex] = bikeIdToInt(value);
+                break;
+            case 1: // status
+                registry.statuses[bikeIndex] = value.toInt();
+                break;
+            case 2: // mac_address
+                registry.mac_addresses[bikeIndex] = macStringToInt(value);
+                break;
+            case 3: // created_at
+                registry.created_at[bikeIndex] = value.toInt();
+                break;
+            case 4: // last_seen
+                registry.last_seen[bikeIndex] = value.toInt();
+                bikeIndex++; // Próxima bike
+                break;
         }
         
-        startPos = (commaPos == -1) ? csvData.length() : commaPos + 1;
+        if (commaPos == -1) break;
+        startPos = commaPos + 1;
+        fieldIndex++;
     }
     
     registry.bike_count = bikeIndex;
@@ -369,47 +359,38 @@ bool CloudSync::downloadBikeRegistryData()
         Serial.println("💾 Bike registry saved locally");
     }
 
-    Serial.printf("✅ Bike registry downloaded: %d approved bikes\n", bikeIndex);
+    Serial.printf("✅ Bike registry downloaded: %d bikes\n", bikeIndex);
     return true;
 }
 
 bool CloudSync::downloadBikeConfigs()
 {
-    if (!needsBikeConfigsUpdate())
-    {
-        Serial.println("⚙️ Bike configs already up to date - skipping download");
+    // Download individual otimizado para ESP32C3
+    Serial.println("🔄 Downloading bike configs individually...");
+    
+    // Baixar apenas para bikes conectadas (economia de RAM)
+    int connectedCount = BikeManager::getConnectedCount();
+    if (connectedCount == 0) {
+        Serial.println("📝 No bikes connected - skipping config download");
         return true;
     }
-
-    HTTPClient http;
-    String url = Endpoints::getBikeConfigs();
-
-    Serial.println("🔄 Downloading bike configs from Firebase...");
-
-    http.begin(url);
-    int httpCode = http.GET();
-
-    if (httpCode != HTTP_CODE_OK)
-    {
-        Serial.printf("❌ Bike configs download failed: HTTP %d\n", httpCode);
-        http.end();
-        return false;
+    
+    // TODO: Implementar lista de bikes conectadas
+    // Por enquanto, tentar baixar configs de exemplo
+    String testBikes[] = {"bpr-012345", "bpr-123456", "bpr-234567"};
+    int successCount = 0;
+    
+    for (int i = 0; i < 3; i++) {
+        if (BikeManager::downloadSingleBikeConfig(testBikes[i])) {
+            successCount++;
+        }
+        
+        // Pequeno delay para não sobrecarregar
+        delay(100);
     }
-
-    String csvData = http.getString();
-    http.end();
-
-    // Salvar CSV direto no arquivo para uso posterior
-    File file = LittleFS.open(BIKE_CONFIGS_FILE, "w");
-    if (file)
-    {
-        file.print(csvData);
-        file.close();
-        Serial.println("💾 Bike configs saved locally");
-    }
-
-    Serial.println("✅ Bike configs downloaded successfully!");
-    return true;
+    
+    Serial.printf("✅ Downloaded configs for %d/%d bikes\n", successCount, 3);
+    return (successCount > 0); // Sucesso se pelo menos 1 config foi baixada
 }
 
 bool CloudSync::uploadBufferData()

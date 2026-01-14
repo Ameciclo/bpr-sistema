@@ -77,6 +77,25 @@ bool SelfCheck::checkFileSystem() {
         return false;
     }
     
+    // Criar diretórios essenciais
+    if (!LittleFS.exists("/buffer")) {
+        if (LittleFS.mkdir("/buffer")) {
+            Serial.println("📁 Created /buffer directory");
+        } else {
+            Serial.println("❌ Failed to create /buffer directory");
+            return false;
+        }
+    }
+    
+    if (!LittleFS.exists("/backup")) {
+        if (LittleFS.mkdir("/backup")) {
+            Serial.println("📁 Created /backup directory");
+        } else {
+            Serial.println("❌ Failed to create /backup directory");
+            return false;
+        }
+    }
+    
     // Test write/read
     File testFile = LittleFS.open("/test.txt", "w");
     if (!testFile) {

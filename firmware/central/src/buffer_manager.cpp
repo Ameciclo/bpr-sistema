@@ -48,12 +48,7 @@ void BufferManager::cleanup() {
 
 void BufferManager::begin()
 {
-    // Criar diretório buffer se não existir
-    if (!LittleFS.exists(BUFFER_DIR)) {
-        LittleFS.mkdir(BUFFER_DIR);
-        Serial.printf("📁 Created buffer directory: %s\n", BUFFER_DIR);
-    }
-    
+    // Diretórios já criados no self-check
     cleanupOldBackups();
     loadAllBuffers();
     Serial.printf("📥 DataBuffer initialized: %d total items\n", getTotalDataCount());
@@ -311,7 +306,7 @@ bool BufferManager::loadBikeBuffer(const String &bikeId, BikeBuffer &bikeBuffer)
         BufferItemBin item;
         if (bufferFile.readBytes((char*)&item, sizeof(item)) != sizeof(item)) break;
         
-        bikeBuffer.buffer[i].bikeId = String(item.bikeId);
+        bikeBuffer.buffer[i].bikeId = intToBikeId(item.bikeId);
         bikeBuffer.buffer[i].timestamp = item.timestamp;
         bikeBuffer.buffer[i].size = item.size;
         bikeBuffer.buffer[i].crc32 = item.crc32;
@@ -353,8 +348,7 @@ bool BufferManager::saveBikeBuffer(const String &bikeId, const BikeBuffer &bikeB
     // Escrever items
     for (int i = 0; i < bikeBuffer.dataCount; i++) {
         BufferItemBin item;
-        strncpy(item.bikeId, bikeBuffer.buffer[i].bikeId.c_str(), sizeof(item.bikeId) - 1);
-        item.bikeId[sizeof(item.bikeId) - 1] = '\0';
+        item.bikeId = bikeIdToInt(bikeBuffer.buffer[i].bikeId);
         item.timestamp = bikeBuffer.buffer[i].timestamp;
         item.size = bikeBuffer.buffer[i].size;
         item.crc32 = bikeBuffer.buffer[i].crc32;
