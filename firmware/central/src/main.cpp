@@ -315,19 +315,28 @@ void loop()
         break;
     }
     case STATE_BIKE_PAIRING:
+    {
         BikePairing::update();
         
-        // Verificar se precisa fazer sync
-        if (BikePairing::isSafeToExit()) {
-            uint32_t elapsed = millis() - stateStartTime;
-            uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
+        // Verificar se precisa fazer sync apenas a cada 5 segundos
+        static uint32_t lastSyncCheck = 0;
+        uint32_t now = millis();
+        
+        if (now - lastSyncCheck > 5000) {
+            lastSyncCheck = now;
             
-            if (elapsed >= syncInterval || bufferManager.isFull()) {
-                Serial.println("🔄 Iniciando sync programada...");
-                changeState(STATE_CLOUD_SYNC);
+            if (BikePairing::isSafeToExit()) {
+                uint32_t elapsed = now - stateStartTime;
+                uint32_t syncInterval = configManager.getConfig().sync_interval_ms();
+                
+                if (elapsed >= syncInterval || bufferManager.isFull()) {
+                    Serial.println("🔄 Iniciando sync programada...");
+                    changeState(STATE_CLOUD_SYNC);
+                }
             }
         }
         break;
+    }
 
     case STATE_INITIAL_SYNC:
     case STATE_CLOUD_SYNC:

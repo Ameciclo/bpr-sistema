@@ -11,6 +11,7 @@ NimBLECharacteristic *BPRBLEServer::pDataChar = nullptr;
 NimBLECharacteristic *BPRBLEServer::pConfigChar = nullptr;
 uint8_t BPRBLEServer::connectedBikes = 0;
 std::map<uint16_t, String> BPRBLEServer::connectedDevices;
+std::map<uint16_t, uint32_t> BPRBLEServer::connectionTimeouts;
 
 // BUSY status tracking
 bool BPRBLEServer::isBusy = false;
@@ -34,14 +35,10 @@ class ServerCallbacks : public NimBLEServerCallbacks
                       addr.toString().c_str(), conn_handle, BPRBLEServer::connectedBikes);
         NimBLEDevice::startAdvertising();
 
-        // Generate potential bike_id from MAC for logging
-        std::string macStr = addr.toString();
-        String potentialBikeId = "bpr-" + String(macStr.c_str()).substring(9, 17);
-        potentialBikeId.replace(":", "");
-        potentialBikeId.toLowerCase();
-        
-        BPRBLEServer::connectedDevices[conn_handle] = potentialBikeId;
-        Serial.printf("📝 Potential bike ID: %s (from MAC)\n", potentialBikeId.c_str());
+        // Store as unidentified with 10s timeout
+        BPRBLEServer::connectedDevices[conn_handle] = "";
+        BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000; // 10s timeout
+        Serial.printf("📝 Device connected: %s (10s to identify as BPR bike)\n", addr.toString().c_str());
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -55,6 +52,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
         {
             bikeId = BPRBLEServer::connectedDevices[conn_handle];
             BPRBLEServer::connectedDevices.erase(conn_handle);
+            BPRBLEServer::connectionTimeouts.erase(conn_handle); // Remove timeout
             Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), BPRBLEServer::connectedBikes);
         }
         else
@@ -88,6 +86,12 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
         {
             String bikeId = doc["bike_id"];
             
+            // Only accept devices with valid BPR bike_id format
+            if (!bikeId.startsWith("bpr-")) {
+                Serial.printf("❌ Invalid device - not a BPR bike: %s\n", bikeId.c_str());
+                return;
+            }
+            
             // Find first available handle (simpler approach)
             uint16_t conn_handle = 0;
             for (auto &pair : BPRBLEServer::connectedDevices) {
@@ -98,8 +102,9 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
             }
             
             if (conn_handle != 0) {
-                // Map bike to this connection handle
+                // Map bike to this connection handle and clear timeout
                 BPRBLEServer::connectedDevices[conn_handle] = bikeId;
+                BPRBLEServer::connectionTimeouts.erase(conn_handle); // Valid bike, remove timeout
                 Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
 
                 // Notificar via callback se registrado
@@ -404,5 +409,26 @@ void BPRBLEServer::checkAdvertisingStatus() {
     } else {
         Serial.println("❌ BLE Advertising STOPPED! Restarting...");
         setBusyStatus(true, 0); // Force restart
+    }
+}
+
+void BPRBLEServer::checkConnectionTimeouts() {
+    if (!pServer) return;
+    
+    uint32_t now = millis();
+    std::vector<uint16_t> toDisconnect;
+    
+    // Find expired connections
+    for (auto &pair : connectionTimeouts) {
+        if (now > pair.second) {
+            uint16_t handle = pair.first;
+            toDisconnect.push_back(handle);
+        }
+    }
+    
+    // Disconnect expired devices
+    for (uint16_t handle : toDisconnect) {
+        Serial.printf("⏰ Disconnecting unidentified device (handle %d) - timeout\n", handle);
+        pServer->disconnect(handle);
     }
 }

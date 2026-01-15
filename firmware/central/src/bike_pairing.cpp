@@ -112,6 +112,7 @@ void BikePairing::update()
     // Atualizar status do BLE apenas a cada 5 segundos para evitar spam
     if (now - lastAdvertisingUpdate > 5000) {
         BPRBLEServer::updateAdvertisingStatus();
+        BPRBLEServer::checkConnectionTimeouts(); // Check for unidentified device timeouts
         lastAdvertisingUpdate = now;
     }
 
@@ -127,6 +128,10 @@ void BikePairing::exit()
         priorityQueue.pop();
     }
     pairingState.reset();
+    
+    // Marcar BLE como BUSY durante sync
+    BPRBLEServer::setBusyStatus(true, 60); // BUSY por 60 segundos (tempo típico de sync)
+    
     Serial.println("🔚 Exiting BIKE_PAIRING mode - BLE marked as BUSY");
 }
 
@@ -180,11 +185,23 @@ bool BikePairing::isSafeToExit()
         return false;
     }
     
-    // TODO: Verificar se há bikes conectadas com dados pendentes
+    // Verificação simples: se há bikes conectadas, aguardar um pouco mais
     uint8_t connectedBikes = BPRBLEServer::getConnectedBikes();
     if (connectedBikes > 0) {
-        Serial.printf("🔍 %d bikes connected - checking for pending data\n", connectedBikes);
-        // Por enquanto, assumir que é seguro se não há fila
+        static uint32_t lastConnectedCheck = 0;
+        uint32_t now = millis();
+        
+        // Log apenas a cada 30 segundos para evitar spam
+        if (now - lastConnectedCheck > 30000) {
+            Serial.printf("🔍 %d bikes connected - waiting for data or timeout\n", connectedBikes);
+            lastConnectedCheck = now;
+        }
+        
+        // Aguardar até 60 segundos por dados das bikes conectadas
+        uint32_t stateTime = now - stateStartTime;
+        if (stateTime < 60000) {
+            return false; // Não é seguro ainda
+        }
     }
     
     return true; // Seguro para sair

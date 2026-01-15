@@ -31,6 +31,7 @@ public:
     static bool isCentralBusy();
     static void printBLEInfo();
     static void checkAdvertisingStatus();
+    static void checkConnectionTimeouts(); // New function
     
     // Callbacks - agora como ponteiros para funções externas
     static DataCallback dataCallback;
@@ -45,6 +46,7 @@ public:
     static NimBLECharacteristic* pConfigChar;
     static uint8_t connectedBikes;
     static std::map<uint16_t, String> connectedDevices;
+    static std::map<uint16_t, uint32_t> connectionTimeouts;
     
     // BUSY status tracking
     static bool isBusy;
