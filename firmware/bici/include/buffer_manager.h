@@ -4,26 +4,36 @@
 #include <Arduino.h>
 #include "constants.h"
 
-class ConfigManager; // Forward declaration
-
 class BufferManager {
 private:
-    WiFiRecord* wifiBuffer;
-    int bufferCount;
-    int maxRecords;
+    SessionData currentSession;
+    bool sessionActive;
 
 public:
-    BufferManager(int maxRecords = 100);
-    ~BufferManager();
-    void addWiFiRecord(const WiFiRecord& record);
-    void clear();
+    BufferManager();
+    
+    // Session management
+    void startSession(const char* bikeId);
+    void endSession();
+    bool isSessionActive() const { return sessionActive; }
+    
+    // Data collection
+    void addScan(uint32_t timestamp, const NetworkData* networks, uint8_t count);
+    void addBattery(uint32_t timestamp, uint8_t percent);
+    
+    // Persistence
     void save();
     void load();
-    int getCount() const;
-    const WiFiRecord* getRecords() const;
+    void clear();
+    
+    // Data access
+    const SessionData& getCurrentSession() const { return currentSession; }
+    String toJson() const;
+    
+    // Status
     bool isEmpty() const;
     bool isFull() const;
-    void setMaxRecords(int max);
+    size_t getSize() const;
 };
 
 #endif

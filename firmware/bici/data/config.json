@@ -1,11 +1,10 @@
 {
   "bike_id": "",
   "bike_name": "",
-  "version": 1,
+  "version": 2,
   "dev_mode": true,
   "wifi": {
     "scan_interval_sec": 300,
-    "scan_interval_low_batt_sec": 900,
     "scan_timeout_ms": 5000,
     "max_networks": 20,
     "rssi_threshold": -90
@@ -17,7 +16,6 @@
   },
   "power": {
     "radio_coordination_delay_ms": 300,
-    "light_sleep_duration_ms": 1000,
     "deep_sleep_duration_sec": 3600,
     "max_time_without_base_sec": 7200
   },
@@ -26,12 +24,21 @@
     "low_voltage": 3.45,
     "full_voltage": 4.2
   },
-  "timing": {
-    "status_report_interval_ms": 30000,
-    "emergency_button_hold_ms": 3000
-  },
   "buffers": {
     "max_wifi_records": 100
   },
+  "battery_critical_percent": 15,
+  "battery_low_percent": 25,
+  "battery_recovery_percent": 30,
+  "checkin_interval_sec": 300,
+  "scan_interval_normal_sec": 25,
+  "scan_interval_low_battery_sec": 120,
+  "scan_interval_critical_sec": 300,
+  "checkin_low_battery_sec": 600,
+  "deep_sleep_duration_sec": 3600,
+  "deep_sleep_critical_sec": 7200,
+  "busy_retry_delay_sec": 30,
+  "enable_low_battery_mode": true,
+  "enable_emergency_upload": true,
   "timestamp": 0
 }

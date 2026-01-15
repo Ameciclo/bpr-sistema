@@ -4,52 +4,58 @@
 #include <Arduino.h>
 #include <cstdint>
 
-// Hardware Configuration (fixed)
+// Hardware Configuration
 #define LED_PIN 8
 #define BUTTON_PIN 9
 #define BATTERY_PIN A0
 
-// BLE Configuration (shared protocol - fixed)
+// BLE Configuration (from common/bpr_protocol.h)
 #define CENTRAL_BLE_NAME "BPR Central"
 #define BLE_SERVICE_UUID "12345678-1234-1234-1234-123456789abc"
 #define BLE_CHAR_DATA_UUID "87654321-4321-4321-4321-cba987654321"
 #define BLE_CHAR_CONFIG_UUID "11111111-2222-3333-4444-555555555555"
 
-// Message Types (shared protocol - fixed)
-#define MSG_TYPE_STATUS "status"
-#define MSG_TYPE_WIFI_DATA "wifi_data"
-#define MSG_TYPE_CONFIG_REQUEST "config_request"
-#define MSG_TYPE_CONFIG_PUSH "config_push"
-#define MSG_TYPE_CONFIG_ACK "config_ack"
+// Buffer Limits
+#define MAX_SCANS 50
+#define MAX_NETWORKS_PER_SCAN 20
+#define MAX_BATTERY 10
 
-// Deep Sleep Duration (hardware limit)
-#define DEEP_SLEEP_DURATION 3600000000ULL // 1 hour in microseconds
-
-// Config JSON Size
-#define CONFIG_JSON_SIZE 1024
-
-// State Machine
+// State Machine (FSD compliant)
 enum BikeState {
     STATE_BOOT = 0,
-    STATE_CONFIG_REQUEST = 1,
+    STATE_SCANNING = 1,
     STATE_AT_BASE = 2,
-    STATE_SCANNING = 3,
-    STATE_LOST = 4,
-    STATE_SLEEP = 5,
-    STATE_SLEEPING = 6,      // Deep sleep na base (4min50s)
-    STATE_WAKE_CHECK = 7,    // Acorda, verifica se está na base
-    STATE_DATA_UPLOAD = 8,   // Voltou na base, upload dados
-    STATE_LOW_BATTERY = 9    // Bateria crítica - modo emergência
+    STATE_LOST = 3,
+    STATE_SLEEP = 4
 };
 
-// WiFi Record Structure
-struct WiFiRecord {
-    uint32_t timestamp;
+// FSD Binary Structures
+struct NetworkData {
     char ssid[33];
-    uint8_t bssid[6];
-    int8_t rssi;
+    char bssid[18];
+    int16_t rssi;
     uint8_t channel;
-};
+} __attribute__((packed));
+
+struct ScanData {
+    uint32_t timestamp_millis;
+    uint8_t network_count;
+    NetworkData networks[MAX_NETWORKS_PER_SCAN];
+} __attribute__((packed));
+
+struct BatteryData {
+    uint32_t timestamp_millis;
+    uint8_t percent;
+} __attribute__((packed));
+
+struct SessionData {
+    char bike_id[16];
+    uint32_t session_start_millis;
+    uint16_t scan_count;
+    uint16_t battery_count;
+    ScanData scans[MAX_SCANS];
+    BatteryData battery[MAX_BATTERY];
+} __attribute__((packed));
 
 // Utility Functions
 String bssidToString(const uint8_t* bssid);

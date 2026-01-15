@@ -3,168 +3,77 @@
 #include <ArduinoJson.h>
 
 ConfigManager::ConfigManager() {
-    // Initialize with defaults
+    // Initialize with FSD defaults
+    config.version = 2;
     strcpy(config.bike_id, "");
     strcpy(config.bike_name, "");
-    strcpy(config.base_ble_name, CENTRAL_BLE_NAME);
-    config.version = 1;
     config.dev_mode = true;
     
     // WiFi defaults
-    config.scan_interval_sec = 300;
-    config.scan_interval_low_batt_sec = 900;
-    config.wifi_scan_timeout_ms = 5000;
-    config.wifi_max_networks = 20;
-    config.wifi_rssi_threshold = -90;
+    config.wifi.scan_interval_sec = 300;
+    config.wifi.scan_timeout_ms = 5000;
+    config.wifi.max_networks = 20;
+    config.wifi.rssi_threshold = -90;
     
     // BLE defaults
-    config.ble_scan_time_sec = 5;
-    config.ble_connection_timeout_ms = 10000;
+    strcpy(config.ble.base_name, CENTRAL_BLE_NAME);
+    config.ble.scan_time_sec = 5;
+    config.ble.connection_timeout_ms = 10000;
     
     // Power defaults
-    config.radio_coordination_delay_ms = 300;
-    config.light_sleep_duration_ms = 1000;
-    config.deep_sleep_sec = 3600;
-    config.max_time_without_base_sec = 7200;
+    config.power.deep_sleep_duration_sec = 3600;
+    config.power.radio_coordination_delay_ms = 300;
     
     // Battery defaults
-    config.battery_critical_voltage = 3.2;
-    config.min_battery_voltage = 3.45;
-    config.battery_full_voltage = 4.2;
+    config.battery.critical_voltage = 3.2;
+    config.battery.low_voltage = 3.45;
     
-    // Timing defaults
-    config.status_report_interval_ms = 30000;
-    config.emergency_button_hold_ms = 3000;
-    
-    // Buffer defaults
-    config.max_wifi_records = 100;
+    config.timestamp = 0;
 }
 
 bool ConfigManager::load() {
-    Serial.println("📂 Loading config from LittleFS...");
-    File file = LittleFS.open("/config.json", "r");
+    Serial.println("📂 Loading binary config...");
+    File file = LittleFS.open("/config.bin", "r");
     if (!file) {
         Serial.println("❌ Config file not found");
         return false;
     }
     
-    DynamicJsonDocument doc(2048);
-    DeserializationError error = deserializeJson(doc, file);
+    size_t bytesRead = file.readBytes((char*)&config, sizeof(BikeConfig));
     file.close();
     
-    if (error) {
-        Serial.printf("❌ JSON parse error: %s\n", error.c_str());
+    if (bytesRead != sizeof(BikeConfig)) {
+        Serial.printf("❌ Config size mismatch: %d != %d\n", bytesRead, sizeof(BikeConfig));
         return false;
     }
     
-    // Basic
-    strcpy(config.bike_id, doc["bike_id"] | "bici_001");
-    strcpy(config.bike_name, doc["bike_name"] | "");
-    config.version = doc["version"] | 1;
-    config.dev_mode = doc["dev_mode"] | true;
-    
-    // WiFi
-    JsonObject wifi = doc["wifi"];
-    config.scan_interval_sec = wifi["scan_interval_sec"] | 300;
-    config.scan_interval_low_batt_sec = wifi["scan_interval_low_batt_sec"] | 900;
-    config.wifi_scan_timeout_ms = wifi["scan_timeout_ms"] | 5000;
-    config.wifi_max_networks = wifi["max_networks"] | 20;
-    config.wifi_rssi_threshold = wifi["rssi_threshold"] | -90;
-    
-    // BLE
-    JsonObject ble = doc["ble"];
-    strcpy(config.base_ble_name, ble["base_name"] | CENTRAL_BLE_NAME);
-    config.ble_scan_time_sec = ble["scan_time_sec"] | 5;
-    config.ble_connection_timeout_ms = ble["connection_timeout_ms"] | 10000;
-    
-    // Power
-    JsonObject power = doc["power"];
-    config.radio_coordination_delay_ms = power["radio_coordination_delay_ms"] | 300;
-    config.light_sleep_duration_ms = power["light_sleep_duration_ms"] | 1000;
-    config.deep_sleep_sec = power["deep_sleep_duration_sec"] | 3600;
-    config.max_time_without_base_sec = power["max_time_without_base_sec"] | 7200;
-    
-    // Battery
-    JsonObject battery = doc["battery"];
-    config.battery_critical_voltage = battery["critical_voltage"] | 3.2;
-    config.min_battery_voltage = battery["low_voltage"] | 3.45;
-    config.battery_full_voltage = battery["full_voltage"] | 4.2;
-    
-    // Timing
-    JsonObject timing = doc["timing"];
-    config.status_report_interval_ms = timing["status_report_interval_ms"] | 30000;
-    config.emergency_button_hold_ms = timing["emergency_button_hold_ms"] | 3000;
-    
-    // Buffers
-    JsonObject buffers = doc["buffers"];
-    config.max_wifi_records = buffers["max_wifi_records"] | 100;
-    
-    Serial.printf("✅ Config loaded: %s v%d\n", config.bike_id, config.version);
+    Serial.printf("✅ Binary config loaded: %s v%d\n", config.bike_id, config.version);
     return true;
 }
 
 void ConfigManager::save() {
-    Serial.println("💾 Saving config to LittleFS...");
-    DynamicJsonDocument doc(2048);
+    Serial.println("💾 Saving binary config...");
+    config.timestamp = millis() / 1000;
     
-    // Basic
-    doc["bike_id"] = config.bike_id;
-    doc["bike_name"] = config.bike_name;
-    doc["version"] = config.version;
-    doc["dev_mode"] = config.dev_mode;
-    
-    // WiFi
-    JsonObject wifi = doc.createNestedObject("wifi");
-    wifi["scan_interval_sec"] = config.scan_interval_sec;
-    wifi["scan_interval_low_batt_sec"] = config.scan_interval_low_batt_sec;
-    wifi["scan_timeout_ms"] = config.wifi_scan_timeout_ms;
-    wifi["max_networks"] = config.wifi_max_networks;
-    wifi["rssi_threshold"] = config.wifi_rssi_threshold;
-    
-    // BLE
-    JsonObject ble = doc.createNestedObject("ble");
-    ble["base_name"] = config.base_ble_name;
-    ble["scan_time_sec"] = config.ble_scan_time_sec;
-    ble["connection_timeout_ms"] = config.ble_connection_timeout_ms;
-    
-    // Power
-    JsonObject power = doc.createNestedObject("power");
-    power["radio_coordination_delay_ms"] = config.radio_coordination_delay_ms;
-    power["light_sleep_duration_ms"] = config.light_sleep_duration_ms;
-    power["deep_sleep_duration_sec"] = config.deep_sleep_sec;
-    power["max_time_without_base_sec"] = config.max_time_without_base_sec;
-    
-    // Battery
-    JsonObject battery = doc.createNestedObject("battery");
-    battery["critical_voltage"] = config.battery_critical_voltage;
-    battery["low_voltage"] = config.min_battery_voltage;
-    battery["full_voltage"] = config.battery_full_voltage;
-    
-    // Timing
-    JsonObject timing = doc.createNestedObject("timing");
-    timing["status_report_interval_ms"] = config.status_report_interval_ms;
-    timing["emergency_button_hold_ms"] = config.emergency_button_hold_ms;
-    
-    // Buffers
-    JsonObject buffers = doc.createNestedObject("buffers");
-    buffers["max_wifi_records"] = config.max_wifi_records;
-    
-    doc["timestamp"] = millis() / 1000;
-    
-    File file = LittleFS.open("/config.json", "w");
+    File file = LittleFS.open("/config.bin", "w");
     if (file) {
-        serializeJson(doc, file);
+        size_t bytesWritten = file.write((uint8_t*)&config, sizeof(BikeConfig));
         file.close();
-        Serial.println("✅ Config saved successfully");
+        
+        if (bytesWritten == sizeof(BikeConfig)) {
+            Serial.printf("✅ Binary config saved (%d bytes)\n", bytesWritten);
+        } else {
+            Serial.printf("❌ Config write failed: %d/%d bytes\n", bytesWritten, sizeof(BikeConfig));
+        }
     } else {
-        Serial.println("❌ Failed to save config");
+        Serial.println("❌ Failed to open config file");
     }
 }
 
 void ConfigManager::generateUniqueId() {
-    // Always generate unique ID based on chip MAC
     String bikeId = generateBikeId();
-    strcpy(config.bike_id, bikeId.c_str());
+    strncpy(config.bike_id, bikeId.c_str(), 15);
+    config.bike_id[15] = '\0';
     Serial.printf("🆔 Generated bike ID: %s\n", config.bike_id);
     save();
 }
@@ -178,100 +87,70 @@ bool ConfigManager::processUpdate(const String& configJson) {
         return false;
     }
     
-    // Check if this config is for us
-    if (doc["target_bike"] && doc["target_bike"] != config.bike_id) {
-        Serial.printf("🚫 Config not for us (target: %s, us: %s)\n", 
-                      doc["target_bike"].as<String>().c_str(), config.bike_id);
-        return false;
-    }
-    
-    JsonObject configData = doc["config"];
-    if (!configData) {
-        Serial.println("❌ No config data found");
-        return false;
-    }
-    
     bool configChanged = false;
     
-    // Update basic config
-    if (configData["bike_name"]) {
-        strcpy(config.bike_name, configData["bike_name"]);
-        configChanged = true;
-    }
-    if (configData["version"]) {
-        config.version = configData["version"];
-        configChanged = true;
-    }
-    if (configData["dev_mode"]) {
-        config.dev_mode = configData["dev_mode"];
-        configChanged = true;
-    }
-    
     // Update WiFi config
-    if (configData["wifi"]["scan_interval_sec"]) {
-        config.scan_interval_sec = configData["wifi"]["scan_interval_sec"];
+    if (doc["wifi"]["scan_interval_sec"]) {
+        config.wifi.scan_interval_sec = doc["wifi"]["scan_interval_sec"];
         configChanged = true;
     }
-    if (configData["wifi"]["scan_timeout_ms"]) {
-        config.wifi_scan_timeout_ms = configData["wifi"]["scan_timeout_ms"];
+    if (doc["wifi"]["scan_timeout_ms"]) {
+        config.wifi.scan_timeout_ms = doc["wifi"]["scan_timeout_ms"];
         configChanged = true;
     }
-    if (configData["wifi"]["max_networks"]) {
-        config.wifi_max_networks = configData["wifi"]["max_networks"];
+    if (doc["wifi"]["max_networks"]) {
+        config.wifi.max_networks = doc["wifi"]["max_networks"];
         configChanged = true;
     }
-    if (configData["wifi"]["rssi_threshold"]) {
-        config.wifi_rssi_threshold = configData["wifi"]["rssi_threshold"];
+    if (doc["wifi"]["rssi_threshold"]) {
+        config.wifi.rssi_threshold = doc["wifi"]["rssi_threshold"];
         configChanged = true;
     }
     
     // Update BLE config
-    if (configData["ble"]["base_name"]) {
-        strcpy(config.base_ble_name, configData["ble"]["base_name"]);
+    if (doc["ble"]["base_name"]) {
+        strncpy(config.ble.base_name, doc["ble"]["base_name"], 31);
+        config.ble.base_name[31] = '\0';
         configChanged = true;
     }
-    if (configData["ble"]["scan_time_sec"]) {
-        config.ble_scan_time_sec = configData["ble"]["scan_time_sec"];
+    if (doc["ble"]["scan_time_sec"]) {
+        config.ble.scan_time_sec = doc["ble"]["scan_time_sec"];
         configChanged = true;
     }
     
     // Update power config
-    if (configData["power"]["deep_sleep_duration_sec"]) {
-        config.deep_sleep_sec = configData["power"]["deep_sleep_duration_sec"];
-        configChanged = true;
-    }
-    if (configData["power"]["radio_coordination_delay_ms"]) {
-        config.radio_coordination_delay_ms = configData["power"]["radio_coordination_delay_ms"];
+    if (doc["power"]["deep_sleep_duration_sec"]) {
+        config.power.deep_sleep_duration_sec = doc["power"]["deep_sleep_duration_sec"];
         configChanged = true;
     }
     
     // Update battery config
-    if (configData["battery"]["critical_voltage"]) {
-        config.battery_critical_voltage = configData["battery"]["critical_voltage"];
+    if (doc["battery"]["critical_voltage"]) {
+        config.battery.critical_voltage = doc["battery"]["critical_voltage"];
         configChanged = true;
     }
-    if (configData["battery"]["low_voltage"]) {
-        config.min_battery_voltage = configData["battery"]["low_voltage"];
+    if (doc["battery"]["low_voltage"]) {
+        config.battery.low_voltage = doc["battery"]["low_voltage"];
         configChanged = true;
     }
     
     if (configChanged) {
+        config.version++;
         Serial.printf("✅ Config updated: %s v%d\n", config.bike_name, config.version);
         save();
         return true;
-    } else {
-        Serial.println("📝 No config changes detected");
-        return false;
     }
+    
+    return false;
 }
 
 bool ConfigManager::isValid() {
     return (strlen(config.bike_id) > 0 && 
             config.version > 0 &&
-            config.scan_interval_sec > 0 &&
-            config.wifi_scan_timeout_ms > 0);
+            config.wifi.scan_interval_sec > 0 &&
+            config.wifi.scan_timeout_ms > 0);
 }
 
-Config& ConfigManager::getConfig() {
+BikeConfig& ConfigManager::getConfig() {
     return config;
 }

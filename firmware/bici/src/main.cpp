@@ -41,21 +41,9 @@ LostState* lostState = nullptr;
 // Current state
 BikeState currentState = STATE_BOOT;
 
-// Timers from config.json (loaded at initialization)
-// Default values if config.json doesn't exist:
-uint32_t checkin_interval_sec = 300;        // "dar oi" a cada 5min
-uint32_t scan_interval_sec = 25;            // WiFi scan a cada 25s
-uint32_t low_battery_scan_interval_sec = 120; // Scan mais lento se bateria baixa
-uint8_t battery_critical_percent = 15;      // Entra em LOW_BATTERY
-uint8_t battery_low_percent = 25;           // Reduz frequência de scans
-
 // Function declarations
 void handleBoot();
-void handleConfigRequest();
 void handleSleep();
-void handleWakeCheck();
-void handleLowBattery();
-void loadTimersFromConfig();
 
 void setup() {
     Serial.begin(115200);
@@ -77,31 +65,26 @@ void setup() {
     // Initialize BLE with the bike_id
     NimBLEDevice::init(configManager.getConfig().bike_id);
     
-    // Fluxo de inicialização:
+    // Fluxo de inicialização (sem CONFIG_REQUEST):
     if (!configManager.load() || !configManager.isValid()) {
-        // Qualquer bike sem config válida (nova OU corrompida)
-        currentState = STATE_CONFIG_REQUEST;
-    } else {
-        // Carregar timers do config.json
-        loadTimersFromConfig();
-        // Load saved buffer if exists
-        bufferManager.load();
-        currentState = STATE_WAKE_CHECK;
+        // Central detecta necessidade e envia config
+        Serial.println("⚠️ No config - central will detect and push");
     }
+    
+    // Load saved buffer if exists
+    bufferManager.load();
+    currentState = STATE_BOOT;
     
     // Initialize state handlers
     atBaseState = new AtBaseState(configManager, bufferManager);
     scanningState = new ScanningState(configManager, bufferManager);
     lostState = new LostState(configManager, bufferManager);
-    
-    // Update buffer size based on config
-    bufferManager.setMaxRecords(configManager.getConfig().max_wifi_records);
 }
 
 void loop() {
     BikeState nextState = currentState;
     
-    // Check battery state first
+    // Check battery state first (FSD requirement)
     nextState = powerManager.checkBatteryState(currentState, configManager.getConfig());
     
     switch (currentState) {
@@ -109,44 +92,17 @@ void loop() {
             handleBoot();
             break;
             
-        case STATE_CONFIG_REQUEST:
-            handleConfigRequest();
-            break;
+        case STATE_SCANNING:
+            nextState = scanningState->update();
             
-        case STATE_WAKE_CHECK:
-            handleWakeCheck();
+            // FSD: Check if base detected during scanning
+            if (atBaseState->scanForBase()) {
+                nextState = STATE_AT_BASE;
+            }
             break;
             
         case STATE_AT_BASE:
             nextState = atBaseState->update();
-            break;
-            
-        case STATE_SCANNING:
-            nextState = scanningState->update();
-            
-            if (atBaseState->scanForBase()) {
-                nextState = STATE_DATA_UPLOAD;
-            } else {
-                // Se não encontrou base ou central ocupada, continuar scanning
-                nextState = STATE_SCANNING;
-            }
-            break;
-            
-        case STATE_DATA_UPLOAD:
-            nextState = atBaseState->update();
-            if (nextState == STATE_AT_BASE) {
-                // Data uploaded successfully, can sleep
-                nextState = STATE_SLEEPING;
-            }
-            break;
-            
-        case STATE_LOW_BATTERY:
-            handleLowBattery();
-            break;
-            
-        case STATE_SLEEPING:
-            // This should trigger deep sleep
-            powerManager.enterDeepSleep(powerManager.getSleepDuration(configManager.getConfig()));
             break;
             
         case STATE_LOST:
@@ -170,106 +126,38 @@ void loop() {
 void handleBoot() {
     Serial.println("🔄 BOOT");
     
-    Config& config = configManager.getConfig();
+    BikeConfig& config = configManager.getConfig();
     
     // Show current config
     Serial.println("📋 Current Configuration:");
     Serial.printf("   🆔 ID: %s (v%d)\n", config.bike_id, config.version);
-    Serial.printf("   📡 WiFi Scan: %ds interval, %dms timeout\n", config.scan_interval_sec, config.wifi_scan_timeout_ms);
-    Serial.printf("   🔵 BLE: %ds scan, base='%s'\n", config.ble_scan_time_sec, config.base_ble_name);
-    Serial.printf("   🔋 Battery: %.2fV critical, %.2fV low\n", config.battery_critical_voltage, config.min_battery_voltage);
+    Serial.printf("   📡 WiFi: %ds interval, %dms timeout\n", config.wifi.scan_interval_sec, config.wifi.scan_timeout_ms);
+    Serial.printf("   🔵 BLE: %ds scan, base='%s'\n", config.ble.scan_time_sec, config.ble.base_name);
+    Serial.printf("   🔋 Battery: %.2fV critical, %.2fV low\n", config.battery.critical_voltage, config.battery.low_voltage);
     Serial.printf("   🛠️ Dev Mode: %s\n", config.dev_mode ? "ON" : "OFF");
     
     // Check battery
     powerManager.logBatteryStatus();
     
     if (powerManager.isCriticalBattery(config) && !config.dev_mode) {
-        Serial.println("🔋 Bateria crítica - entering LOW_BATTERY state");
-        currentState = STATE_LOW_BATTERY;
+        Serial.println("🔋 Critical battery - entering sleep\n");
+        currentState = STATE_SLEEP;
         return;
-    } else if (powerManager.isCriticalBattery(config) && config.dev_mode) {
-        Serial.println("🛠️ DEV MODE: Ignoring low battery");
     }
     
-    currentState = STATE_WAKE_CHECK;
-}
-
-void handleWakeCheck() {
-    Serial.println("🔄 WAKE_CHECK - Verifying if at base");
-    
-    // Try to find base
-    if (atBaseState->scanForBase()) {
-        currentState = STATE_DATA_UPLOAD;
-    } else {
-        currentState = STATE_SCANNING;
-    }
-}
-
-void handleLowBattery() {
-    Serial.println("😨 LOW_BATTERY - Emergency mode");
-    
-    BikeState nextState = powerManager.handleLowBatteryState(configManager.getConfig());
-    if (nextState != STATE_LOW_BATTERY) {
-        currentState = nextState;
-    }
-}
-
-void loadTimersFromConfig() {
-    Config& config = configManager.getConfig();
-    
-    // Load intervals from config
-    checkin_interval_sec = config.checkin_interval_sec;
-    scan_interval_sec = config.scan_interval_normal_sec;
-    low_battery_scan_interval_sec = config.scan_interval_low_battery_sec;
-    battery_critical_percent = config.battery_critical_percent;
-    battery_low_percent = config.battery_low_percent;
-    
-    Serial.println("⚙️ Timers loaded from config:");
-    Serial.printf("   Checkin: %ds, Scan: %ds, Low battery scan: %ds\n", 
-                  checkin_interval_sec, scan_interval_sec, low_battery_scan_interval_sec);
-    Serial.printf("   Battery thresholds: %d%% critical, %d%% low\n", 
-                  battery_critical_percent, battery_low_percent);
-}
-
-void handleConfigRequest() {
-    static unsigned long lastScan = 0;
-    
-    Serial.println("🔍 CONFIG REQUEST - Searching for BLE base to get configuration...");
-    
-    // Search for base every 5 seconds
-    if (millis() - lastScan > 5000) {
-        if (atBaseState->scanForBase()) {
-            Serial.println("✅ Base found! Requesting configuration...");
-            if (atBaseState->requestConfig()) {
-                Serial.println("✅ Configuration received and saved!");
-                currentState = STATE_BOOT;
-                return;
-            } else {
-                Serial.println("❌ Failed to get configuration from base");
-            }
-        }
-        lastScan = millis();
-    }
-    
-    // Fallback: button to use default configuration
-    if (digitalRead(BUTTON_PIN) == LOW) {
-        delay(100);
-        if (digitalRead(BUTTON_PIN) == LOW) {
-            Serial.println("🔧 Using default configuration (button pressed)");
-            configManager.save();
-            currentState = STATE_BOOT;
-        }
-    }
-    
-    delay(1000);
+    // Always go to SCANNING (central detects config needs)
+    bufferManager.startSession(config.bike_id);
+    currentState = STATE_SCANNING;
 }
 
 void handleSleep() {
-    Serial.println("💤 Deep sleep for configured duration");
+    Serial.println("💤 Entering deep sleep");
     
-    // Save buffer
+    // End current session and save
+    bufferManager.endSession();
     bufferManager.save();
     
-    // Use power manager for sleep
-    powerManager.enterDeepSleep(powerManager.getSleepDuration(configManager.getConfig()));
+    // Deep sleep for configured duration
+    BikeConfig& config = configManager.getConfig();
+    powerManager.enterDeepSleep(config.power.deep_sleep_duration_sec);
 }

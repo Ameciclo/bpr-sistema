@@ -2,15 +2,16 @@
 #include <WiFi.h>
 
 String bssidToString(const uint8_t* bssid) {
-    char bssidStr[18];
-    sprintf(bssidStr, "%02X:%02X:%02X:%02X:%02X:%02X",
-            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-    return String(bssidStr);
+    char buffer[18];
+    snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
+             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    return String(buffer);
 }
 
 String generateBikeId() {
-    uint64_t chipid = ESP.getEfuseMac();
-    char bikeId[16];
-    sprintf(bikeId, "bpr-%06llx", chipid & 0xFFFFFF);
-    return String(bikeId);
+    uint64_t chipId = ESP.getEfuseMac();
+    uint32_t id = (uint32_t)(chipId & 0xFFFFFF);
+    char buffer[12];
+    snprintf(buffer, sizeof(buffer), "bpr-%06u", id);
+    return String(buffer);
 }
