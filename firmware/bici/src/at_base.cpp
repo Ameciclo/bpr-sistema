@@ -10,37 +10,20 @@ AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr)
       bleConnected(false), lastStatusSent(0) {}
 
 bool AtBaseState::scanForBase() {
-    Config& config = configManager.getConfig();
+    BikeConfig& config = configManager.getConfig();
     Serial.printf("🔍 Scanning for BLE base '%s*' (timeout: %ds)...\n", 
-                  config.base_ble_name, config.ble_scan_time_sec);
+                  config.ble.base_name, config.ble.scan_time_sec);
     
     NimBLEScan* pScan = NimBLEDevice::getScan();
     pScan->setActiveScan(true);
-    NimBLEScanResults results = pScan->start(config.ble_scan_time_sec, false);
+    NimBLEScanResults results = pScan->start(config.ble.scan_time_sec, false);
     
     for (int i = 0; i < results.getCount(); i++) {
         NimBLEAdvertisedDevice device = results.getDevice(i);
         
-        if (device.getName().find(config.base_ble_name) != std::string::npos) {
+        if (device.getName().find(config.ble.base_name) != std::string::npos) {
             Serial.printf("🔍 Found base: %s\n", device.getName().c_str());
             
-            // Verificar manufacturer data para status
-            std::string manufacturerData = device.getManufacturerData();
-            String status = String(manufacturerData.c_str());
-            
-            if (status.startsWith("BUSY:")) {
-                int waitTime = extractWaitTime(status);  // "BUSY:240" → 240s
-                Serial.printf("🚫 Central busy for %ds, sleeping extra\n", waitTime);
-                
-                // Dormir tempo sugerido + margem de segurança
-                uint32_t sleepTime = waitTime + config.busy_retry_delay_sec;
-                powerManager.enterDeepSleep(sleepTime);
-                
-                pScan->clearResults();
-                return false;  // Não conectar agora
-            }
-            
-            // Status "AVAILABLE" ou sem status → conectar normalmente
             if (connectToBase(&device)) {
                 pScan->clearResults();
                 return true;
@@ -54,15 +37,14 @@ bool AtBaseState::scanForBase() {
 }
 
 bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
-    Config& config = configManager.getConfig();
+    BikeConfig& config = configManager.getConfig();
     pClient = NimBLEDevice::createClient();
     
-    Serial.printf("🔗 Attempting BLE connection (timeout: %dms)...\n", config.ble_connection_timeout_ms);
+    Serial.printf("🔗 Attempting BLE connection (timeout: %dms)...\n", config.ble.connection_timeout_ms);
     if (pClient->connect(device)) {
         Serial.println("✅ BLE connection established");
         
-        // Get service and characteristics with retry
-        Serial.printf("🔍 Looking for service: %s\n", BLE_SERVICE_UUID);
+        // Get service and characteristics
         NimBLERemoteService* pService = pClient->getService(BLE_SERVICE_UUID);
         if (!pService) {
             Serial.println("❌ Service not found");
@@ -70,41 +52,16 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
             return false;
         }
         
-        // Try to get characteristics with retries
-        for (int retry = 0; retry < 5; retry++) {
-            delay(1000); // Wait before each attempt
-            
-            pDataChar = pService->getCharacteristic(BLE_CHAR_DATA_UUID);
-            pConfigChar = pService->getCharacteristic(BLE_CHAR_CONFIG_UUID);
-            
-            if (pDataChar && pConfigChar) {
-                Serial.println("✅ Characteristics found successfully");
-                break; // Success
-            }
-            
-            Serial.printf("⏳ Characteristics not ready, retry %d/5...\n", retry + 1);
-        }
+        pDataChar = pService->getCharacteristic(BLE_CHAR_DATA_UUID);
+        pConfigChar = pService->getCharacteristic(BLE_CHAR_CONFIG_UUID);
         
         if (!pDataChar || !pConfigChar) {
-            Serial.println("❌ Required characteristics not found after retries");
+            Serial.println("❌ Required characteristics not found");
             pClient->disconnect();
             return false;
         }
         
         bleConnected = true;
-        
-        // Setup config notifications
-        if (pConfigChar->canNotify()) {
-            pConfigChar->subscribe(true, [this](NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
-                String response = String((char*)pData, length);
-                Serial.printf("📥 Config response: %s\n", response.c_str());
-                processHeartbeatResponse(response);
-            });
-        }
-        
-        // Setup disconnect callback
-        pClient->setClientCallbacks(new ClientCallbacks(this));
-        
         return true;
     }
     
@@ -115,18 +72,8 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
 void AtBaseState::sendStatus() {
     if (!pClient || !bleConnected || !pDataChar) return;
     
-    Config& config = configManager.getConfig();
-    DynamicJsonDocument doc(256);
-    doc["type"] = "heartbeat";
-    doc["bike_id"] = config.bike_id;
-    doc["battery_percent"] = getBatteryPercent(); // não voltage
-    doc["has_data"] = !bufferManager.isEmpty();
-    doc["config_version"] = config.version;
-    doc["timestamp"] = millis() / 1000;
-    doc["heap"] = ESP.getFreeHeap();
-    
-    String json;
-    serializeJson(doc, json);
+    BikeConfig& config = configManager.getConfig();
+    String json = powerManager.getBatteryReport(config);
     
     pDataChar->writeValue(json.c_str());
     Serial.printf("📤 Heartbeat: %s\n", json.c_str());
@@ -135,29 +82,9 @@ void AtBaseState::sendStatus() {
 void AtBaseState::sendWiFiData() {
     if (!pClient || !bleConnected || !pDataChar || bufferManager.isEmpty()) return;
     
-    Config& config = configManager.getConfig();
-    DynamicJsonDocument doc(2048);
-    doc["bike_id"] = config.bike_id;
-    doc["battery"] = getBatteryVoltage();
-    doc["records"] = bufferManager.getCount();
-    doc["timestamp"] = millis() / 1000;
-    
-    JsonArray scans = doc.createNestedArray("wifi_scans");
-    
-    const WiFiRecord* records = bufferManager.getRecords();
-    for (int i = 0; i < bufferManager.getCount(); i++) {
-        JsonObject scan = scans.createNestedObject();
-        scan["ssid"] = records[i].ssid;
-        scan["bssid"] = bssidToString(records[i].bssid);
-        scan["rssi"] = records[i].rssi;
-        scan["channel"] = records[i].channel;
-    }
-    
-    String json;
-    serializeJson(doc, json);
-    
+    String json = bufferManager.toJson();
     pDataChar->writeValue(json.c_str());
-    Serial.printf("📡 WiFi data: %d records sent\n", bufferManager.getCount());
+    Serial.printf("📡 WiFi data sent\n");
 }
 
 bool AtBaseState::requestConfig() {
@@ -166,22 +93,17 @@ bool AtBaseState::requestConfig() {
         return false;
     }
     
-    Config& config = configManager.getConfig();
+    BikeConfig& config = configManager.getConfig();
     Serial.println("📡 Requesting configuration from base...");
     
     DynamicJsonDocument request(256);
-    request["type"] = MSG_TYPE_CONFIG_REQUEST;
+    request["type"] = "config_request";
     request["bike_id"] = config.bike_id;
     
     String requestStr;
     serializeJson(request, requestStr);
     
-    Serial.printf("📤 Config request: %s\n", requestStr.c_str());
     pConfigChar->writeValue(requestStr.c_str());
-    
-    delay(3000);
-    Serial.println("⏳ Config request sent, waiting for notification...");
-    
     return true;
 }
 
@@ -193,7 +115,7 @@ BikeState AtBaseState::update() {
     Serial.println("🏠 AT_BASE - Syncing data");
     
     // Send status periodically
-    if (millis() - lastStatusSent > configManager.getConfig().status_report_interval_ms) {
+    if (millis() - lastStatusSent > 5000) {
         sendStatus();
         lastStatusSent = millis();
     }
