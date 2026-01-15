@@ -1,6 +1,6 @@
 # Central Firmware - Fluxo Completo
 
-Este documento descreve o funcionamento completo do firmware da central BPR como **Hub Inteligente**, incluindo gerenciamento de múltiplas bicicletas e sistema de configuração bidirecional.
+Este documento descreve o funcionamento completo do firmware da central BPR como **central Inteligente**, incluindo gerenciamento de múltiplas bicicletas e sistema de configuração bidirecional.
 
 ## 1. 🔄 Fluxo Principal dos Modos (Atualizado)
 

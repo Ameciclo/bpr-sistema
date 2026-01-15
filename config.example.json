@@ -1,0 +1,125 @@
+{
+  "bases": {
+    "<BASE_NAME>": {
+      "bikes": {
+        "last_update": "<TIMESTAMP_HUMAN>",
+        "<BIKE_ID>": {
+          "first_seen": 0,
+          "first_seen_human": "<TIMESTAMP_HUMAN>",
+          "last_visit": 0,
+          "last_visit_human": "<TIMESTAMP_HUMAN>",
+          "status": "pending",
+          "visit_count": 0
+        }
+      },
+      "configs": {
+        "last_update": "<TIMESTAMP_HUMAN>",
+        "backup": {
+          "enabled": true,
+          "retention_hours": 24
+        },
+        "base_id": "<BASE_ID>",
+        "buffer": {
+          "auto_save_interval": 5,
+          "max_item_size": 256,
+          "max_size": 50,
+          "sync_threshold_percent": 80
+        },
+        "compression": {
+          "enabled": true,
+          "min_size_bytes": 64
+        },
+        "fallback": {
+          "sync_max_retries": 3,
+          "config_ap_timeout_sec": 300,
+          "max_failures": 5,
+          "timeout_min": 30
+        },
+        "intervals": {
+          "cleanup_sec": 60,
+          "led_count_sec": 30,
+          "log_sec": 15,
+          "sync_sec": 90
+        },
+        "led": {
+          "bike_arrived_ms": 150,
+          "bike_left_ms": 800,
+          "ble_ready_ms": 2000,
+          "boot_ms": 100,
+          "count_ms": 300,
+          "count_pause_ms": 1500,
+          "error_ms": 50,
+          "wifi_sync_ms": 500
+        },
+        "limits": {
+          "batch_size": 8000,
+          "max_bikes": 10
+        },
+        "storage": {
+          "aggressive_cleanup_multiplier": 0.5,
+          "min_free_kb": 20,
+          "warning_threshold_kb": 10
+        },
+        "timeouts": {
+          "firebase_ms": 10000,
+          "wifi_sec": 60
+        }
+      },
+      "data": {
+        "base_id": "<BASE_ID>",
+        "data": [],
+        "data_count": 0,
+        "hub_id": "hub_default",
+        "timestamp": 0
+      },
+      "last_heartbeat": {
+        "bikes_connected": 0,
+        "heap": 0,
+        "timestamp": 0,
+        "timestamp_human": "<TIMESTAMP_HUMAN>",
+        "uptime": 0
+      }
+    }
+  },
+  "bike_configs": {
+    "last_update": "<TIMESTAMP_HUMAN>",
+    "<BIKE_ID>": {
+      "battery": {
+        "critical_voltage": 3.2,
+        "low_voltage": 3.45,
+        "critical_percent": 15,
+        "low_percent": 25,
+        "recovery_percent": 30
+      },
+      "bike_name": "<BIKE_DISPLAY_NAME>",
+      "ble": {
+        "base_name": "<BASE_NAME>",
+        "scan_time_sec": 5
+      },
+      "dev_mode": false,
+      "power": {
+        "deep_sleep_duration_sec": 3600,
+        "deep_sleep_critical_sec": 7200
+      },
+      "intervals": {
+        "checkin_interval_sec": 300,
+        "scan_interval_normal_sec": 25,
+        "scan_interval_low_battery_sec": 120,
+        "scan_interval_critical_sec": 300,
+        "checkin_low_battery_sec": 600
+      },
+      "timeouts": {
+        "max_time_without_base_sec": 7200
+      },
+      "states": {
+        "enable_low_battery_mode": true,
+        "enable_emergency_upload": true
+      },
+      "last_update": "<TIMESTAMP_HUMAN>",
+      "wifi": {
+        "scan_interval_sec": 300,
+        "scan_timeout_ms": 5000
+      }
+    }
+  }
+}

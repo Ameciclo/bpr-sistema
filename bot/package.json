@@ -19,5 +19,5 @@
   },
   "keywords": ["telegram", "bot", "firebase", "wifi", "geolocation"],
   "author": "Daniel",
-  "license": "MIT"
+  "license": "AGPL-3.0"
 }

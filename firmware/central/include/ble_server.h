@@ -14,11 +14,30 @@ public:
     static void sendConfigToHandle(uint16_t handle, const String& bikeId, const String& config);
     static void checkAndSendPendingConfig(const String& bikeId, uint16_t handle);
     
-    // Callbacks implementados externamente no bike_pairing.cpp
-    static void onBikeConnected(const String& bikeId);
-    static void onBikeDisconnected(const String& bikeId);
-    static void onBikeDataReceived(const String& bikeId, const String& jsonData);
-    static void onConfigRequest(const String& bikeId, const String& request);
+    // Callback setters para BLE Server
+    typedef void (*DataCallback)(const String& bikeId, const String& jsonData);
+    typedef void (*ConnectCallback)(const String& bikeId);
+    typedef void (*DisconnectCallback)(const String& bikeId);
+    typedef void (*ConfigCallback)(const String& bikeId, const String& request);
+    
+    static void setDataCallback(DataCallback callback);
+    static void setConnectCallback(ConnectCallback callback);
+    static void setDisconnectCallback(DisconnectCallback callback);
+    static void setConfigCallback(ConfigCallback callback);
+    
+    // === ADVERTISING STATUS MANAGEMENT ===
+    static void setBusyStatus(bool busy, uint32_t durationSeconds = 300);
+    static void updateAdvertisingStatus();
+    static bool isCentralBusy();
+    static void printBLEInfo();
+    static void checkAdvertisingStatus();
+    static void checkConnectionTimeouts(); // New function
+    
+    // Callbacks - agora como ponteiros para funções externas
+    static DataCallback dataCallback;
+    static ConnectCallback connectCallback;
+    static DisconnectCallback disconnectCallback;
+    static ConfigCallback configCallback;
     
     // Static members - public para acesso das callbacks
     static NimBLEServer* pServer;
@@ -27,4 +46,9 @@ public:
     static NimBLECharacteristic* pConfigChar;
     static uint8_t connectedBikes;
     static std::map<uint16_t, String> connectedDevices;
+    static std::map<uint16_t, uint32_t> connectionTimeouts;
+    
+    // BUSY status tracking
+    static bool isBusy;
+    static uint32_t busyUntil;
 };

@@ -1,35 +1,48 @@
-# BPR Central v2.0 - Central para ESP32-WROOM-32D
+# BPR Central v2.0 - Central para Seeed XIAO ESP32C3
 
-Sistema central ESP32-WROOM-32D redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase.
+Sistema central redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase. **Hardware alvo: Seeed XIAO ESP32C3**.
 
 ## 🎯 Características Principais
 
-- **Arquitetura por Estados**: Máquina de estados bem definida
+- **Arquitetura por Estados**: Máquina de estados bem definida (6 estados)
 - **Gerenciamento de Bikes**: Sistema completo de registro, validação e heartbeat
 - **Configuração Dinâmica**: Configs por bike baixadas do Firebase
 - **Push Automático**: Configs enviadas automaticamente via BLE
 - **Validação Rigorosa**: Só bikes autorizadas podem enviar dados
 - **Timestamps Precisos**: Central adiciona timestamp de recebimento
 - **Self-Check**: Diagnóstico automático de hardware
+- **Buffer Dinâmico**: Gerenciamento inteligente de memória baseado no heap
+- **Formato Binário**: Estruturas otimizadas para ESP32C3
 
 ## 📁 Estrutura de Arquivos
 
 ```
-central/src/
-├── main.cpp                    # 🚀 Entry point + self-check
-├── config_manager.cpp          # ⚙️ Configurações da central
-├── config_ap.cpp               # 📱 Estado: Configuração via AP
-├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
-├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
-├── buffer_manager.cpp          # 📦 Buffer local de dados
-├── led_controller.cpp          # 💡 Padrões de LED inteligentes
-├── bike_manager.cpp            # 🚲 Registro e validação de bikes
-├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
-├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
-├── sync_monitor.cpp            # 📊 Monitor de sincronização
-├── time_sync.cpp               # ⏰ Sincronização de tempo NTP
-├── upload_queue.cpp            # 📤 Fila de upload para Firebase
-└── self_check.cpp              # 🔧 Diagnóstico de hardware
+central/
+├── src/
+│   ├── main.cpp                    # 🚀 Entry point + máquina de estados
+│   ├── config_manager.cpp          # ⚙️ Configurações da central (binário)
+│   ├── config_ap.cpp               # 📱 Estado: Configuração via AP
+│   ├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
+│   ├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
+│   ├── buffer_manager.cpp          # 📦 Buffer dinâmico de dados
+│   ├── led_controller.cpp          # 💡 Padrões de LED (Pin 8)
+│   ├── bike_manager.cpp            # 🚲 Registro e validação de bikes
+│   ├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
+│   ├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
+│   ├── sync_monitor.cpp            # 📊 Monitor de sincronização
+│   ├── time_sync.cpp               # ⏰ Sincronização de tempo NTP
+│   ├── upload_queue.cpp            # 📤 Fila de upload para Firebase
+│   ├── self_check.cpp              # 🔧 Diagnóstico de hardware
+│   ├── endpoints.cpp               # 🌐 URLs do Firebase
+│   ├── bpr_json_helper.cpp         # 🔧 Helpers para JSON
+│   └── bpr_string_helper.cpp       # 🔧 Helpers para strings
+├── include/
+│   ├── binary_structs.h            # 📦 Estruturas binárias otimizadas
+│   ├── constants.h                 # 🔧 Constantes e enums
+│   └── [outros headers...]
+├── platformio.ini                  # ⚙️ Configuração PlatformIO
+├── partitions.csv                  # 💾 Partições de memória
+└── LICENSE                         # 📄 AGPL-3.0
 ```
 
 ## 🔄 Máquina de Estados
@@ -213,7 +226,7 @@ flowchart TD
 }
 ```
 
-## 💡 Sistema de LED Inteligente (Pin 2 - Built-in)
+## 💡 Sistema de LED Inteligente (Pin 8 - Seeed XIAO ESP32C3)
 
 | Padrão | Intervalo | Significado |
 |--------|-----------|-------------|
@@ -232,10 +245,10 @@ flowchart TD
 ```bash
 cd firmware/central
 
-# 1. Configurar credenciais WiFi e Firebase
-./setup.sh
+# 1. Instalar dependências
+pio lib install
 
-# 2. Upload filesystem (configs)
+# 2. Upload filesystem (LittleFS)
 pio run --target uploadfs
 
 # 3. Upload firmware
@@ -245,18 +258,37 @@ pio run --target upload
 pio device monitor
 ```
 
+### **Hardware Requerido:**
+- **Seeed XIAO ESP32C3** (target principal)
+- LED conectado ao **Pin 8** (ou usar LED built-in se disponível)
+- Alimentação via USB-C
+
 ### **Primeira Execução:**
-1. **Central inicia** → Modo CONFIG_AP (config inválida)
-2. **Conectar WiFi**: `BPR_Hub_Config` (senha: `botaprarodar`)
+1. **Central inicia** → Modo INITIAL_CONFIG_AP (credenciais inválidas)
+2. **Conectar WiFi**: `BPR Central` (senha: `botaprarodar`)
 3. **Acessar**: http://192.168.4.1
-4. **Configurar**: WiFi, Firebase URL, API Key, Base ID
-5. **Salvar** → Central reinicia → Primeira sync obrigatória
-6. **Sync sucesso** → Modo BLE_ONLY ativo
+4. **Configurar**: Base ID, WiFi, Firebase URL, API Key
+5. **Salvar** → Central reinicia → INITIAL_SYNC obrigatório
+6. **Sync sucesso** → Modo BIKE_PAIRING ativo
+
+### **Interface de Configuração:**
+- **Formulário tradicional**: Campos individuais
+- **JSON avançado**: Cole configuração completa
+- **Auto-restart**: Reinicia automaticamente após salvar
+- **Validação**: Verifica campos obrigatórios
 
 ### **Funcionamento Normal:**
 ```
-BIKE_PAIRING (300s) → CLOUD_SYNC (30s) → BIKE_PAIRING (300s) → ...
+BIKE_PAIRING (90s padrão) → CLOUD_SYNC → BIKE_PAIRING → ...
 ```
+
+### **Estados da Máquina:**
+- **STATE_BOOT**: Inicialização e self-check
+- **STATE_INITIAL_CONFIG_AP**: Config obrigatório (sem timeout)
+- **STATE_TEMP_CONFIG_AP**: Config temporário (após falhas)
+- **STATE_INITIAL_SYNC**: Primeira sincronização obrigatória
+- **STATE_BIKE_PAIRING**: Operação normal com bikes
+- **STATE_CLOUD_SYNC**: Sincronização com Firebase
 
 ## 🛡️ Validação e Segurança
 
@@ -305,9 +337,37 @@ BIKE_PAIRING (300s) → CLOUD_SYNC (30s) → BIKE_PAIRING (300s) → ...
 - ✅ **Inteligente**: Push automático de configs
 - ✅ **Seguro**: Validação rigorosa de bikes
 - ✅ **Robusto**: Self-check e recuperação de erros
-- ✅ **Eficiente**: Buffer local e sync otimizada
+- ✅ **Eficiente**: Buffer dinâmico e sync otimizada
 - ✅ **Escalável**: Fácil adicionar novas funcionalidades
 - ✅ **Observável**: Logs estruturados e métricas
+- ✅ **Otimizado**: Estruturas binárias para ESP32C3
+- ✅ **Resiliente**: Sistema de fallback e retry automático
+
+## 🔧 Especificações Técnicas
+
+### **Hardware:**
+- **MCU**: ESP32C3 (RISC-V, 160MHz)
+- **RAM**: ~400KB disponível
+- **Flash**: Particionado (app0/app1 para OTA)
+- **Filesystem**: LittleFS
+- **LED**: Pin 8 (configurável)
+
+### **Conectividade:**
+- **WiFi**: 802.11 b/g/n (2.4GHz)
+- **BLE**: NimBLE stack
+- **Protocolo**: BPR Protocol (comum com bikes)
+
+### **Armazenamento:**
+- **Configurações**: Formato binário otimizado
+- **Buffer**: Dinâmico baseado no heap disponível
+- **Backup**: Automático com retenção configurável
+- **Partições**: OTA ready (app0/app1/spiffs)
+
+### **Limites:**
+- **Max bikes**: 10 simultâneas
+- **Buffer size**: Dinâmico (baseado no heap)
+- **Sync interval**: 90s (configurável)
+- **Config timeout**: 15min (configurável)
 
 ## 🔮 Roadmap
 

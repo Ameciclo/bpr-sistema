@@ -2,14 +2,14 @@
 
 ## 📋 Visão Geral
 
-O sistema de conexão entre o **Simulator** (bicicleta simulada) e a **Central** (hub inteligente) utiliza **Bluetooth Low Energy (BLE)** como protocolo principal de comunicação. Esta documentação detalha o funcionamento completo desta conexão.
+O sistema de conexão entre o **Simulator** (bicicleta simulada) e a **Central** (central inteligente) utiliza **Bluetooth Low Energy (BLE)** como protocolo principal de comunicação. Esta documentação detalha o funcionamento completo desta conexão.
 
 ## 🔧 Arquitetura da Conexão
 
 ### Componentes Principais
 
 1. **Simulator** (`firmware/simulator/`) - Simula uma bicicleta BPR
-2. **Central** (`firmware/central/`) - Hub que coleta dados das bicicletas
+2. **Central** (`firmware/central/`) - central que coleta dados das bicicletas
 
 ### Protocolo de Comunicação
 

@@ -1,6 +1,6 @@
-#include "led_controller.h"
-#include "constants.h"
 #include "config_manager.h"
+#include "constants.h"
+#include "led_controller.h"
 
 extern ConfigManager configManager;
 
@@ -105,6 +105,10 @@ void LEDController::configPattern() {
 }
 
 void LEDController::bikePairingPattern() {
+    setPattern(PATTERN_BLE_READY);
+}
+
+void LEDController::pairingPattern() {
     setPattern(PATTERN_BLE_READY);
 }
 
