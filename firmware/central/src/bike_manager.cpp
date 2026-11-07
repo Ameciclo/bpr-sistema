@@ -7,6 +7,7 @@
 #include "buffer_manager.h"
 #include "config_credentials.h"
 #include "constants.h"
+#include "endpoints.h"
 #include "time_sync.h"
 
 extern BufferManager bufferManager;
@@ -366,6 +367,9 @@ void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap,
 
 // R15: publica TODAS as descobertas pendentes (a política de "menos de 5
 // minutos" descartava justamente as descobertas mais antigas)
+// X04: descoberta feita SEM relógio válido (created_at=0) também é publicada,
+// com qualidade temporal explícita — o filtro created_at>0 escondia a bike
+// da aprovação remota para sempre, mesmo depois do NTP voltar
 bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
 {
     if (!dataLoaded)
@@ -379,12 +383,18 @@ bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
         BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-        if (status == STATUS_PENDING && bikeStatus.created_at[i] > 0)
+        if (status == STATUS_PENDING)
         {
             String bikeId = intToBikeId(bikeStatus.bike_ids[i]);
             JsonObject bikeObj = doc.createNestedObject(bikeId);
             bikeObj["status"] = status;
-            bikeObj["first_seen"] = bikeStatus.created_at[i];
+            // X04: first_seen desconhecido é publicado como tal; o contato
+            // confiável posterior é aproveitado sem inventar o horário original
+            bool firstSeenValid = bikeStatus.created_at[i] > 0;
+            bikeObj["first_seen"] = firstSeenValid
+                                        ? bikeStatus.created_at[i]
+                                        : bikeStatus.last_contacts[i];
+            bikeObj["first_seen_valid"] = firstSeenValid;
             bikeObj["last_contact"] = bikeStatus.last_contacts[i];
         }
     }
@@ -723,6 +733,7 @@ bool BikeManager::downloadSingleBikeConfig(const String& bikeId)
     String fullTimestampUrl = configCredentials.getFirebaseURL() + timestampUrl;
 
     http.begin(fullTimestampUrl);
+    Endpoints::setupHttp(http); // X10
     int timestampCode = http.GET();
 
     if (timestampCode == HTTP_CODE_OK) {
@@ -764,6 +775,7 @@ bool BikeManager::fetchAndApplyBikeConfig(const String& bikeId, uint32_t remoteV
     String fullConfigUrl = configCredentials.getFirebaseURL() + configUrl;
 
     http.begin(fullConfigUrl);
+    Endpoints::setupHttp(http); // X10
     int configCode = http.GET();
 
     if (configCode != HTTP_CODE_OK) {

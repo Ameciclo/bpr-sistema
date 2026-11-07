@@ -1,5 +1,10 @@
 # 🚲↔️🏢 Protocolo de Comunicação Bike-Central
 
+> **Documento canônico atual:** [docs/PROTOCOL_BLE.md](docs/PROTOCOL_BLE.md) (fragmentação
+> `seq/total`, UUIDs vigentes, ACK por fragmento). Este arquivo preserva cenários
+> ilustrativos e o histórico do protocolo — em caso de divergência, o código
+> (`firmware/common/bpr_protocol.h`) e `docs/PROTOCOL_BLE.md` prevalecem.
+
 ## 📡 **Camada Física: BLE (Bluetooth Low Energy)**
 
 ```

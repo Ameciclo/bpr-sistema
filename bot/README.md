@@ -2,6 +2,8 @@
 
 Bot inteligente do Telegram para monitoramento completo do sistema de bicicletas compartilhadas com coleta de dados WiFi, geolocalização em tempo real e notificações personalizadas.
 
+> **Duas implementações:** `bot/src` (polling, long-running: comandos/assinaturas/monitoramento) e `bot/functions` (serverless TS: normalizador de sessões + webhook). Ambas consomem a projeção `sessions_v2`. **Não executar as duas simultaneamente** — notificações duplicam. Documentação canônica: [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), [../docs/DATA_MODEL.md](../docs/DATA_MODEL.md), [../docs/OPERATIONS.md](../docs/OPERATIONS.md).
+
 > **🎆 Novidade**: Sistema completo de assinaturas, monitor de estações, cálculo automático de viagens e canal público!
 
 ## 🎯 Funcionalidades
@@ -87,7 +89,10 @@ node scripts/webhook/set-webhook.js
 
 ### 📊 Estrutura de Dados Monitorada
 
-#### Sessões Ativas (`/bikes/{bikeId}/sessions/{sessionId}`)
+> **Canônico:** `/bikes/{bikeId}/sessions_v2/{sid}-{salt}` (ver `docs/DATA_MODEL.md`).
+> O bot normaliza segundos/ms via `rideCalculator.toMs()` e `normalizeScan/normalizeNetwork` (legado `sessions/`).
+
+#### Sessão ativa (`/bikes/{bikeId}/sessions_v2/{sid}-{salt}`)
 ```json
 {
   "bike_id": "bpr-a1b2c3",

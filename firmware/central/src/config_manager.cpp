@@ -49,6 +49,19 @@ void ConfigManager::resetToDefaults()
 
 bool ConfigManager::loadConfig()
 {
+    // N03: recupera de tmp/bak se o canônico sumiu na janela de troca
+    if (!LittleFS.exists(CONFIG_FILE))
+    {
+        if (LittleFS.exists("/config.tmp") && LittleFS.rename("/config.tmp", CONFIG_FILE))
+        {
+            Serial.println("🔁 Config recovered from staging copy");
+        }
+        else if (LittleFS.exists("/config.bak") && LittleFS.rename("/config.bak", CONFIG_FILE))
+        {
+            Serial.println("🔁 Config recovered from backup copy");
+        }
+    }
+
     if (!LittleFS.exists(CONFIG_FILE))
     {
         Serial.println("📄 Config file not found, using defaults");
@@ -77,10 +90,20 @@ bool ConfigManager::loadConfig()
         return false;
     }
 
+    // N09.3: conteúdo inválido NÃO é atribuído ao estado ativo — antes o
+    // load "succeedia" com a candidata inválida já aplicada e só retornava
+    // false, deixando o setup sem saber que os padrões não estavam vigentes
+    if (!isConfigValidFor(candidate))
+    {
+        Serial.println("❌ Config content invalid - restoring safe defaults");
+        resetToDefaults();
+        return false;
+    }
+
     config = candidate;
 
     Serial.println("✅ Config loaded");
-    return isConfigValid();
+    return true;
 }
 
 bool ConfigManager::saveConfig()
@@ -103,12 +126,26 @@ bool ConfigManager::saveConfig()
         return false;
     }
 
-    LittleFS.remove(CONFIG_FILE);
+    // N03: rename DIRETO substitui o canônico atomicamente; fallback .bak
+    // preserva o íntegro durante a troca (a janela remove-then-rename perdia
+    // o arquivo se faltasse energia entre as duas operações)
     if (!LittleFS.rename("/config.tmp", CONFIG_FILE))
     {
-        Serial.println("❌ Config rename failed");
-        LittleFS.remove("/config.tmp");
-        return false;
+        LittleFS.remove("/config.bak");
+        if (LittleFS.exists(CONFIG_FILE) && !LittleFS.rename(CONFIG_FILE, "/config.bak"))
+        {
+            Serial.println("❌ Config backup move failed - previous file kept");
+            LittleFS.remove("/config.tmp");
+            return false;
+        }
+        if (!LittleFS.rename("/config.tmp", CONFIG_FILE))
+        {
+            Serial.println("❌ Config rename failed - restoring previous file");
+            LittleFS.rename("/config.bak", CONFIG_FILE);
+            LittleFS.remove("/config.tmp");
+            return false;
+        }
+        LittleFS.remove("/config.bak");
     }
 
     Serial.println("💾 Config saved");

@@ -28,6 +28,8 @@ g++ $CXXFLAGS $STUBS $CENTRAL_INC -I"$AJ" -I"$CRC" \
       echo "BUILD FAILED"; cat build/central_checks-build.log; exit 1; }
 ./build/central_checks 2> build/central_checks-sanitizer.log | tee central-checks-results.txt
 test ! -s build/central_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat build/central_checks-sanitizer.log; exit 1; }
+# O08: valores impressos viram critério de reprovação — não só evidência
+! grep -q "no(BUG)" central-checks-results.txt || { echo "CENTRAL CHECKS FAILED (no(BUG))"; exit 1; }
 
 echo "== bici_checks =="
 g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
@@ -41,6 +43,12 @@ g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
       echo "BUILD FAILED"; cat build/bici_checks-build.log; exit 1; }
 ./build/bici_checks 2> build/bici_checks-sanitizer.log | tee bici-checks-results.txt
 test ! -s build/bici_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat build/bici_checks-sanitizer.log; exit 1; }
+# O08: idem — qualquer no(BUG) reprova o runner
+! grep -q "no(BUG)" bici-checks-results.txt || { echo "BICI CHECKS FAILED (no(BUG))"; exit 1; }
+
+echo "== bot_checks (N11/N04 — rideCalculator real + RTDB transacional local) =="
+node verify-bot.js | tee bot-checks-results.txt
+grep -q "sem BUG" bot-checks-results.txt || { echo "BOT CHECKS FAILED"; exit 1; }
 
 echo
 echo "OK: todas as verificações rodaram sem achado de sanitizador"

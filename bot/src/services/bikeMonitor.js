@@ -25,12 +25,10 @@ class BikeMonitorService {
       this.handleNewSession(bikeId, sessionId, sessionData);
     });
 
-    // Monitorar conexões BLE (chegadas na base)
-    firebaseService.listenToBikeConnections((bikeId, connectionData) => {
-      if (connectionData.event === 'connect') {
-        this.handleBikeArrival(bikeId, connectionData.base);
-      }
-    });
+    // N10: o listener de conexões (schema v1: sessions/connections) foi
+    // REMOVIDO — nenhum produtor escreve esse caminho no fluxo v2 e as
+    // viagens nunca eram finalizadas. A chegada agora deriva do contrato
+    // ATIVO: sessão v2 montada = bike entregou dados na base.
 
     // Monitorar mudanças de bateria
     firebaseService.listenToBatteryChanges((bikeId, batteryData) => {
@@ -104,16 +102,28 @@ class BikeMonitorService {
 
     this.lastNotifications.set(`session_${bikeId}`, sessionId);
 
-    // A02/A08: sessões v2 carregam session_start_ms (millis); o legado usava
-    // `start` em segundos — normaliza para millis antes de qualquer uso
-    const startMs = rideCalculator.toMs(sessionData.session_start_ms ?? sessionData.start);
+    // Obter estação da bike (necessário para o encerramento da viagem anterior)
+    const bikeData = await firebaseService.getBikeData(bikeId);
+    const stationId = bikeData?.base_id || 'unknown';
+
+    // N10: fechamento do ciclo pela ponta a ponta — a viagem ATIVA (sessão
+    // anterior) é finalizada quando a próxima sessão é montada (bike
+    // entregou dados na base). Sem isso, viagens ficavam pendentes para
+    // sempre aguardando o listener v1 de connections que nunca dispara.
+    if (rideCalculator.hasActiveRide(bikeId)) {
+      await this.handleBikeArrival(bikeId, stationId);
+    }
+
+    // N04: UNIDADE por origem — v2 session_start_ms já é ms (conversão
+    // única); legado `start` era segundos. A heurística toMs encadeada
+    // multiplicava o valor duas vezes por 1000
+    const startMs = (sessionData.session_start_ms !== undefined &&
+                     sessionData.session_start_ms !== null)
+      ? rideCalculator.fromV2Ms(sessionData.session_start_ms)
+      : rideCalculator.fromLegacySec(sessionData.start);
 
     // Iniciar nova viagem
     const rideId = rideCalculator.startRide(bikeId, startMs);
-
-    // Obter estação da bike
-    const bikeData = await firebaseService.getBikeData(bikeId);
-    const stationId = bikeData?.base_id || 'unknown';
 
     // Publicar saída no canal
     await this.channelPublisher.publishBikeDeparture(bikeId, stationId);
@@ -125,27 +135,37 @@ class BikeMonitorService {
     const message = this.formatSessionStartMessage(bikeId, sessionId, sessionData);
     this.sendNotification(message);
 
-    // Escutar scans desta sessão (A05: registro interno evita duplicar listener)
+    // N04: "histórico" ancorado no INGEST do servidor — a comparação
+    // anterior (Date.now() - ts_ms do boot) misturava relógios e marcava
+    // TODOS os scans como históricos
+    const ingestTs = Number(sessionData.ingest_ts) || 0;
+    const sessionIsHistorical = ingestTs > 0 &&
+      (Date.now() / 1000 - ingestTs) > (HISTORICAL_SCAN_WINDOW_MS / 1000);
+
+    // Escutar scans desta sessão (A05: uma assinatura ativa por bike)
     firebaseService.listenToSessionScans(bikeId, sessionId, (scanSnapshot) => {
-      this.handleNewScan(bikeId, sessionId, scanSnapshot.val());
+      this.handleNewScan(bikeId, sessionId, scanSnapshot.val(), sessionIsHistorical);
     });
+
+    return rideId;
   }
 
-  async handleNewScan(bikeId, sessionId, scanData) {
+  async handleNewScan(bikeId, sessionId, scanData, sessionIsHistorical = false) {
     // A02: normaliza qualquer formato conhecido para o DTO interno
     const scan = normalizeScan(scanData);
     const { timestamp, networks } = scan;
 
-    // Verificar se é um novo scan (dedupe inclui a sessão — A05)
-    const lastScanTime = this.lastNotifications.get(`scan_${bikeId}`) || 0;
-    const scanMs = rideCalculator.toMs(timestamp);
+    // Verificar se é um novo scan (dedupe inclui a SESSÃO — A05/N10: scan de
+    // sessão nova com timestamp menor não era recusado pelo da anterior)
+    const lastScanTime = this.lastNotifications.get(`scan_${bikeId}_${sessionId}`) || 0;
+    const scanMs = rideCalculator.fromV2Ms(timestamp);
     if (scanMs <= lastScanTime) return;
 
-    this.lastNotifications.set(`scan_${bikeId}`, scanMs);
+    this.lastNotifications.set(`scan_${bikeId}_${sessionId}`, scanMs);
 
-    // A05: separa instante do evento do instante da ingestão — upload
-    // histórico não é anunciado como movimento em tempo real
-    const isHistorical = (Date.now() - scanMs) > HISTORICAL_SCAN_WINDOW_MS;
+    // A05/N04: instante do evento vs instante da ingestão — decidido pela
+    // âncora do servidor (ingest_ts), não por mistura de relógios
+    const isHistorical = sessionIsHistorical;
 
     // Tentar obter localização
     const location = await geolocationService.getLocationFromWifi(networks);
@@ -169,19 +189,28 @@ class BikeMonitorService {
   }
 
   formatSessionStartMessage(bikeId, sessionId, sessionData) {
-    const startMs = rideCalculator.toMs(sessionData.session_start_ms ?? sessionData.start);
+    // N04: session_start_ms é relativo ao boot da bike — exibir como data
+    // absoluta (new Date) inventava horário; permanece com rótulo relativo
+    const startLabel = (sessionData.session_start_ms !== undefined &&
+                        sessionData.session_start_ms !== null)
+      ? `relativo ao boot (${sessionData.session_start_ms} ms)`
+      : 'origem desconhecida';
 
     let message = `🚴*Bike ${bikeId.toUpperCase()}*\n`;
-    message += `🎆 *NOVA SESSÃO INICIADA*\n`;
-    message += `📅 ${new Date(startMs).toLocaleString('pt-BR')}\n`;
+    message += `🎆 *NOVA SESSÃO NORMALIZADA*\n`;
+    message += `📅 ${startLabel}\n`;
     message += `🏷️ Sessão: ${sessionId}\n`;
     message += `⚙️ Esquema: v${sessionData.schema_version || 1}\n`;
+    if (sessionData.resumed) {
+      message += `⚠️ Sessão retomada entre boots (dados de origens mistas)\n`;
+    }
 
     return message;
   }
 
   formatScanMessage(bikeId, networks, location, timestampMs, isHistorical = false) {
-    const date = new Date(timestampMs).toLocaleString('pt-BR');
+    // N04: ts_ms é relativo ao boot — rótulo relativo, não data inventada
+    const date = `boot+${timestampMs} ms${isHistorical ? ' _(dado histórico)_' : ''}`;
     const networksCount = networks.length;
     const strongNetworks = networks.filter(n => n.rssi > -60).length;
 
@@ -241,9 +270,9 @@ class BikeMonitorService {
       message += `📍 Status: ${complete ? '✅ Completa' : '⏳ Parcial'}\n`;
       message += `🏷️ Sessão: ${sessionId}\n`;
 
-      // Datas (A08: unidades normalizadas — v2 carrega millis)
+      // Datas (N04: session_start_ms é relativo ao boot — rótulo relativo)
       if (startMs !== undefined && startMs !== null) {
-        message += `🚀 Início: ${new Date(rideCalculator.toMs(startMs)).toLocaleString('pt-BR')}\n`;
+        message += `🚀 Início: relativo ao boot (${startMs} ms)\n`;
       }
 
       // Estatísticas
@@ -294,12 +323,14 @@ class BikeMonitorService {
       const firstPoint = route.locations[0];
       const lastPoint = route.locations[route.locations.length - 1];
 
+      // N04: timestamps dos scans são relativos ao boot da bike — exibidos
+      // como decorrido, sem inventar data absoluta
       message += `\n🚀 *Início:*\n`;
-      message += `   ${new Date(rideCalculator.toMs(firstPoint.timestamp)).toLocaleString('pt-BR')}\n`;
+      message += `   boot+${rideCalculator.fromV2Ms(firstPoint.timestamp)} ms\n`;
       message += `   ${firstPoint.latitude.toFixed(6)}, ${firstPoint.longitude.toFixed(6)}\n`;
 
       message += `\n🏁 *Fim:*\n`;
-      message += `   ${new Date(rideCalculator.toMs(lastPoint.timestamp)).toLocaleString('pt-BR')}\n`;
+      message += `   boot+${rideCalculator.fromV2Ms(lastPoint.timestamp)} ms\n`;
       message += `   ${lastPoint.latitude.toFixed(6)}, ${lastPoint.longitude.toFixed(6)}\n`;
     }
 
@@ -308,8 +339,8 @@ class BikeMonitorService {
 
   // Detectar chegada na base (quando sessão termina)
   async handleBikeArrival(bikeId, stationId, arrivalMs = null) {
-    // A08: chegada com unidade coerente (ms); fallback = agora
-    const arrivalTime = arrivalMs !== null ? rideCalculator.toMs(arrivalMs) : Date.now();
+    // N04: unidade única — chegada vem do relógio do servidor (ms absolutos)
+    const arrivalTime = arrivalMs !== null ? rideCalculator.fromV2Ms(arrivalMs) : Date.now();
 
     // Finalizar viagem ativa
     const rideData = await rideCalculator.finishRide(bikeId, arrivalTime);
@@ -348,7 +379,7 @@ class BikeMonitorService {
             message = `🚀 *Sua bike saiu da estação*\n\n`;
             message += `🚲 ${bikeId.toUpperCase()}\n`;
             message += `🏢 ${data.stationId}\n`;
-            message += `⏰ ${new Date(data.timestamp).toLocaleString('pt-BR')}\n\n`;
+            message += `⏱️ Sessão iniciada em boot+${data.timestamp} ms\n\n`;
             message += `📡 Acompanhe a viagem!`;
             break;
             
@@ -377,7 +408,7 @@ class BikeMonitorService {
             message += `🚲 ${bikeId.toUpperCase()}\n`;
             message += `📡 ${data.networks.length} redes detectadas\n`;
             message += `📍 ${data.location.latitude.toFixed(4)}, ${data.location.longitude.toFixed(4)}\n`;
-            message += `⏰ ${new Date(data.timestamp).toLocaleString('pt-BR')}`;
+            message += `⏱️ Leitura em boot+${data.timestamp} ms`;
             // A05: upload histórico não é anunciado como tempo real
             if (data.isHistorical) {
               message += `\n_(dado histórico da viagem)_`;

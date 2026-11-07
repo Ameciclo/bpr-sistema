@@ -64,3 +64,10 @@ String Endpoints::getPendingBikes() {
     const String& baseId = configCredentials.getBaseId();
     return buildUrl("/bases/" + baseId + "/pending_bikes.json");
 }
+
+// X10: timeouts explícitos — conexão 8 s, leitura 15 s. Sem isso, WiFi fraco
+// podia travar cada chamada por dezenas de segundos no loop único do C3
+void Endpoints::setupHttp(HTTPClient& http) {
+    http.setConnectTimeout(8000);
+    http.setTimeout(15000);
+}

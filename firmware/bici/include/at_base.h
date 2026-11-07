@@ -40,6 +40,20 @@ private:
     bool transferComplete;
     bool configRequested;
     uint32_t busyUntilMs;        // R13: espera real após busy
+    uint32_t lastSessionId;      // X02: retomada da transfer após reconexão
+    uint16_t lastSessionSalt;    // X02: idem — sessão inalterada continua de fragIndex
+
+    // X02: orçamento global da visita (idle/busy/rejeição têm prazo finito)
+    uint32_t visitStart;
+
+    // X08: pedido de config com retry — ACK de config marca received
+    bool configReceived;
+    uint32_t configRequestTime;
+    uint8_t configRetries;
+    bool configGaveUp; // X08: desistiu desta conexão; reconexão tenta de novo
+
+    // X09: desconexão da task NimBLE apenas SINALIZA; o estado muda no loop
+    volatile bool disconnectSignaled;
 
     // Notificações BLE -> loop (sem processamento pesado na task do NimBLE)
     QueueHandle_t notifQueue;
@@ -62,6 +76,8 @@ public:
     void onNotification(const String& message);
     bool isConnected() const;
     bool isTransferring() const { return transferActive; }
+    // X09: chamado apenas pela task do NimBLE — não toca estado compartilhado
+    void signalDisconnected() { disconnectSignaled = true; }
 };
 
 #endif

@@ -59,6 +59,7 @@ interface TouchedSession {
 
 // Scan da projeção v2 (unidades explícitas: ts_ms)
 interface ScanV2 {
+  idx?: number; // N04: identidade do scan na sessão (índice do produtor)
   ts_ms: number;
   net_offset: number;
   networks: NetworkDto[];
@@ -81,6 +82,7 @@ interface TouchedSession {
 
 // Scan da projeção v2 (unidades explícitas: ts_ms)
 interface ScanV2 {
+  idx?: number; // N04: identidade do scan na sessão (índice do produtor)
   ts_ms: number;
   net_offset: number;
   networks: NetworkDto[];
@@ -110,6 +112,23 @@ interface V2StatusRow {
 interface V2AssembledRow {
   session_start_ms?: number;
   scan_count?: number;
+}
+
+/**
+ * Compara chaves de sessão "{sid}-{salt}" NUMERICAMENTE (N10).
+ * A ordenação lexicográfica coloca "9999-1" DEPOIS de "10000-1" e
+ * selecionava a sessão errada como "mais recente".
+ * @param {string} a Primeira chave
+ * @param {string} b Segunda chave
+ * @return {number} Negativo se a < b, positivo se a > b
+ */
+function sessionKeyComparator(a: string, b: string): number {
+  const pa = a.split("-");
+  const pb = b.split("-");
+  const sidA = Number(pa[0]) || 0;
+  const sidB = Number(pb[0]) || 0;
+  if (sidA !== sidB) return sidA - sidB;
+  return (Number(pa[1]) || 0) - (Number(pb[1]) || 0);
 }
 
 /**
@@ -148,7 +167,8 @@ interface Fragment {
   boot_id?: number;
   session_start_millis?: number;
   scan_count?: number;
-  scans?: {ts: number; net_offset: number; nets: unknown[]}[];
+  resumed?: boolean; // N04: sessão retomada entre boots
+  scans?: {idx?: number; ts: number; net_offset: number; nets: unknown[]}[];
   battery?: unknown[][];
 }
 
@@ -295,21 +315,51 @@ async function assembleSessionIfComplete(
   const finalFrag = bySeq.get(total - 1);
   if (!finalFrag) return;
 
-  // Remonta os scans: um scan denso pode ocupar vários fragmentos
-  // (net_offset desambigua); ordenação por timestamp + offset
-  const scans: ScanV2[] = [];
+  // N05: os chunks de um MESMO scan são REUNIDOS em uma única observação —
+  // identidade = idx (índice do produtor) com fallback em ts; as redes dos
+  // chunks são ordenadas por net_offset e concatenadas. Antes, um scan
+  // denso dividido em N fragments virava N scans incompletos.
+  const groups = new Map<string, {
+    idx?: number;
+    ts: number;
+    chunks: {off: number; nets: unknown[]}[];
+  }>();
   for (let s = 0; s < total - 1; s++) {
     const frag = bySeq.get(s);
     if (!frag) continue;
     for (const scan of frag.scans ?? []) {
-      scans.push({
-        ts_ms: Number(scan.ts),
-        net_offset: Number(scan.net_offset),
-        networks: (scan.nets ?? []).map(normalizeNetwork),
+      const key = scan.idx !== undefined ?
+        `i${scan.idx}` : `t${scan.ts}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          idx: scan.idx,
+          ts: Number(scan.ts),
+          chunks: [],
+        };
+        groups.set(key, group);
+      }
+      group.chunks.push({
+        off: Number(scan.net_offset) || 0,
+        nets: scan.nets ?? [],
       });
     }
   }
-  scans.sort((a, b) => (a.ts_ms - b.ts_ms) || (a.net_offset - b.net_offset));
+
+  const scans: ScanV2[] = [];
+  for (const group of groups.values()) {
+    group.chunks.sort((a, b) => a.off - b.off);
+    const networks = group.chunks
+      .flatMap((chunk) => chunk.nets.map(normalizeNetwork));
+    scans.push({
+      idx: group.idx,
+      ts_ms: group.ts,
+      net_offset: 0, // observação completa: todas as redes presentes
+      networks,
+    });
+  }
+  // ordem estável pela identidade do produtor (fallback: ts)
+  scans.sort((a, b) => (a.idx ?? a.ts_ms) - (b.idx ?? b.ts_ms));
 
   // A04: bateria como {ts_ms, percent} — sem ambiguidade de unidade
   const battery = (finalFrag.battery ?? []).map((entry) => ({
@@ -319,15 +369,40 @@ async function assembleSessionIfComplete(
 
   const sessionRef =
     db.ref(`bikes/${bikeId}/sessions_v2/${sessionId}-${salt}`);
+
+  // N05: replay NÃO destrói enriquecimento — coordenadas (e qualquer campo
+  // extra gravado por conversores) da projeção existente são preservadas
+  // por scan; apenas os campos-base são reescritos. O transporte de extras
+  // exige CONTEÚDO equivalente (mesma ts) — índice sozinho poderia levar
+  // coordenadas para o scan errado se a projeção anterior divergiu
+  const existingSnap = await sessionRef.child("scans").once("value");
+  const existingScans = existingSnap.val() as ScanV2[] | null;
+  const mergedScans = Array.isArray(existingScans) && existingScans.length > 0 ?
+    scans.map((fresh, i) => {
+      const old = existingScans[i];
+      if (!old || typeof old !== "object") return fresh;
+      // mesmo índice, conteúdo divergente: extras não são herdados
+      if (Number(old.ts_ms) !== Number(fresh.ts_ms)) return fresh;
+      const extras: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(old)) {
+        if (k === "idx" || k === "ts_ms" || k === "net_offset" ||
+              k === "networks") continue;
+        extras[k] = v; // ex.: coordinates do conversor geográfico
+      }
+      return {...fresh, ...extras} as ScanV2;
+    }) :
+    scans;
+
   await sessionRef.update({
     schema_version: 2,
     bike_id: bikeId,
     session_id: sessionId,
     session_salt: salt,
     boot_id: finalFrag.boot_id ?? null,
+    resumed: finalFrag.resumed ?? false, // N04: sessão retomada entre boots
     session_start_ms: finalFrag.session_start_millis ?? null,
     scan_count: finalFrag.scan_count ?? scans.length,
-    scans,
+    scans: mergedScans,
     battery,
     complete: true,
     ingest_ts: Math.floor(Date.now() / 1000),
@@ -336,7 +411,8 @@ async function assembleSessionIfComplete(
   await sessionRef.child(`source_batches/${sourceBatch}`).set(true);
 
   const nscans = scans.length;
-  console.log(`✅ Sessão ${sessionId}-${salt} de ${bikeId} (${nscans} scans)`);
+  console.log(`✅ Sessão ${sessionId}-${salt} de ${bikeId} ` +
+    `(${nscans} scans, ${groups.size} observações reunidas)`);
 }
 
 // Notificação de sessão completa (projeção v2)
@@ -349,13 +425,15 @@ export const onSessionAssembled = functions.database
 
     console.log(`📝 Sessão completa: ${bikeId}/${sessionKey}`);
 
-    const startDate = session.session_start_ms ?
-      new Date(session.session_start_ms).toLocaleString("pt-BR") :
+    // N04: session_start_ms é MILLIS DESDE O BOOT da bike, não Unix time —
+    // exibir como data absoluta inventava horário; permanece relativo
+    const startLabel = session.session_start_ms ?
+      `relativo ao boot da bike (${session.session_start_ms} ms)` :
       "origem desconhecida";
 
     const message = `🚴 Bike ${bikeId.toUpperCase()}\n` +
       "🎆 SESSÃO NORMALIZADA\n" +
-      `📅 ${startDate}\n` +
+      `📅 ${startLabel}\n` +
       `🏷️ Sessão: ${sessionKey}\n` +
       `📡 Scans: ${session.scan_count ?? 0}`;
 
@@ -540,27 +618,44 @@ bot.command("status", async (ctx) => {
   }
 
   try {
+    // N10: a seleção não pode ser orderByKey (lexicográfica escolhe
+    // "9999-1" sobre "10000-1"); recência ancorada no ingest_ts da montagem
     const snapshot = await db.ref(`bikes/${bikeId}/sessions_v2`)
-      .orderByKey().limitToLast(1).once("value");
+      .once("value");
     const sessions = snapshot.val() as
-      {[key: string]: V2StatusRow} | null;
+      {[key: string]: V2StatusRow & {ingest_ts?: number}} | null;
 
     if (!sessions) {
       ctx.reply(`❌ Bike ${bikeId} não encontrada`);
       return;
     }
 
-    const sessionKey = Object.keys(sessions)[0];
+    const sessionKey = Object.keys(sessions).reduce(
+      (acc: string | null, key) => {
+        if (!acc) return key;
+        const accTs = Number(sessions[acc]?.ingest_ts) || 0;
+        const keyTs = Number(sessions[key]?.ingest_ts) || 0;
+        if (accTs !== keyTs) return keyTs > accTs ? key : acc;
+        return sessionKeyComparator(acc, key) < 0 ? key : acc;
+      },
+      null
+    );
+
+    if (!sessionKey) {
+      ctx.reply(`❌ Bike ${bikeId} não encontrada`);
+      return;
+    }
     const session = sessions[sessionKey];
 
-    const startDate = session.session_start_ms ?
-      new Date(session.session_start_ms).toLocaleString("pt-BR") :
+    // N04: millis desde o boot NÃO é data absoluta — rótulo relativo
+    const startLabel = session.session_start_ms ?
+      `relativo ao boot (${session.session_start_ms} ms)` :
       "origem desconhecida";
 
     let message = `🚴 Bike ${bikeId.toUpperCase()}\n\n` +
                  `📍 Status: ${session.complete ? "Completa" : "Parcial"}\n` +
                  `🏷️ Sessão: ${sessionKey}\n` +
-                 `🚀 Início: ${startDate}\n`;
+                 `🚀 Início: ${startLabel}\n`;
 
     if (session.scans) {
       message += `📊 Scans: ${session.scans.length}\n`;
@@ -592,7 +687,8 @@ bot.command("rota", async (ctx) => {
       return;
     }
 
-    const sessionIds = Object.keys(sessions).sort().reverse();
+    const sessionIds = Object.keys(sessions)
+      .sort(sessionKeyComparator).reverse();
     const latestSessionId = sessionIds[0];
     const latestSession = sessions[latestSessionId];
 

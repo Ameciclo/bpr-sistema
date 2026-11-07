@@ -23,7 +23,11 @@ private:
     };
     size_t measureNetworkBytes(const NetworkData& net) const;
     void buildChunks(std::vector<FragChunk>& chunks) const;
-    void quarantine(); // R22: preserva arquivo suspeito para análise
+    void quarantineFile(const char* path); // R22/X05: preserva arquivo suspeito
+    bool tryLoadFrom(const char* path);    // N01: valida sem candidata na pilha
+
+    // N02: saturação de bateria é explícita e diagnosticável
+    bool batterySaturationLogged;
 
 public:
     BufferManager();
@@ -57,7 +61,8 @@ public:
     // Status
     bool isEmpty() const;
     bool isFull() const;
-    size_t getSize() const;
+    size_t getSize() const;              // capacidade da estrutura (constante)
+    size_t getPendingDataBytes() const;  // N02: carga útil real pendente
 };
 
 #endif

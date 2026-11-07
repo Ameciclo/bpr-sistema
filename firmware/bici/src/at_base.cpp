@@ -11,7 +11,10 @@ AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr)
       bleConnected(false), lastStatusSent(0),
       transferActive(false), awaitingAck(false), fragIndex(0), fragTotal(0),
       fragRetries(0), lastFragmentSend(0), transferComplete(false),
-      configRequested(false), busyUntilMs(0) {
+      configRequested(false), busyUntilMs(0),
+      lastSessionId(0), lastSessionSalt(0),
+      visitStart(0), configReceived(false), configRequestTime(0),
+      configRetries(0), configGaveUp(false), disconnectSignaled(false) {
     notifQueue = xQueueCreate(4, NOTIF_MAX_LEN);
 }
 
@@ -113,6 +116,12 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
     bleConnected = true;
     lastStatusSent = 0;
     configRequested = false;
+    // X02: cada conexão abre uma visita com orçamento global próprio
+    visitStart = millis();
+    configReceived = false;
+    configRequestTime = 0;
+    configRetries = 0;
+    configGaveUp = false;
     return true;
 }
 
@@ -121,8 +130,10 @@ void AtBaseState::sendStatus() {
 
     BikeConfig& config = configManager.getConfig();
     bool hasData = !bufferManager.isEmpty();
+    // N02: carga útil real pendente (não a capacidade constante da struct)
     String json = powerManager.getHeartbeatReport(
-        config, hasData, bufferManager.getCurrentSession().scan_count, bufferManager.getSize());
+        config, hasData, bufferManager.getCurrentSession().scan_count,
+        bufferManager.getPendingDataBytes());
 
     if (pDataChar->writeValue(json.c_str())) {
         lastStatusSent = millis();
@@ -167,12 +178,24 @@ void AtBaseState::startTransfer() {
     if (fragTotal == 0) {
         return;
     }
+
+    // X02: retomada — mesma sessão inalterada (id/salt) continua do primeiro
+    // fragmento SEM ACK em vez de recomeçar do zero a cada reconexão/busy;
+    // a central deduplica reenvios por (session_id, salt, seq, CRC)
+    bool sameSession = (bufferManager.getSessionId() == lastSessionId &&
+                        bufferManager.getSessionSalt() == lastSessionSalt &&
+                        fragIndex > 0 && fragIndex < fragTotal);
+    if (!sameSession) {
+        fragIndex = 0;
+    }
+    lastSessionId = bufferManager.getSessionId();
+    lastSessionSalt = bufferManager.getSessionSalt();
+
     transferActive = true;
     transferComplete = false;
-    fragIndex = 0;
     fragRetries = 0;
     awaitingAck = false;
-    Serial.printf("🚀 Starting transfer: %d fragments\n", fragTotal);
+    Serial.printf("🚀 Starting transfer: %d fragments (from %d)\n", fragTotal, fragIndex);
 }
 
 void AtBaseState::abortTransfer() {
@@ -214,16 +237,40 @@ void AtBaseState::processPendingNotifications() {
 }
 
 BikeState AtBaseState::update() {
-    if (!bleConnected) {
+    // X09: desconexão sinalizada pela task NimBLE é processada AQUI, no
+    // contexto do loop — o callback não zera ponteiros/flags compartilhados
+    // enquanto o loop pode estar dentro de sendFragment()
+    if (disconnectSignaled) {
+        disconnectSignaled = false;
+        onBLEDisconnected();
         return STATE_SCANNING;
     }
 
-    Serial.println("🏠 AT_BASE - Syncing data");
+    if (!bleConnected) {
+        return STATE_SCANNING;
+    }
 
     // Check connection
     if (!pClient || !pClient->isConnected()) {
         onBLEDisconnected();
         return STATE_SCANNING;
+    }
+
+    // X02: orçamento GLOBAL da visita — idle sem dados, busy persistente ou
+    // rejeição contínua encerram a visita em prazo finito; a proteção de
+    // bateria do loop nunca fica suspensa por mais que isso
+    if (millis() - visitStart > AT_BASE_MAX_DURATION_MS) {
+        Serial.println("⏰ AT_BASE visit budget exhausted - disconnecting");
+        abortTransfer();
+        pClient->disconnect();
+        return STATE_SCANNING;
+    }
+
+    // Throttle de log: "Syncing data" a cada 5 s, não a cada passada do loop
+    static uint32_t lastSyncLog = 0;
+    if (millis() - lastSyncLog > 5000) {
+        Serial.println("🏠 AT_BASE - Syncing data");
+        lastSyncLog = millis();
     }
 
     // Processa ACKs/configs recebidos (fila da task BLE)
@@ -232,13 +279,43 @@ BikeState AtBaseState::update() {
     // Identificação + pedido de config na chegada
     if (!configRequested) {
         sendStatus();
-        requestConfig();
+        if (requestConfig()) {
+            configRequestTime = millis();
+        } else {
+            // X08: escrita falhou — repete na próxima iteração (não marca como pedido)
+            Serial.println("⚠️ Config request write failed - will retry");
+        }
         configRequested = true;
+    } else if (!configReceived && !configGaveUp) {
+        // X08: sem config dentro do prazo, repete o pedido (a central pode
+        // ter perdido a escrita, a notificação ou recusado por MTU)
+        if (millis() - configRequestTime > CONFIG_REQUEST_TIMEOUT_MS) {
+            if (configRetries < MAX_CONFIG_REQUEST_RETRIES) {
+                configRetries++;
+                Serial.printf("📡 Config not received - retrying (%d/%d)\n",
+                              configRetries, MAX_CONFIG_REQUEST_RETRIES);
+                if (requestConfig()) {
+                    configRequestTime = millis();
+                }
+            } else {
+                // X08: desiste DESTA conexão — transferência prossegue com a
+                // config atual; uma reconexão futura pede de novo
+                configGaveUp = true;
+                Serial.println("⚠️ Config not received after retries - continuing with current config");
+            }
+        }
     }
 
     // Heartbeat periódico (mesmo sem dados)
     if (millis() - lastStatusSent > HEARTBEAT_INTERVAL_MS) {
         sendStatus();
+    }
+
+    // R13/X02: busy impõe espera real ANTES de (re)abrir a transferência —
+    // durante a espera transferActive permanece false e a proteção de
+    // bateria do loop continua ativa (comparação segura no wrap de millis)
+    if (busyUntilMs != 0 && (int32_t)(busyUntilMs - millis()) > 0) {
+        return STATE_AT_BASE;
     }
 
     // F05: transferir dados apenas com confirmação de persistência por fragmento
@@ -247,11 +324,6 @@ BikeState AtBaseState::update() {
     }
 
     if (transferActive) {
-        // R13: busy impõe espera real antes de nova tentativa
-        if (millis() < busyUntilMs) {
-            return STATE_AT_BASE;
-        }
-
         if (!awaitingAck) {
             if (sendFragment(fragIndex)) {
                 // R13: sucesso de ESCRITA não é ACK da aplicação — o contador
@@ -297,7 +369,10 @@ BikeState AtBaseState::update() {
 }
 
 void AtBaseState::onBLEDisconnected() {
+    // X09: chamado SOMENTE no contexto do loop (via update/sinal) — a task
+    // do NimBLE apenas seta disconnectSignaled
     Serial.println("🔴 BLE disconnected");
+    disconnectSignaled = false;
     bleConnected = false;
     pDataChar = nullptr;
     pConfigChar = nullptr;
@@ -372,6 +447,8 @@ void AtBaseState::onNotification(const String& message) {
 
     if (type == "config_push") {
         Serial.println("⚙️ Config update received");
+        // X08: config chegou — encerra o ciclo de retry do pedido
+        configReceived = true;
         bool applied = configManager.processUpdate(message);
         sendConfigAck(applied, configManager.getConfig().version);
         return;
@@ -380,6 +457,7 @@ void AtBaseState::onNotification(const String& message) {
     if (type == "busy") {
         // R13: respeita retry_after_sec em vez de reiniciar imediatamente
         uint32_t retryAfterSec = doc["retry_after_sec"] | 30;
+        if (retryAfterSec > 3600) retryAfterSec = 3600; // X02: teto da espera
         busyUntilMs = millis() + retryAfterSec * 1000UL;
         Serial.printf("⏸️ Central busy - pausing transfer for %lus\n", (unsigned long)retryAfterSec);
         if (transferActive) {
@@ -399,7 +477,9 @@ bool AtBaseState::isConnected() const {
 }
 
 void ClientCallbacks::onDisconnect(NimBLEClient* pClient) {
+    // X09: a task do NimBLE apenas SINALIZA — zerar ponteiros/flags aqui
+    // concorria com o loop usando pDataChar dentro de sendFragment()
     if (atBaseState) {
-        atBaseState->onBLEDisconnected();
+        atBaseState->signalDisconnected();
     }
 }

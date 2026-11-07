@@ -15,6 +15,8 @@ extern ConfigCredentials configCredentials;
 // Flag externa para restart seguro
 extern bool pendingRestart;
 extern uint32_t restartRequestTime;
+// X05: filesystem degradado — exposto no /status para diagnóstico remoto
+extern bool fsFault;
 
 static WebServer server(80);
 static uint32_t apStartTime = 0;
@@ -131,7 +133,10 @@ void ConfigAP::update()
     {
         static uint32_t lastTimeoutWarning = 0;
         uint32_t elapsed = millis() - apStartTime;
-        uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
+        // N09: mesmo valor do controlador em main.cpp (o par divergente
+        // config_ap_min vs fallback.config_ap_timeout_sec exibia 15 min
+        // enquanto a transição real acontecia em 5 min)
+        uint32_t timeoutMs = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
 
         if (millis() - lastTimeoutWarning > 60000)
         {
@@ -212,7 +217,9 @@ void ConfigAP::setupWebServer()
         if (isInitialConfigMode) {
             html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Sem limite de tempo.</div>";
         } else {
-            html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
+            // N09: valor único com o controlador (fallback.config_ap_timeout_sec)
+            uint32_t timeoutMin = configManager.getConfig().fallback.config_ap_timeout_sec / 60;
+            html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Tempo limite: " + String(timeoutMin) + " minutos.</div>";
         }
 
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
@@ -271,6 +278,10 @@ void ConfigAP::setupWebServer()
             return;
         }
 
+        // N09.4: a candidata só fica ativa SE persistir — falha de gravação
+        // restaura a RAM anterior (antes: respondia erro com a credencial
+        // nova já aplicada em memória)
+        CredentialsConfig previous = configCredentials.getCredentials();
         configCredentials.getCredentials() = candidate;
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais salvas (segredos não são impressos no serial)");
@@ -280,6 +291,7 @@ void ConfigAP::setupWebServer()
             restartRequestTime = millis();
             Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
+            configCredentials.getCredentials() = previous;
             sendErrorPage("Erro ao Salvar", "Falha de gravação no LittleFS. Tente novamente.");
         } });
 
@@ -287,7 +299,9 @@ void ConfigAP::setupWebServer()
               {
         uint32_t elapsed = millis() - apStartTime;
 
-        uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
+        // N09: MESMO relógio/valor do controlador (main.cpp) — o update()
+        // exibia config_ap_min enquanto a transição usava fallback.config_ap_timeout_sec
+        uint32_t timeoutMs = configManager.getConfig().fallback.config_ap_timeout_sec * 1000;
         uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
 
         DynamicJsonDocument doc(STATUS_RESPONSE_BUFFER);
@@ -296,6 +310,7 @@ void ConfigAP::setupWebServer()
         doc["config_time_remaining_ms"] = remaining;
         doc["heap_free"] = ESP.getFreeHeap();
         doc["base_id"] = configCredentials.getCredentials().base_id;
+        doc["fs_fault"] = fsFault; // X05: modo degradado distinguível
 
         String response;
         serializeJson(doc, response);
@@ -384,6 +399,8 @@ void ConfigAP::setupWebServer()
             return;
         }
 
+        // N09.4: idem /save — falha de persistência restaura a RAM anterior
+        CredentialsConfig previous = configCredentials.getCredentials();
         configCredentials.getCredentials() = candidate;
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais JSON salvas (segredos não são impressos no serial)");
@@ -393,6 +410,7 @@ void ConfigAP::setupWebServer()
             restartRequestTime = millis();
             Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
+            configCredentials.getCredentials() = previous;
             sendErrorPage("Erro ao Salvar", "Falha de gravação no LittleFS. Tente novamente.");
         } });
 }

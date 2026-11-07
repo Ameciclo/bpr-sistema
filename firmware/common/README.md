@@ -1,6 +1,6 @@
 # 🔗 BPR Common Firmware Files
 
-This directory contains **minimal shared definitions** for BLE communication between **bike** and **central** firmware.
+This directory contains **minimal shared definitions** for BLE communication between **bike** and **central** firmware. Documentação canônica do protocolo em [../../docs/PROTOCOL_BLE.md](../../docs/PROTOCOL_BLE.md).
 
 ## 📁 Files Overview
 
@@ -46,8 +46,8 @@ String bikeId = generateBikeId();
 | Constant | Value | Purpose |
 |----------|-------|----------|
 | `BLE_SERVICE_UUID` | `12345678-1234-1234-1234-123456789abc` | Main BLE service |
-| `BLE_CHAR_DATA_UUID` | `12345678-1234-1234-1234-123456789abd` | Data transfer |
-| `BLE_CHAR_CONFIG_UUID` | `12345678-1234-1234-1234-123456789abe` | Configuration |
+| `BLE_CHAR_DATA_UUID` | `87654321-4321-4321-4321-cba987654321` | Data transfer |
+| `BLE_CHAR_CONFIG_UUID` | `11111111-2222-3333-4444-555555555555` | Configuration |
 | `CENTRAL_BLE_NAME` | `BPR Central` | Base station name |
 | `BIKE_ID_PREFIX` | `bpr-` | Bike ID format |
 | `MAX_BLE_PACKET_SIZE` | `512` | Safe BLE packet size |

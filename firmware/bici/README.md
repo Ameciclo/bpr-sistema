@@ -18,23 +18,18 @@ Este firmware implementa uma **máquina de estados robusta** que coleta dados de
 
 ## 🏗️ Arquitetura
 
-### 📊 Máquina de Estados (FSD Compliant)
+### 📊 Máquina de Estados (código atual, 4 estados)
 
 ```mermaid
 stateDiagram-v2
     [*] --> BOOT
-    BOOT --> CONFIG_REQUEST : Config inválida
-    BOOT --> SCANNING : Config válida
-    CONFIG_REQUEST --> BOOT : Config recebida
-    CONFIG_REQUEST --> SLEEP : Timeout
-    SCANNING --> AT_BASE : Central detectada
-    SCANNING --> LOST : Central não encontrada
-    SCANNING --> SLEEP : Ciclo completo
-    AT_BASE --> SCANNING : Upload completo
-    AT_BASE --> SLEEP : Timeout/erro
-    LOST --> AT_BASE : Central encontrada
-    LOST --> SLEEP : Timeout busca
-    SLEEP --> BOOT : Wake-up timer
+    BOOT --> SCANNING
+    BOOT --> SLEEP : bateria crítica
+    SCANNING --> AT_BASE : base detectada (busca agendada 30 s)
+    SCANNING --> SLEEP : bateria baixa/crítica
+    AT_BASE --> SCANNING : upload completo
+    AT_BASE --> SLEEP : timeout 300 s / erro
+    SLEEP --> BOOT : wake-up timer
 ```
 
 ### 🗂️ Estrutura de Arquivos
@@ -48,7 +43,6 @@ firmware/bici/
 │   ├── power_manager.cpp     # ⚡ Gerenciamento de energia
 │   ├── at_base.cpp          # 🔵 Cliente BLE
 │   ├── scanning.cpp         # 📡 Scanner WiFi
-│   ├── lost.cpp             # 🔍 Busca por central
 │   └── utils.cpp            # 🛠️ Utilitários
 ├── include/
 │   ├── constants.h          # 📋 Estruturas binárias FSD
@@ -70,7 +64,7 @@ firmware/bici/
 ### Pré-requisitos
 
 - **PlatformIO** 6.0+
-- **ESP32** genérico (240MHz, 520KB RAM, 4MB Flash)
+- **Seeed XIAO ESP32C3** (`seeed_xiao_esp32c3`, ESP32-C3, 4 MiB flash)
 - **Bateria** 18650 Li-ion (3.7V, 2500mAh+)
 
 ### Build e Upload
@@ -103,10 +97,10 @@ pio device monitor
 ### BLE Configuration
 
 ```cpp
-// UUIDs conforme FSD
+// UUIDs do código atual (ver ../../docs/PROTOCOL_BLE.md — bike e central devem ser reflashadas juntas)
 #define BLE_SERVICE_UUID     "12345678-1234-1234-1234-123456789abc"
-#define BLE_CHAR_DATA_UUID   "12345678-1234-1234-1234-123456789abd"
-#define BLE_CHAR_CONFIG_UUID "12345678-1234-1234-1234-123456789abe"
+#define BLE_CHAR_DATA_UUID   "87654321-4321-4321-4321-cba987654321"
+#define BLE_CHAR_CONFIG_UUID "11111111-2222-3333-4444-555555555555"
 ```
 
 ### Estruturas de Dados

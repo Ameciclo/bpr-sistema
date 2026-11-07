@@ -87,14 +87,9 @@ SyncResult CloudSync::update()
         return currentResult;
     }
 
-    if (!uploadHeartbeat())
-    {
-        WiFi.disconnect(true);
-        syncInProgress = false;
-        currentResult = SyncResult::FAILURE;
-        Serial.println("❌ Sync failed");
-        return currentResult;
-    }
+    // X10: heartbeat é OBSERVABILIDADE — falha dele não pode bloquear os
+    // downloads de configuração/registry que corrigiriam o próprio sistema
+    uploadHeartbeat();
 
     // R15: descobertas locais (pending) publicadas para aprovação remota
     uploadPendingBikes();
@@ -185,6 +180,7 @@ static bool fetchRemoteVersion(const String &url, uint32_t &remoteVersion)
 {
     HTTPClient http;
     http.begin(url);
+    Endpoints::setupHttp(http); // X10
     int httpCode = http.GET();
 
     if (httpCode != HTTP_CODE_OK)
@@ -303,6 +299,7 @@ bool CloudSync::downloadCentralConfig()
     Serial.println("🔄 Downloading central config from Firebase...");
 
     http.begin(url);
+    Endpoints::setupHttp(http); // X10
     int httpCode = http.GET();
 
     if (httpCode != HTTP_CODE_OK)
@@ -357,8 +354,14 @@ bool CloudSync::downloadBikeRegistryData()
     if (!needsBikeRegistryUpdate(&remoteVersion))
     {
         Serial.println("🚲 Bike registry already up to date - skipping download");
-        // F03: merge também no caminho "atualizado" (reboot precisa aplicar o arquivo local)
-        BikeManager::mergeFromRegistry();
+        // F03: merge também no caminho "atualizado" (reboot precisa aplicar o
+        // arquivo local). Seção 6: falha de aplicação é EXPOSTA — sem isso a
+        // autorização local ficava dessincronizada do arquivo sem sinal
+        if (!BikeManager::mergeFromRegistry())
+        {
+            Serial.println("❌ Local registry not applied (list full?) - sync fails, will retry");
+            return false;
+        }
         return true;
     }
 
@@ -368,6 +371,7 @@ bool CloudSync::downloadBikeRegistryData()
     Serial.println("🔄 Downloading bike registry from Firebase...");
 
     http.begin(url);
+    Endpoints::setupHttp(http); // X10
     int httpCode = http.GET();
 
     if (httpCode != HTTP_CODE_OK)
@@ -440,8 +444,15 @@ bool CloudSync::downloadBikeRegistryData()
         Serial.println("💾 Bike registry saved locally");
     }
 
-    // F03: cadastro baixado alimenta a autorização operacional imediatamente
-    BikeManager::mergeFromRegistry();
+    // F03: cadastro baixado alimenta a autorização operacional imediatamente.
+    // Seção 6 da revalidação: o retorno do merge é VERIFICADO — lista cheia
+    // sem pendente evictável não aplica a autorização baixada, e afirmar
+    // "downloaded" esconderia a falha (troca de frota ficava sem efeito)
+    if (!BikeManager::mergeFromRegistry())
+    {
+        Serial.println("❌ Registry downloaded but NOT applied (list full?) - sync fails, will retry");
+        return false;
+    }
 
     Serial.printf("✅ Bike registry downloaded: %d bikes\n", bikeIndex);
     return true;
@@ -490,6 +501,10 @@ bool CloudSync::uploadBufferData()
     // identidade exata do seu manifesto
     while (totalBatches < maxBatches)
     {
+        // X10: cede CPU entre lotes — o loop de upload é longo e o C3 é
+        // single-core (WiFi/BLE/timers precisam respirar)
+        yield();
+
         DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
         String batchKey;
         int items = bufferManager.prepareUploadBatch(doc, UPLOAD_BATCH_MAX_ITEMS, batchKey);
@@ -505,6 +520,7 @@ bool CloudSync::uploadBufferData()
 
         HTTPClient http;
         http.begin(url);
+        Endpoints::setupHttp(http); // X10
         http.addHeader("Content-Type", "application/json");
 
         int httpCode = http.PATCH(jsonString);
@@ -559,6 +575,7 @@ bool CloudSync::uploadPendingBikes()
     String url = Endpoints::getPendingBikes();
     HTTPClient http;
     http.begin(url);
+    Endpoints::setupHttp(http); // X10
     http.addHeader("Content-Type", "application/json");
     int httpCode = http.PATCH(jsonString);
     http.end();
@@ -591,6 +608,7 @@ bool CloudSync::uploadHeartbeat()
     doc["uptime"] = millis() / 1000;
 
     http.begin(url);
+    Endpoints::setupHttp(http); // X10
     http.addHeader("Content-Type", "application/json");
 
     String jsonString;

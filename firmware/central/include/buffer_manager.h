@@ -75,11 +75,18 @@ private:
     String getBikeBufferPath(const String& bikeId);
     std::vector<String> listBikeIds();
     std::vector<String> listManifestPaths();
+    void recoverStagedBuffers(); // N03: instalações interrompidas de spool
 
     // Streaming de registros de tamanho fixo.
     // visitor retorna false para parar a iteração antecipadamente.
     // Retorna true se o arquivo é válido (header + todos os itens lidos).
-    bool forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor);
+    // N08: registro corrompido/truncado propaga FALSO — o arquivo não é
+    // "válido até o erro". Com `corruptRecords` != nullptr (modo reparo),
+    // registros corrompidos são PULADOS (o registro é de tamanho fixo: os
+    // seguintes continuam endereçáveis), a iteração prossegue até o fim e o
+    // total de registros ilegíveis é reportado via *corruptRecords.
+    bool forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor,
+                     uint32_t* corruptRecords = nullptr);
     bool setItemUploadedFlag(const String& path, uint32_t index, bool uploaded);
 
     // R04: gravação recuperável (temporário + rename)
@@ -94,6 +101,7 @@ private:
     // O04: backup bruto por cópia de arquivo
     void createBackup();
     void cleanupOldBackups();
+    void enforceBackupBudget(std::vector<String> stamps); // O04: limite de bytes entre lotes
     void printFileSize(const String& filePath);
     int getTotalDataCountUnlocked(); // chamadores já seguram o lock
 

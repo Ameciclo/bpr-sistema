@@ -42,7 +42,9 @@ class ConfigManager {
 private:
     BikeConfig config;
     void resetToDefaults();
-    bool applyUpdate(JsonObject cfg, BikeConfig& candidate); // R09: aplica em candidata
+    // N09.2: rejected=true sinaliza campo presente com valor inválido —
+    // a operação inteira é recusada, não aplicada parcialmente
+    bool applyUpdate(JsonObject cfg, BikeConfig& candidate, bool& rejected);
     static bool isValidConfig(const BikeConfig& cfg);
 
 public:

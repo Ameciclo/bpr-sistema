@@ -1,11 +1,25 @@
 const admin = require('firebase-admin');
 
+// N10: comparação NUMÉRICA de chaves "{sid}-{salt}" — a lexicográfica
+// ordena "9999-1" DEPOIS de "10000-1" e não reflete ordem temporal
+function sessionKeyComparator(a, b) {
+  const pa = String(a).split('-');
+  const pb = String(b).split('-');
+  const sidA = Number(pa[0]) || 0;
+  const sidB = Number(pb[0]) || 0;
+  if (sidA !== sidB) return sidA - sidB;
+  return (Number(pa[1]) || 0) - (Number(pb[1]) || 0);
+}
+
 class FirebaseService {
   // A05: registro de listeners por sessão — evita listeners duplicados que
   // nunca são removidos (cada sessão assinada uma única vez)
+  // N10: cursor de sessões já notificadas + referência ativa por bike — a
+  // assinatura anterior é DESANEXADA quando a próxima sessão é assinada
   constructor() {
     this.db = null;
-    this.sessionListeners = new Set();
+    this.sessionListeners = new Map(); // bikeId -> {key, ref}
+    this.notifiedSessions = new Map(); // bikeId -> Set(sessionKey)
     this.init();
   }
 
@@ -39,12 +53,19 @@ class FirebaseService {
       const bikeId = snapshot.key;
       const bikeData = snapshot.val();
 
-      // A02/A05: sessões v2 (sessions_v2) têm chave estável {sid}-{salt};
-      // a mais recente é a maior chave lexicográfica, não a última inserida
+      // A02/A05/N10: sessões v2 têm chave estável {sid}-{salt}; a seleção é
+      // NUMÉRICA (a lexicográfica escolhia sessão errada) e com CURSOR — só
+      // notifica sessões ainda não vistas, sem reanunciar história no restart
       if (bikeData.sessions_v2) {
-        const keys = Object.keys(bikeData.sessions_v2).sort();
-        const latestSession = keys[keys.length - 1];
-        if (latestSession) {
+        const seen = this.notifiedSessions.get(bikeId) || new Set();
+        const unseen = Object.keys(bikeData.sessions_v2)
+          .filter((key) => !seen.has(key))
+          .sort(sessionKeyComparator);
+
+        if (unseen.length > 0) {
+          const latestSession = unseen[unseen.length - 1];
+          for (const key of unseen) seen.add(key);
+          this.notifiedSessions.set(bikeId, seen);
           callback(bikeId, latestSession, bikeData.sessions_v2[latestSession]);
         }
       }
@@ -55,40 +76,17 @@ class FirebaseService {
   listenToSessionScans(bikeId, sessionId, callback) {
     if (!this.db) return;
 
-    // A05: uma assinatura por sessão — re-chamadas não acumulam listeners
-    const listenerKey = `${bikeId}/${sessionId}`;
-    if (this.sessionListeners.has(listenerKey)) return;
-    this.sessionListeners.add(listenerKey);
+    // A05/N10: UMA assinatura ativa por bike — a sessão anterior é
+    // desanexada (listeners acumulados por sessão nunca eram removidos)
+    const active = this.sessionListeners.get(bikeId);
+    if (active) {
+      if (active.key === `${bikeId}/${sessionId}`) return; // já assinada
+      active.ref.off('child_added');
+    }
 
     const sessionRef = this.db.ref(`bikes/${bikeId}/sessions_v2/${sessionId}/scans`);
     sessionRef.on('child_added', callback);
-  }
-
-  // Escutar conexões BLE (chegadas/saídas da base)
-  listenToBikeConnections(callback) {
-    if (!this.db) return;
-    
-    const bikesRef = this.db.ref('bikes');
-    bikesRef.on('child_changed', (snapshot) => {
-      const bikeId = snapshot.key;
-      const bikeData = snapshot.val();
-      
-      // Verificar se há novas conexões
-      if (bikeData.sessions) {
-        const sessions = Object.values(bikeData.sessions);
-        const latestSession = sessions[sessions.length - 1];
-        
-        if (latestSession.connections) {
-          const connections = latestSession.connections;
-          const latestConnection = connections[connections.length - 1];
-          
-          if (latestConnection) {
-            const [time, event, base, ip] = latestConnection;
-            callback(bikeId, { time, event, base, ip });
-          }
-        }
-      }
-    });
+    this.sessionListeners.set(bikeId, { key: `${bikeId}/${sessionId}`, ref: sessionRef });
   }
 
   // Buscar dados completos de uma bike
@@ -110,17 +108,26 @@ class FirebaseService {
 
     try {
       const snapshot = await this.db.ref(`bikes/${bikeId}/sessions_v2`)
-        .orderByKey()
-        .limitToLast(1)
         .once('value');
 
       const sessions = snapshot.val();
       if (!sessions) return null;
 
-      const sessionId = Object.keys(sessions)[0];
+      // N10: recência ancorada no SERVIDOR (ingest_ts da montagem) — a chave
+      // {sid}-{salt} não é cronológica entre boots; fallback numérico
+      const keys = Object.keys(sessions);
+      const best = keys.reduce((acc, key) => {
+        if (!acc) return key;
+        const accTs = Number(sessions[acc]?.ingest_ts) || 0;
+        const keyTs = Number(sessions[key]?.ingest_ts) || 0;
+        if (accTs !== keyTs) return keyTs > accTs ? key : acc;
+        return sessionKeyComparator(acc, key) < 0 ? key : acc;
+      }, null);
+
+      if (!best) return null;
       return {
-        sessionId,
-        ...sessions[sessionId]
+        sessionId: best,
+        ...sessions[best]
       };
     } catch (error) {
       console.error('Erro ao buscar sessão:', error);
@@ -179,8 +186,17 @@ class FirebaseService {
       const bikeData = snapshot.val();
 
       if (bikeData.sessions_v2) {
-        const keys = Object.keys(bikeData.sessions_v2).sort();
-        const activeSession = bikeData.sessions_v2[keys[keys.length - 1]];
+        // N10: seleção numérica/ingest_ts (a lexicográfica escolhia errado)
+        const keys = Object.keys(bikeData.sessions_v2);
+        const activeKey = keys.reduce((acc, key) => {
+          if (!acc) return key;
+          const accTs = Number(bikeData.sessions_v2[acc]?.ingest_ts) || 0;
+          const keyTs = Number(bikeData.sessions_v2[key]?.ingest_ts) || 0;
+          if (accTs !== keyTs) return keyTs > accTs ? key : acc;
+          return sessionKeyComparator(acc, key) < 0 ? key : acc;
+        }, null);
+        const activeSession = activeKey
+          ? bikeData.sessions_v2[activeKey] : null;
 
         if (activeSession && Array.isArray(activeSession.battery)) {
           const readings = activeSession.battery

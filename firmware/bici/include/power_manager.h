@@ -21,7 +21,8 @@ public:
     bool isCriticalBattery(const BikeConfig& config);
     
     // Sleep management
-    void enterDeepSleep(uint32_t seconds);
+    // X01: retorno verificável — falha ao armar o wakeup NÃO dorme
+    bool enterDeepSleep(uint32_t seconds);
     
     // Reporting
     void logBatteryStatus();

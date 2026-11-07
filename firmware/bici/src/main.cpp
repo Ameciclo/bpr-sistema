@@ -20,6 +20,7 @@
 #include <WiFi.h>
 #include <NimBLEDevice.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include "constants.h"
 #include "config_manager.h"
 #include "buffer_manager.h"
@@ -46,15 +47,56 @@ bool isBaseSearchDue();
 
 static unsigned long lastBaseSearch = 0;
 
+// X05: mount SEM formatação silenciosa. A formatação destrutiva só é
+// permitida em instalação virgem (sem marca de custódia em NVS); com
+// custódia assumida, a falha de mount é diagnosticada e os dados são
+// preservados para recuperação — nunca descartados como "recuperação normal"
+static bool mountFilesystem() {
+    Preferences prefs;
+    prefs.begin("bpr", false);
+    bool custody = prefs.getBool("fs_ok", false);
+
+    if (LittleFS.begin()) {
+        prefs.putBool("fs_ok", true);
+        prefs.end();
+        return true;
+    }
+
+    if (!custody) {
+        Serial.println("🔧 LittleFS ausente em instalação virgem - formatando");
+        if (LittleFS.begin(true)) {
+            prefs.putBool("fs_ok", true);
+            prefs.end();
+            return true;
+        }
+        prefs.end();
+        return false;
+    }
+
+    // X05: havia dados sob custódia — NÃO formatar
+    prefs.end();
+    return false;
+}
+
 void setup() {
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    if (!LittleFS.begin(true)) {
-        Serial.println("🔧 LittleFS corrompido - formatando...");
-        LittleFS.format();
-        LittleFS.begin(true);
+    if (!mountFilesystem()) {
+        Serial.println("🚨 CRITICAL: LittleFS mount failed WITH data custody - NOT formatting");
+        Serial.println("   Dados preservados para recuperação via USB. Tentarei de novo em 1h.");
+        // Indicação visível de falha (LED) antes de dormir
+        for (int i = 0; i < 10; i++) {
+            digitalWrite(LED_PIN, HIGH); delay(150);
+            digitalWrite(LED_PIN, LOW); delay(150);
+        }
+        if (!powerManager.enterDeepSleep(3600)) {
+            // X01: sem wake-up armado, dormir seria brick — permanece parado
+            // e visível em vez de prosseguir sem filesystem
+            Serial.println("🚨 Cannot arm sleep - halting (data preserved)");
+            while (true) { delay(1000); }
+        }
     }
     WiFi.mode(WIFI_STA);
 
@@ -160,10 +202,10 @@ BikeState handleBoot() {
     }
 
     // F08: só abre sessão nova se não recuperamos uma pendente no setup()
+    // N04: sessão recuperada porém VAZIA não carrega dado nenhum — abrir uma
+    // nova evita carimbar a coleta atual com o session_start de um boot antigo
     if (!bufferManager.isSessionActive() || bufferManager.isEmpty()) {
-        if (!bufferManager.isSessionActive()) {
-            bufferManager.startSession(config.bike_id);
-        }
+        bufferManager.startSession(config.bike_id);
     } else {
         Serial.printf("📦 Recovered pending session: %d scans to deliver\n",
                       bufferManager.getCurrentSession().scan_count);
@@ -173,16 +215,28 @@ BikeState handleBoot() {
 }
 
 void handleSleep() {
-    Serial.println("💤 Entering deep sleep");
+    // X01: persistência UMA vez por tentativa de dormir; se o armamento do
+    // wakeup falhar, repetir save() a cada passada do loop desgastaria flash
+    static bool persisted = false;
+    if (!persisted) {
+        Serial.println("💤 Entering deep sleep");
 
-    // F08/R04: persistir ANTES de encerrar a sessão; falha do checkpoint é
-    // propagada e diagnosticada (último arquivo íntegra permanece no LittleFS)
-    if (!bufferManager.save()) {
-        Serial.println("🚨 CHECKPOINT FAILED BEFORE SLEEP - newest data not persisted");
+        // F08/R04: persistir ANTES de encerrar a sessão; falha do checkpoint é
+        // propagada e diagnosticada (última arquivo íntegra permanece no LittleFS)
+        if (!bufferManager.save()) {
+            Serial.println("🚨 CHECKPOINT FAILED BEFORE SLEEP - newest data not persisted");
+        }
+        bufferManager.endSession();
+        persisted = true;
     }
-    bufferManager.endSession();
 
     // Deep sleep for configured duration
     BikeConfig& config = configManager.getConfig();
-    powerManager.enterDeepSleep(config.power.deep_sleep_duration_sec);
+    if (!powerManager.enterDeepSleep(config.power.deep_sleep_duration_sec)) {
+        // X01: dormir sem wake-up armado seria brick — aguarda e tenta de novo
+        Serial.println("🚨 Deep sleep not armed - retrying in 10s");
+        delay(10000);
+        return;
+    }
+    persisted = false; // inalcançável na prática (noreturn), mantém o contrato
 }

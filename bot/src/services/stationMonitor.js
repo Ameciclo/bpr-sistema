@@ -57,17 +57,18 @@ class StationMonitor {
       }
 
       const wasOnline = this.stationStatus.get(baseId);
-      // A03: transição notificada apenas entre estados CONHECIDOS
-      if (isOnline !== null && wasOnline !== isOnline) {
-        this.stationStatus.set(baseId, isOnline);
-
+      // A03 (seção 6): o estado DESCONHECIDO também é gravado — depois de um
+      // heartbeat inválido, o mapa não pode continuar afirmando "online" do
+      // período anterior; consumidores veem null = sem evidência
+      this.stationStatus.set(baseId, isOnline);
+      // Transição notificada apenas entre estados CONHECIDOS (null não é
+      // "offline" — ausência de evidência não é queda)
+      if (isOnline !== null && wasOnline !== null && wasOnline !== isOnline) {
         if (!isOnline) {
           await this.notifyStationOffline(baseId, baseData);
         } else {
           await this.notifyStationOnline(baseId, baseData);
         }
-      } else if (isOnline !== null) {
-        this.stationStatus.set(baseId, isOnline);
       }
 
     } catch (error) {

@@ -330,6 +330,41 @@ static void processBikeDisconnected(const String &bikeId)
 {
     BikePairing::triggerEvent(BIKE_LEFT, BPRBLEServer::getConnectedBikes());
     Serial.printf("🚲 Bike %s disconnected\n", bikeId.c_str());
+
+    // X03: desconexão libera a vaga de processamento imediatamente — não
+    // esperamos o timeout de 30 s para a próxima bike da fila
+    if (pairingState.currentBike == bikeId)
+    {
+        BikePairing::finishCurrentBike();
+    }
+
+    // X03: itens enfileirados (não processados = não ACKados) da conexão
+    // encerrada são descartados com reconciliação definida — a bike mantém
+    // os dados até ACK final e reenvia na próxima conexão
+    if (!priorityQueue.empty())
+    {
+        std::priority_queue<BikeQueueItem, std::vector<BikeQueueItem>, BikeQueueComparator> kept;
+        size_t dropped = 0;
+        while (!priorityQueue.empty())
+        {
+            BikeQueueItem item = priorityQueue.top();
+            priorityQueue.pop();
+            if (item.bikeId == bikeId)
+            {
+                dropped++;
+            }
+            else
+            {
+                kept.push(item);
+            }
+        }
+        priorityQueue = kept;
+        if (dropped > 0)
+        {
+            Serial.printf("📋 Dropped %d queued items from disconnected %s (bike will resend)\n",
+                          (int)dropped, bikeId.c_str());
+        }
+    }
 }
 
 static void processBikeData(const String &bikeId, const String &jsonData)
@@ -425,6 +460,15 @@ static void processConfigRequest(const String &bikeId, const String &request)
     pairingState.status = PAIRING_SENDING_CONFIG;
     pairingState.updateActivity();
 
+    // R18/X09: autorização verificada NO LOOP — não mais na task do NimBLE
+    // (ConfigCallbacks), que concorria com o loop alterando bikeStatus
+    if (!BikeManager::canConnect(bikeId))
+    {
+        Serial.printf("❌ Config request from non-allowed bike: %s - ignored\n", bikeId.c_str());
+        pairingState.status = PAIRING_IDLE;
+        return;
+    }
+
     DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
     DeserializationError error = deserializeJson(doc, request);
 
@@ -512,6 +556,13 @@ void BikePairing::processDataFromBike(const String &bikeId, const String &jsonDa
             String ack = BPRJsonHelper::createDataAckResponse(
                 bikeId, sessionId, salt, seq, isFinal, canClear);
             BPRBLEServer::pushConfigToBike(bikeId, ack);
+
+            // X03: sessão completa confirmável = sucesso — libera a vaga para
+            // a próxima bike em vez de ocupá-la até o timeout de 30 s
+            if (isFinal && canClear)
+            {
+                finishCurrentBike();
+            }
         }
     }
     else
@@ -525,6 +576,17 @@ void BikePairing::processDataFromBike(const String &bikeId, const String &jsonDa
 
 void BikePairing::enqueueBike(const String &bikeId, const String &jsonData, uint8_t priority)
 {
+    // Seção 6: capacidade DEFINIDA — a fila não cresce sem limite na heap;
+    // item recusado recebe busy (a bike mantém os dados até ACK e reenvia)
+    if (priorityQueue.size() >= MAX_BLE_QUEUE_ITEMS)
+    {
+        Serial.printf("⚠️ BLE data queue full (%d) - refusing %s (busy)\n",
+                      MAX_BLE_QUEUE_ITEMS, bikeId.c_str());
+        String busyResponse = BPRJsonHelper::createBusyResponse(bikeId, 30);
+        BPRBLEServer::pushConfigToBike(bikeId, busyResponse);
+        return;
+    }
+
     priorityQueue.emplace(bikeId, jsonData, priority);
 
     const char* priorityStr = (priority == 1) ? "HIGH (battery low)" : "NORMAL";

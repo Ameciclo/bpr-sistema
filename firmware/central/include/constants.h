@@ -46,17 +46,31 @@
 // A bike produz até MAX_SESSION_FRAGMENTS por sessão (50 scans densos podem
 // gerar ~5 chunks/scan + fragmento final); a central precisa acomodar a
 // sessão máxima legítima INTEIRA por bike para poder confirmá-la.
-// MAX_TOTAL_ITEMS limita o agregado pelo flash disponível (LittleFS 960 KB):
+// N06: o pior caso LEGÍTIMO medido (50 scans × 20 redes com SSID de 32
+// aspas → escape JSON dobra os bytes) gera 501 fragmentos; 512 cobre esse
+// caso. MAX_TOTAL_ITEMS continua limitado pelo flash (LittleFS 960 KB):
 // 800 itens × 536 B ≈ 429 KB de payload, com folga para backups.
 #define MAX_BIKES 10                     // cadastro operacional (≠ conexões BLE simultâneas)
-#define MAX_SESSION_FRAGMENTS 256        // pior caso: 50 scans × 5 chunks + final
+#define MAX_SESSION_FRAGMENTS 512        // pior caso legítimo da bike + 1
 #define MAX_ITEMS_PER_BIKE MAX_SESSION_FRAGMENTS
 #define MAX_TOTAL_ITEMS 800
 #define MAX_BUFFER_SIZE MAX_TOTAL_ITEMS  // compat: capacidade total de itens
 #define MINIMAL_FREE_FS_SPACE 20480
 
+// O04 (seção 6 da revalidação): orçamento de BYTES para /backup — a limpeza
+// não pode ocorrer só no boot; entre lotes o diretório é limitado por
+// tamanho, não apenas por contagem de stamps. Pior transitório do flash:
+// spool 429 KB + temporário de reescrita (≤ 273 KB) + backup ≤ 200 KB.
+#define BACKUP_MAX_BYTES (200 * 1024)
+
 // Upload batching (F18/F19)
 #define UPLOAD_BATCH_MAX_ITEMS 4
+
+// Seção 6 da revalidação: fila de dados BLE com capacidade DEFINIDA — cada
+// item carrega até 512 B de payload; sem teto, bikes transmitindo em rajada
+// enchiam a heap do C3 sem backpressure. Acima do teto o item é recusado com
+// busy (a bike mantém o dado e reenvia; o ACK final é o único comprovante)
+#define MAX_BLE_QUEUE_ITEMS 12
 
 // Buffer sync thresholds
 #define BUFFER_SYNC_THRESHOLD_PERCENT 80

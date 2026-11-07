@@ -18,6 +18,7 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include "bike_pairing.h"
 #include "ble_server.h"
@@ -36,6 +37,10 @@ ConfigManager configManager;
 ConfigCredentials configCredentials;
 LEDController ledController;
 BufferManager bufferManager;
+
+// X05: filesystem degradado (mount falhou COM custódia) — modo distinguível,
+// exposto no /status do AP; NUNCA formatamos dados sob custódia silenciosamente
+bool fsFault = false;
 
 // State machine variables
 SystemState currentState = STATE_BOOT;
@@ -180,6 +185,41 @@ void printStatus()
     Serial.println("==================================================");
 }
 
+// X05: mount SEM formatação silenciosa nem restart-loop. A formatação
+// destrutiva só ocorre em instalação virgem (sem marca de custódia em NVS);
+// com custódia, a central opera em modo DEGRADADO visível (fsFault) e
+// preserva buffer/credenciais para recuperação via USB
+static bool mountFilesystem()
+{
+    Preferences prefs;
+    prefs.begin("bpr", false);
+    bool custody = prefs.getBool("fs_ok", false);
+
+    if (LittleFS.begin())
+    {
+        prefs.putBool("fs_ok", true);
+        prefs.end();
+        return true;
+    }
+
+    if (!custody)
+    {
+        Serial.println("🔧 LittleFS ausente em instalação virgem - formatando");
+        if (LittleFS.begin(true))
+        {
+            prefs.putBool("fs_ok", true);
+            prefs.end();
+            return true;
+        }
+        prefs.end();
+        return false;
+    }
+
+    // X05: dados sob custódia — NÃO formatar, NÃO reiniciar em loop
+    prefs.end();
+    return false;
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -196,19 +236,19 @@ void setup()
     Serial.println("\n🏢 BPR Central v1.0");
     Serial.println("=====================");
 
-    // Inicializar LittleFS com formatação automática se corrompido
+    // X05: inicialização do LittleFS sem formatação automática destrutiva
     Serial.println("📂 Inicializando LittleFS...");
-    if (!LittleFS.begin())
+    if (!mountFilesystem())
     {
-        Serial.println("❌ LittleFS corrompido - formatando...");
-        if (!LittleFS.begin(true)) // true = format if mount fails
-        {
-            Serial.println("❌ Falha crítica no LittleFS. Reiniciando...");
-            ESP.restart();
-        }
-        Serial.println("✅ LittleFS formatado com sucesso");
+        fsFault = true;
+        Serial.println("🚨 CRITICAL: LittleFS mount failed WITH data custody - NOT formatting");
+        Serial.println("   Buffer/credenciais preservados para recuperação via USB.");
+        Serial.println("   Operando em modo DEGRADADO (persistência indisponível).");
     }
-    Serial.printf("✅ LittleFS OK: %lu/%lu bytes\n", LittleFS.usedBytes(), LittleFS.totalBytes());
+    else
+    {
+        Serial.printf("✅ LittleFS OK: %lu/%lu bytes\n", LittleFS.usedBytes(), LittleFS.totalBytes());
+    }
 
     // Self-check do sistema
     Serial.println("🔍 Executando self-check...");

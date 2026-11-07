@@ -1,6 +1,8 @@
 # BPR Central v2.0 - Central para Seeed XIAO ESP32C3
 
-Sistema central redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase. **Hardware alvo: Seeed XIAO ESP32C3**.
+Sistema central redesenhado com arquitetura modular baseada em estados, gerenciamento inteligente de bikes e configuração dinâmica via Firebase. **Hardware alvo: Seeed XIAO ESP32C3** (`seeed_xiao_esp32c3`; ver `../docs` no repositório raiz).
+
+> LED: **Pin 8** (não "Pin 2 built-in" como documentos legados indicavam).
 
 ## 🎯 Características Principais
 
@@ -66,26 +68,26 @@ stateDiagram-v2
     TEMP_CONFIG_AP --> BIKE_PAIRING : Timeout ou config salva
     
     note right of INITIAL_CONFIG_AP
-        - AP: BPR_Hub_Config
+        - AP: BPR Central
         - Interface: 192.168.4.1
         - Timeout: 15 minutos
-        - LED: Pin 2 (built-in)
+        - LED: Pin 8
     end note
-    
+
     note right of BIKE_PAIRING
         - Servidor BLE ativo
         - Filtro: só bpr-* devices
         - Validação: allowed/pending/blocked
         - Push automático de configs
-        - LED: Pin 2 (built-in)
+        - LED: Pin 8
     end note
-    
+
     note right of CLOUD_SYNC
         - Download: configs Central + bikes
         - Upload: dados + heartbeat
         - NTP sync
         - Detecção de mudanças
-        - LED: Pin 2 (built-in)
+        - LED: Pin 8
     end note
 ```
 

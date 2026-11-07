@@ -1,24 +1,28 @@
 # 🔧 BPR Sistema - Firmware
 
-Firmware completo para ESP32 do sistema BPR, incluindo bicicletas e centrais de coleta.
+Firmware completo para ESP32-C3 (Seeed XIAO, `seeed_xiao_esp32c3`) do sistema BPR, incluindo bicicletas e centrais de coleta.
+
+> **Hardware correto:** ambos os firmwares alvo são `seeed_xiao_esp32c3` (ver `platformio.ini`).
+> Documentos antigos citavam `ESP32-WROOM-32D` / LED Pin 2 — incorretas para este
+> repositório. Documentação canônica em [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) e [../docs/PROTOCOL_BLE.md](../docs/PROTOCOL_BLE.md).
 
 ## 📁 Estrutura do Diretório
 
 ```
 firmware/
-├── bici/              # 🚲 Firmware das bicicletas (ESP32 genérico)
-├── central/           # 🏢 Firmware da central (ESP32-WROOM-32D)
+├── bici/              # 🚲 Firmware das bicicletas (Seeed XIAO ESP32C3)
+├── central/           # 🏢 Firmware da central (Seeed XIAO ESP32C3)
 ├── common/            # 🔗 Definições compartilhadas (BLE protocol)
 └── README.md          # 📖 Este arquivo
 ```
 
 ## 🚲 Firmware Bicicleta (`bici/`)
 
-**Plataforma**: ESP32 genérico  
+**Plataforma**: Seeed XIAO ESP32C3 (`seeed_xiao_esp32c3`)  
 **Função**: Scanner WiFi móvel com comunicação BLE
 
 ### Características Principais
-- **Máquina de estados** bem definida (BOOT → CONFIG_REQUEST → SCANNING → AT_BASE → SLEEP)
+- **Máquina de estados** bem definida (BOOT → SCANNING → AT_BASE → SLEEP). Estados `CONFIG_REQUEST`/`LOST` foram removidos no código atual.
 - **Scanner WiFi automático** com intervalos configuráveis
 - **Cliente BLE** para comunicação com central
 - **Gerenciamento de energia** com deep sleep inteligente
@@ -35,7 +39,6 @@ bici/src/
 ├── buffer_manager.cpp    # 📦 Buffer persistente LittleFS
 ├── config_manager.cpp    # ⚙️ Configurações dinâmicas
 ├── power_manager.cpp     # ⚡ Coordenação de rádios e sleep
-├── lost.cpp              # 🔍 Estado de busca por central
 └── utils.cpp             # 🛠️ Utilitários gerais
 ```
 
@@ -51,7 +54,7 @@ pio device monitor            # Monitor serial
 
 ## 🏢 Firmware Central (`central/`)
 
-**Plataforma**: ESP32-WROOM-32D  
+**Plataforma**: Seeed XIAO ESP32C3 (`seeed_xiao_esp32c3`)  
 **Função**: Base de coleta com validação e sincronização Firebase
 
 ### Características Principais
@@ -60,7 +63,7 @@ pio device monitor            # Monitor serial
 - **Sistema de validação** rigoroso (allowed/pending/blocked)
 - **Configuração dinâmica** por base e por bike via Firebase
 - **Push automático** de configurações via BLE
-- **LED inteligente** com padrões de status (Pin 2 built-in)
+- **LED inteligente** com padrões de status (Pin 8)
 - **Heartbeat automático** para monitoramento
 - **Self-check** de hardware no boot
 - **Timestamps precisos** adicionados pela central
@@ -68,7 +71,7 @@ pio device monitor            # Monitor serial
 ### Estrutura de Código
 ```
 central/src/
-├── main.cpp                    # 🚀 Entry point + self-check
+├── main.cpp                    # 🚀 Entry point + máquina de estados
 ├── config_ap.cpp               # 📱 Estado: Configuração via AP
 ├── ble_server.cpp              # 🔵 Estado: Servidor BLE + filtros
 ├── cloud_sync.cpp              # 📡 Estado: Sincronização completa
@@ -76,7 +79,13 @@ central/src/
 ├── led_controller.cpp          # 💡 Padrões de LED inteligentes
 ├── bike_manager.cpp            # 🚲 Registro e validação de bikes
 ├── config_manager.cpp          # ⚙️ Configs dinâmicas por bike
-└── self_check.cpp              # 🔧 Diagnóstico de hardware
+├── endpoints.cpp               # 🌐 URLs REST do Firebase
+├── bpr_json_helper.cpp         # 🔧 Helpers JSON
+├── self_check.cpp              # 🔧 Diagnóstico de hardware
+├── bike_pairing.cpp            # 🔗 Pareamento e comunicação BLE
+├── config_credentials.cpp      # 🔑 Gerenciamento de credenciais
+├── sync_monitor.cpp            # 📊 Monitor de sincronização
+└── time_sync.cpp               # ⏰ Sincronização NTP
 ```
 
 ### Setup Rápido
@@ -124,7 +133,7 @@ flowchart TD
         A3 --> A4[Envia via BLE]
     end
     
-    subgraph "🏢 Central (ESP32-WROOM-32D)"
+    subgraph "🏢 Central (Seeed XIAO ESP32C3)"
         A4 --> B1[Valida Bike]
         B1 --> B2{Status?}
         B2 -->|allowed| B3[Processa Dados]
@@ -152,8 +161,8 @@ flowchart TD
 ### Características
 | Característica | UUID | Função |
 |----------------|------|---------|
-| **Data** | `12345678-1234-1234-1234-123456789abd` | Envio de dados bike → central |
-| **Config** | `12345678-1234-1234-1234-123456789abe` | Configurações central → bike |
+| **Data** | `87654321-4321-4321-4321-cba987654321` | Envio de dados bike → central |
+| **Config** | `11111111-2222-3333-4444-555555555555` | Configurações central → bike |
 
 ### Fluxo de Dados
 1. **Bike detecta central** via scan BLE
@@ -200,13 +209,12 @@ flowchart TD
 
 ### Pré-requisitos
 - **PlatformIO** (VS Code extension ou CLI)
-- **ESP32-WROOM-32D** (para central)
-- **ESP32** genérico (para bicicletas)
+- **Seeed XIAO ESP32C3** (bike + central)
 - **Conta Firebase** (para configurações)
 
 ### Workflow de Desenvolvimento
 1. **Clone o repositório**
-2. **Configure Firebase** (central/setup.sh)
+2. **Configure Firebase** (AP `BPR Central` na primeira execução)
 3. **Upload filesystem** (configs locais)
 4. **Upload firmware** (código principal)
 5. **Monitor serial** (debug e logs)
@@ -214,7 +222,7 @@ flowchart TD
 ### Debug e Logs
 - **Serial 115200 baud** em ambos firmwares
 - **Logs estruturados** com timestamps
-- **LED de status** na central (Pin 2)
+- **LED de status** na central (Pin 8)
 - **Modo dev_mode** para testes sem bateria
 
 ## 🔧 Troubleshooting

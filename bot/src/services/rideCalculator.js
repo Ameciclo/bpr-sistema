@@ -10,17 +10,23 @@ class RideCalculator {
     this.CO2_FACTOR = 0.145; // kg CO₂ por km (hipótese: substituição por carro)
   }
 
-  // A08: timestamps chegam em segundos (legado) ou millis (v2) — um único
-  // auxiliar normaliza para millis antes de qualquer aritmética
-  toMs(ts) {
-    const n = Number(ts);
+  // N04: v2 declara MILLIS (session_start_ms, ts_ms); o legado usava SEGUNDOS
+  // (`start`). Um ÚNICO ponto de conversão por origem — a heurística
+  // encadeada (toMs aplicado duas vezes) multiplicava 10.000 ms por 1000²
+  fromV2Ms(tsMs) {
+    const n = Number(tsMs);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  fromLegacySec(sec) {
+    const n = Number(sec);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return n < 1e11 ? n * 1000 : n;
   }
 
-  // Iniciar nova viagem
+  // Iniciar nova viagem (timestampMs já está em ms — N04)
   startRide(bikeId, timestampMs) {
-    const startMs = this.toMs(timestampMs);
+    const startMs = this.fromV2Ms(timestampMs);
     const rideId = `ride_${startMs}`;
     const ride = {
       bikeId,
@@ -38,7 +44,7 @@ class RideCalculator {
     return rideId;
   }
 
-  // Adicionar ponto à viagem ativa
+  // Adicionar ponto à viagem ativa (timestampMs já está em ms — N04)
   async addPointToRide(bikeId, location, timestampMs) {
     const ride = this.activeRides.get(bikeId);
     if (!ride) return;
@@ -47,7 +53,7 @@ class RideCalculator {
       lat: location.latitude,
       lng: location.longitude,
       accuracy: location.accuracy,
-      timestamp: this.toMs(timestampMs)
+      timestamp: this.fromV2Ms(timestampMs)
     };
 
     ride.points.push(point);
@@ -72,7 +78,7 @@ class RideCalculator {
     const ride = this.activeRides.get(bikeId);
     if (!ride) return null;
 
-    ride.endTime = this.toMs(endTimestampMs);
+    ride.endTime = this.fromV2Ms(endTimestampMs);
     ride.status = 'completed';
 
     // Calcular CO2 economizado (A08: estimativa com hipótese declarada)
@@ -85,12 +91,21 @@ class RideCalculator {
       return null;
     }
 
-    // A08: duração em unidades coerentes (ms → min)
-    const durationMin = Math.max(0, Math.round((ride.endTime - ride.startTime) / 60000));
+    // N04: duração em domínio ÚNICO — os timestamps dos pontos são todos ms
+    // do boot da bike; endTime (relógio do servidor) menos startTime (boot)
+    // misturava relógios e produzia duração sem sentido
+    const firstPtMs = ride.points.length > 0
+      ? ride.points[0].timestamp : ride.startTime;
+    const lastPtMs = ride.points.length > 0
+      ? ride.points[ride.points.length - 1].timestamp : ride.startTime;
+    const spanMs = Math.max(0, lastPtMs - firstPtMs);
+    const durationMin = Math.max(0, Math.round(spanMs / 60000));
 
     const rideData = {
-      start_ts: ride.startTime,   // ms, explícito
-      end_ts: ride.endTime,       // ms, explícito
+      start_ts: ride.startTime,          // ms desde o boot da bike (domínio declarado)
+      end_ts: ride.startTime + spanMs,   // MESMO domínio do start (fim real da coleta)
+      finished_at: Date.now(),           // âncora absoluta do servidor (ingest)
+      ts_domain: 'bike_boot_ms',         // N04: domínio explícito, sem heurística
       km: Math.round(ride.totalDistance * 1000) / 1000, // 3 casas decimais
       co2_saved_g: ride.co2Saved,
       co2_method: 'estimate_car_substitution', // A08: método publicado
@@ -100,24 +115,33 @@ class RideCalculator {
     };
 
     try {
-      // A05: idempotente por identidade — reprocessar a mesma sessão não
-      // duplica viagem nem métricas
+      // N11: criação idempotente por TRANSAÇÃO — duas finalizações
+      // concorrentes da mesma viagem: UMA cria, a outra ABORTA (o par
+      // exists+set observava ausência nas duas e somava o contador 2×)
       const rideRef = firebaseService.db.ref(`rides/${bikeId}/${ride.rideId}`);
-      const existing = await rideRef.once('value');
-      if (existing.exists()) {
-        console.log(`♻️ Viagem ${ride.rideId} já registrada - replay ignorado`);
+      const result = await rideRef.transaction((current) => {
+        if (current !== null) return undefined; // já existe → aborta
+        return rideData;
+      });
+
+      if (!result.committed) {
+        console.log(`♻️ Viagem ${ride.rideId} já registrada - replay/concorrência ignorado`);
         this.activeRides.delete(bikeId);
+        const existing = await rideRef.once('value');
+        // N11: REPARO reconciliável — um crash entre a criação da viagem e a
+        // agregação deixava a contribuição perdida para sempre; as métricas
+        // são idempotentes POR VIAGEM (token), então rodar aqui nunca duplica
+        await this.updateBikeMetrics(bikeId, ride.rideId, ride.totalDistance);
+        await this.updatePublicStats(ride.rideId, ride.totalDistance,
+          ride.co2Saved, rideData.finished_at);
         return existing.val();
       }
 
-      // Salvar viagem
-      await rideRef.set(rideData);
-
-      // Atualizar métricas da bike (transação — A08)
-      await this.updateBikeMetrics(bikeId, ride.totalDistance);
-
-      // Atualizar estatísticas públicas (transação + período mensal — A08)
-      await this.updatePublicStats(ride.totalDistance, ride.co2Saved, ride.endTime);
+      // Métricas e estatísticas — idempotentes por rideId (N11): crash no
+      // meio é reparado pelo replay de cima; concorrência não duplica
+      await this.updateBikeMetrics(bikeId, ride.rideId, ride.totalDistance);
+      await this.updatePublicStats(ride.rideId, ride.totalDistance,
+        ride.co2Saved, rideData.finished_at);
 
       console.log(`✅ Viagem finalizada: ${ride.rideId} - ${ride.totalDistance}km`);
 
@@ -131,20 +155,33 @@ class RideCalculator {
   }
 
   // Atualizar métricas da bicicleta (transação atômica — A08)
-  async updateBikeMetrics(bikeId, distance) {
+  // N11: a contribuição de cada viagem entra UMA única vez — o token
+  // contributed_rides/{rideId} viaja DENTRO da mesma transação do contador;
+  // reexecução/concorrência/reparo abortam quando o token já existe
+  async updateBikeMetrics(bikeId, rideId, distance) {
     try {
       const bikeRef = firebaseService.db.ref(`bikes/${bikeId}/metrics`);
+      // N11: campos coercidos — nó existente SEM um dos contadores gerava
+      // NaN que se propagava para sempre (NaN + x = NaN)
       const result = await bikeRef.transaction((current) => {
-        const cur = current || { km_total: 0, rides_total: 0 };
+        const cur = (current && typeof current === 'object') ? current : {};
+        if (cur.contributed_rides && cur.contributed_rides[rideId]) {
+          return undefined; // esta viagem já contribuiu — aborta
+        }
+        const kmTotal = Number(cur.km_total) || 0;
+        const ridesTotal = Number(cur.rides_total) || 0;
+        const contributed = (cur.contributed_rides && typeof cur.contributed_rides === 'object')
+          ? { ...cur.contributed_rides } : {};
+        contributed[rideId] = true;
         return {
-          km_total: Math.round((cur.km_total + distance) * 1000) / 1000,
-          rides_total: cur.rides_total + 1,
+          km_total: Math.round((kmTotal + distance) * 1000) / 1000,
+          rides_total: ridesTotal + 1,
+          contributed_rides: contributed,
           last_ride: Date.now()
         };
       });
       if (result.committed) return;
-      // transação abortada (conflito) — próxima viagem reconcilia o total
-      console.warn('⚠️ Métricas da bike não confirmadas (transação abortada)');
+      // abortada por token (já contribuiu) ou por conflito — nada a fazer
     } catch (error) {
       console.error('Erro ao atualizar métricas da bike:', error);
     }
@@ -153,37 +190,60 @@ class RideCalculator {
   // Atualizar estatísticas públicas.
   // A08: agregados por período (mês) e derivados de viagens únicas; totais
   // gerais mantidos por compatibilidade com consumidores existentes
-  async updatePublicStats(distance, co2Saved, eventMs) {
+  // N04: o período usa a âncora ABSOLUTA do servidor (finished_at) — o
+  // end_ts da viagem está no domínio boot-da-bike e não forma data civil
+  // N11: token contributed_rides/{rideId} na MESMA transação do contador —
+  // contribuição única mesmo com replay/concorrência/reparo
+  async updatePublicStats(rideId, distance, co2Saved, finishedAtMs) {
     try {
-      const when = eventMs && eventMs > 0 ? new Date(eventMs) : new Date();
+      const when = finishedAtMs && finishedAtMs > 0
+        ? new Date(finishedAtMs) : new Date();
       const monthKey = `${when.getUTCFullYear()}-${String(when.getUTCMonth() + 1).padStart(2, '0')}`;
 
       // Período mensal (transação)
       const monthRef = firebaseService.db.ref(`public_stats/monthly/${monthKey}`);
       await monthRef.transaction((current) => {
-        const cur = current || { total_rides: 0, km: 0, co2_saved_g: 0 };
+        const cur = (current && typeof current === 'object') ? current : {};
+        if (cur.contributed_rides && cur.contributed_rides[rideId]) {
+          return undefined; // já contribuiu neste mês — aborta
+        }
+        const rides = Number(cur.total_rides) || 0;
+        const km = Number(cur.km) || 0;
+        const co2 = Number(cur.co2_saved_g) || 0;
+        const contributed = (cur.contributed_rides && typeof cur.contributed_rides === 'object')
+          ? { ...cur.contributed_rides } : {};
+        contributed[rideId] = true;
         return {
-          total_rides: cur.total_rides + 1,
-          km: Math.round((cur.km + distance) * 1000) / 1000,
-          co2_saved_g: cur.co2_saved_g + co2Saved,
+          total_rides: rides + 1,
+          km: Math.round((km + distance) * 1000) / 1000,
+          co2_saved_g: co2 + co2Saved,
+          contributed_rides: contributed,
           last_update: Date.now()
         };
       });
 
       // Totais gerais (transação, compatibilidade)
+      // N11: no primeiro resumo o pai public_stats já existe (ramo monthly
+      // criado acima) mas os contadores gerais NÃO — sem coerção, o update
+      // gravava NaN como estatística pública definitiva
       const statsRef = firebaseService.db.ref('public_stats');
       await statsRef.transaction((current) => {
-        const cur = current || {
-          total_rides_month: 0,
-          km_month: 0,
-          co2_saved_month_g: 0,
-          last_update: Date.now()
-        };
+        const cur = (current && typeof current === 'object') ? current : {};
+        if (cur.contributed_rides && cur.contributed_rides[rideId]) {
+          return undefined; // já contribuiu no total geral — aborta
+        }
+        const rides = Number(cur.total_rides_month) || 0;
+        const km = Number(cur.km_month) || 0;
+        const co2 = Number(cur.co2_saved_month_g) || 0;
+        const contributed = (cur.contributed_rides && typeof cur.contributed_rides === 'object')
+          ? { ...cur.contributed_rides } : {};
+        contributed[rideId] = true;
         return {
           ...cur,
-          total_rides_month: cur.total_rides_month + 1,
-          km_month: Math.round((cur.km_month + distance) * 1000) / 1000,
-          co2_saved_month_g: cur.co2_saved_month_g + co2Saved,
+          total_rides_month: rides + 1,
+          km_month: Math.round((km + distance) * 1000) / 1000,
+          co2_saved_month_g: co2 + co2Saved,
+          contributed_rides: contributed,
           current_month: monthKey, // A08: período explícito do resumo
           last_update: Date.now()
         };

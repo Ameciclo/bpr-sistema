@@ -8,6 +8,13 @@
 
 inline std::map<std::string, std::string> mockFiles;
 inline bool mockWriteFailure = false;
+// N07: falha direcionada à atualização in-place da flag `uploaded` — a
+// única escrita de 1 byte do código em teste (setItemUploadedFlag).
+// mockSingleByteWriteFailure: TODAS as escritas de 1 byte falham;
+// mockSingleByteWriteBudget >= 0: as N primeiras passam, depois falham
+// (simula o pior caso real: UMA flag marcada, a seguinte falha)
+inline bool mockSingleByteWriteFailure = false;
+inline int mockSingleByteWriteBudget = -1;
 
 class File {
   std::string path;
@@ -37,6 +44,11 @@ public:
   }
   size_t write(const uint8_t* src, size_t n) {
     if (mockWriteFailure) return 0;
+    if (n == 1) {
+      if (mockSingleByteWriteFailure) return 0;
+      if (mockSingleByteWriteBudget == 0) return 0;
+      if (mockSingleByteWriteBudget > 0) mockSingleByteWriteBudget--;
+    }
     auto it = mockFiles.find(path);
     if (it == mockFiles.end()) return 0;
     std::string& s = it->second;

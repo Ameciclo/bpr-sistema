@@ -206,5 +206,211 @@ int main() {
                std::to_string(cfg.getConfig().last_update == 42));
     }
 
+    // ===== Revalidação (novembro, revisão 2): N06/N07/N08/N09.3/O04 =====
+    // Estado determinístico: remove spools/manifestos dos blocos anteriores
+    for (auto it = mockFiles.begin(); it != mockFiles.end();) {
+        if (it->first.rfind("/buffer/", 0) == 0 || it->first.rfind("/backup/", 0) == 0) {
+            it = mockFiles.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // ---------- N06: sessão de pior caso (501 fragmentos) é acomodada ----------
+    // Reproduz E02 da revalidação: a bike legítima gera 501 fragmentos (50
+    // scans × 20 redes com SSID de 32 aspas); o limite antigo (256/bike)
+    // impedia a sessão de completar e a bike nunca recebia can_clear.
+    {
+        const uint16_t TOTAL = 501;
+        bool allStored = true;
+        for (uint16_t seq = 0; seq < TOTAL; seq++) {
+            String frag = makeFragment("bpr-770001", 700, 1, seq, TOTAL, seq == TOTAL - 1);
+            if (!bufferManager.addBikeData("bpr-770001", frag)) { allStored = false; break; }
+        }
+        result("n06_all_501_fragments_stored", allStored ? "yes" : "no(BUG)");
+        result("n06_complete_worst_case_session",
+               bufferManager.hasCompleteSession("bpr-770001", 700, 1, TOTAL) ? "yes" : "no(BUG)");
+        // Limite por bike continua explícito: 513 (contrato violado) não completa
+        result("n06_contract_violation_total_rejected",
+               bufferManager.hasCompleteSession("bpr-770001", 700, 1, 513) ? "no(BUG)" : "yes");
+        LittleFS.remove("/buffer/bpr-770001.bin");
+    }
+
+    // ---------- N07: falha de flag propaga; manifesto ilegível tem plano ----
+    {
+        // Cenário A: a PRIMEIRA flag é gravada e a segunda falha — estado
+        // parcial real (item marcado sem recibo). O lote não pode ficar
+        // "meio preparado": rollback mantém o manifesto para o reconcile
+        for (uint16_t seq = 0; seq < 3; seq++) {
+            bufferManager.addBikeData("bpr-770002",
+                makeFragment("bpr-770002", 800, 2, seq, 3, seq == 2));
+        }
+        int pendingBefore = bufferManager.getPendingCount();
+
+        mockSingleByteWriteBudget = 1; // 1ª flag passa; 2ª falha; rollback também falha
+        DynamicJsonDocument docA(4096);
+        String keyA;
+        int prepared = bufferManager.prepareUploadBatch(docA, 4, keyA);
+        mockSingleByteWriteBudget = -1;
+        result("n07_flag_failure_aborts_batch", prepared > 0 ? "no(BUG)" : "yes");
+        // Manifesto mantido para o reconcile (itens podem ter ficado marcados)
+        bool manifestKept = !keyA.isEmpty() &&
+            LittleFS.exists("/buffer/batch-" + keyA + ".manifest");
+        result("n07_manifest_kept_for_retry", manifestKept ? "yes" : "no(BUG)");
+
+        // Boot seguinte com escrita sã: reconciliação devolve TUDO a pendente
+        BufferManager afterFlagFail;
+        afterFlagFail.begin();
+        result("n07_pending_restored_after_reconcile",
+               afterFlagFail.getPendingCount() == pendingBefore ? "yes" : "no(BUG)");
+        LittleFS.remove("/buffer/bpr-770002.bin");
+
+        // Cenário B: manifesto ILEGÍVEL no boot — quarentena + flags resetadas
+        // (itens marcados como enviados não ficam sem caminho de entrega)
+        for (uint16_t seq = 0; seq < 2; seq++) {
+            afterFlagFail.addBikeData("bpr-770003",
+                makeFragment("bpr-770003", 900, 3, seq, 2, seq == 1));
+        }
+        DynamicJsonDocument docB(4096);
+        String keyB;
+        afterFlagFail.prepareUploadBatch(docB, 2, keyB); // marca 2 como enviadas
+        result("n07_pending_before_corrupt_manifest",
+               std::to_string(afterFlagFail.getPendingCount())); // esperado 0
+        mockFiles["/buffer/batch-" + keyB + ".manifest"] = "{invalid json";
+
+        BufferManager afterCorruptManifest;
+        afterCorruptManifest.begin();
+        result("n07_corrupt_manifest_quarantined",
+               LittleFS.exists("/buffer/batch-" + keyB + ".manifest.corrupt") ? "yes" : "no(BUG)");
+        result("n07_items_back_to_pending_after_quarantine",
+               std::to_string(afterCorruptManifest.getPendingCount())); // esperado 2
+        LittleFS.remove("/buffer/bpr-770003.bin");
+        LittleFS.remove("/buffer/batch-" + keyB + ".manifest.corrupt");
+        for (auto it = mockFiles.begin(); it != mockFiles.end();) {
+            if (it->first.rfind("/buffer/batch-", 0) == 0) it = mockFiles.erase(it);
+            else ++it;
+        }
+    }
+
+    // ---------- N08: corrupção no meio não descarta os registros seguintes ----
+    {
+        // Arquivo com 3 registros válidos; o do MEIO é corrompido (CRC)
+        for (uint16_t seq = 0; seq < 3; seq++) {
+            bufferManager.addBikeData("bpr-770004",
+                makeFragment("bpr-770004", 910 + seq, 4, 0, 2, false));
+        }
+        size_t recOffset = sizeof(BufferFileHeader) + sizeof(BufferItemBin) + 28;
+        mockFiles["/buffer/bpr-770004.bin"][recOffset] =
+            (char)(mockFiles["/buffer/bpr-770004.bin"][recOffset] ^ 0x01);
+
+        // Leitura conservadora: a iteração PARA na corrupção (sem modo reparo,
+        // o registro seguinte não é visto — nada é descartado por engano)
+        uint16_t sessions = 0;
+        uint32_t bytes = 0;
+        bufferManager.getBikePendingInfo("bpr-770004", sessions, bytes);
+        result("n08_conservative_read_stops_at_corruption",
+               std::to_string(sessions)); // esperado 1 (registro 0)
+
+        // Reparo na confirmação: o lote cobre o registro 0; a reescrita
+        // preserva o registro 2 (DEPOIS do corrompido) e quarentena o original
+        DynamicJsonDocument doc(4096);
+        String key;
+        int items = bufferManager.prepareUploadBatch(doc, 4, key);
+        result("n08_batch_from_readable_records", std::to_string(items)); // esperado 1
+        bool confirmed = bufferManager.markAsConfirmed(key);
+        result("n08_confirm_with_corruption_succeeds", confirmed ? "yes" : "no(BUG)");
+        result("n08_original_quarantined",
+               LittleFS.exists("/buffer/bpr-770004.bin.corrupt") ? "yes" : "no(BUG)");
+        uint16_t afterSessions = 0;
+        uint32_t afterBytes = 0;
+        bufferManager.getBikePendingInfo("bpr-770004", afterSessions, afterBytes);
+        result("n08_valid_record_after_corruption_kept",
+               std::to_string(afterSessions)); // esperado 1 (registro 2 sobreviveu)
+        LittleFS.remove("/buffer/bpr-770004.bin");
+        LittleFS.remove("/buffer/bpr-770004.bin.corrupt");
+        for (auto it = mockFiles.begin(); it != mockFiles.end();) {
+            if (it->first.rfind("/buffer/batch-", 0) == 0) it = mockFiles.erase(it);
+            else ++it;
+        }
+    }
+
+    // ---------- Seção 6: flags do lote caem nos registros CERTOS ----------
+    // Invariante item/índice: após o lote, EXATAMENTE os itens do documento
+    // estão marcados como enviados (a ordenação da chave estável não pode
+    // dissociar o par — na placa a enumeração de diretório não é alfabética)
+    {
+        for (int seq = 0; seq < 2; seq++) {
+            bufferManager.addBikeData("bpr-770005",
+                makeFragment("bpr-770005", 950, 5, seq, 2, seq == 1));
+            bufferManager.addBikeData("bpr-770006",
+                makeFragment("bpr-770006", 960, 6, seq, 2, seq == 1));
+        }
+        DynamicJsonDocument doc(4096);
+        String key;
+        int items = bufferManager.prepareUploadBatch(doc, 4, key);
+        result("s6_batch_items", std::to_string(items)); // esperado 4
+
+        JsonArray dataArr = doc["data"].as<JsonArray>();
+        int perBike05 = 0, perBike06 = 0;
+        for (JsonObject o : dataArr) {
+            const char* bid = o["bike_id"].as<const char*>();
+            if (bid && strcmp(bid, "bpr-770005") == 0) perBike05++;
+            if (bid && strcmp(bid, "bpr-770006") == 0) perBike06++;
+        }
+        uint16_t pend05 = 0, pend06 = 0;
+        uint32_t b05 = 0, b06 = 0;
+        bufferManager.getBikePendingInfo("bpr-770005", pend05, b05);
+        bufferManager.getBikePendingInfo("bpr-770006", pend06, b06);
+        // 2 itens por bike no lote => 0 pendentes em cada
+        result("s6_flags_match_manifest_bike05",
+               (perBike05 == 2 && pend05 == 0) ? "yes" : "no(BUG)");
+        result("s6_flags_match_manifest_bike06",
+               (perBike06 == 2 && pend06 == 0) ? "yes" : "no(BUG)");
+        LittleFS.remove("/buffer/bpr-770005.bin");
+        LittleFS.remove("/buffer/bpr-770006.bin");
+        for (auto it = mockFiles.begin(); it != mockFiles.end();) {
+            if (it->first.rfind("/buffer/batch-", 0) == 0) it = mockFiles.erase(it);
+            else ++it;
+        }
+    }
+
+    // ---------- N09.3: conteúdo inválido não vira config ativa ----------
+    {
+        CentralConfig broken;
+        memset(&broken, 0, sizeof(broken));
+        broken.intervals.sync_sec = 0; // tamanho certo, conteúdo inválido
+        mockFiles["/config.bin"].assign((char*)&broken, sizeof(broken));
+
+        ConfigManager cfg;
+        bool ok = cfg.loadConfig();
+        result("n09_central_invalid_content_rejected", ok ? "no(BUG)" : "yes");
+        result("n09_central_defaults_restored",
+               cfg.getConfig().intervals.sync_sec == 90 ? "yes" : "no(BUG)");
+        LittleFS.remove("/config.bin");
+        LittleFS.remove("/config.tmp");
+        LittleFS.remove("/config.bak");
+    }
+
+    // ---------- O04: orçamento de BYTES do /backup entre lotes ----------
+    // A limpeza não podia esperar o boot: 2 stamps acima do orçamento => o
+    // mais antigo sai JÁ na passagem pelo begin()
+    {
+        for (auto it = mockFiles.begin(); it != mockFiles.end();) {
+            if (it->first.rfind("/backup/", 0) == 0) it = mockFiles.erase(it);
+            else ++it;
+        }
+        const size_t big = 110 * 1024; // 2 × 110 KB > BACKUP_MAX_BYTES (200 KB)
+        mockFiles["/backup/1000_bpr-aa0001.bkp"] = std::string(big, 'x');
+        mockFiles["/backup/2000_bpr-aa0001.bkp"] = std::string(big, 'x');
+
+        BufferManager budget;
+        budget.begin(); // cleanupOldBackups + enforceBackupBudget
+        result("o04_oldest_backup_stamp_removed",
+               LittleFS.exists("/backup/1000_bpr-aa0001.bkp") ? "no(BUG)" : "yes");
+        result("o04_newest_backup_stamp_kept",
+               LittleFS.exists("/backup/2000_bpr-aa0001.bkp") ? "yes" : "no(BUG)");
+        LittleFS.remove("/backup/2000_bpr-aa0001.bkp");
+    }
+
     return 0;
 }

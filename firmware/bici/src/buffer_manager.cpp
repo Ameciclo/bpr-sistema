@@ -3,6 +3,13 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 
+// N03: caminhos canônicos da sessão — tmp (cópia nova), bak (cópía anterior
+// íntegra durante a troca), corrupt (quarentena)
+static const char* kSessionPath = "/session.bin";
+static const char* kSessionTmpPath = "/session.tmp";
+static const char* kSessionBakPath = "/session.bak";
+static const char* kSessionCorruptPath = "/session.corrupt";
+
 // R22: CRC-32 (refletido, poly 0xEDB88320) para integridade do payload da sessão
 static uint32_t crc32Bytes(const uint8_t* data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
@@ -15,7 +22,8 @@ static uint32_t crc32Bytes(const uint8_t* data, size_t length) {
     return crc ^ 0xFFFFFFFF;
 }
 
-BufferManager::BufferManager() : sessionActive(false), bootId(0) {
+BufferManager::BufferManager() : sessionActive(false), bootId(0),
+                                 batterySaturationLogged(false) {
     memset(&currentSession, 0, sizeof(SessionData));
 }
 
@@ -29,6 +37,7 @@ void BufferManager::startSession(const char* bikeId) {
     currentSession.scan_count = 0;
     currentSession.battery_count = 0;
     sessionActive = true;
+    batterySaturationLogged = false;
 
     Serial.printf("📊 Session started: %s at %lu (salt %04x, boot %04x)\n",
                   bikeId, currentSession.session_start_millis,
@@ -72,6 +81,13 @@ bool BufferManager::addScan(uint32_t timestamp, const NetworkData* networks, uin
 
 void BufferManager::addBattery(uint32_t timestamp, uint8_t percent) {
     if (!sessionActive || currentSession.battery_count >= MAX_BATTERY) {
+        // N02: telemetria de bateria satura explicitamente — NUNCA encerra a
+        // capacidade de coleta de scans da sessão
+        if (sessionActive && !batterySaturationLogged) {
+            batterySaturationLogged = true;
+            Serial.printf("⚠️ Battery telemetry saturated at %d readings (collection continues)\n",
+                          MAX_BATTERY);
+        }
         return;
     }
 
@@ -115,11 +131,25 @@ bool BufferManager::save() {
         return false;
     }
 
-    LittleFS.remove("/session.bin");
-    if (!LittleFS.rename(tmpPath, "/session.bin")) {
-        Serial.println("❌ Session rename failed - previous file kept");
-        LittleFS.remove(tmpPath);
-        return false;
+    // N03: instalação por rename DIRETO — substitui o canônico atomicamente.
+    // Se a semântica do FS exigir destino inexistente, o fallback preserva o
+    // íntegro como .bak ANTES de instalar a nova cópia (a janela antiga
+    // remove-then-rename perdia o arquivo se faltasse energia entre as duas).
+    if (!LittleFS.rename(tmpPath, kSessionPath)) {
+        LittleFS.remove(kSessionBakPath);
+        if (LittleFS.exists(kSessionPath) &&
+            !LittleFS.rename(kSessionPath, kSessionBakPath)) {
+            Serial.println("❌ Session backup move failed - previous file kept");
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+        if (!LittleFS.rename(tmpPath, kSessionPath)) {
+            Serial.println("❌ Session rename failed - restoring previous file");
+            LittleFS.rename(kSessionBakPath, kSessionPath); // restaura o íntegro
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+        LittleFS.remove(kSessionBakPath);
     }
 
     Serial.printf("✅ Session saved (%d scans, %d bytes, crc %08x)\n",
@@ -128,12 +158,37 @@ bool BufferManager::save() {
 }
 
 bool BufferManager::load() {
-    if (!LittleFS.exists("/session.bin")) {
+    // N03: se o canônico sumiu na janela de troca, recupera do temporário
+    // (cópia mais nova) ou do backup (cópía anterior íntegra) antes de desistir
+    if (!LittleFS.exists(kSessionPath)) {
+        if (LittleFS.exists(kSessionTmpPath) &&
+            LittleFS.rename(kSessionTmpPath, kSessionPath)) {
+            Serial.println("🔁 Session recovered from staging copy");
+        } else if (LittleFS.exists(kSessionBakPath) &&
+                   LittleFS.rename(kSessionBakPath, kSessionPath)) {
+            Serial.println("🔁 Session recovered from backup copy");
+        }
+    }
+
+    if (!LittleFS.exists(kSessionPath) &&
+        !LittleFS.exists(kSessionTmpPath) &&
+        !LittleFS.exists(kSessionBakPath)) {
         Serial.println("📦 No saved session found");
         return false;
     }
 
-    File file = LittleFS.open("/session.bin", "r");
+    // N01: nenhuma candidata automática de 54 KB — a leitura vai direto para
+    // currentSession (BSS global); falha de validação quarentena o arquivo
+    if (tryLoadFrom(kSessionPath)) return true;
+    if (LittleFS.exists(kSessionTmpPath) && tryLoadFrom(kSessionTmpPath)) return true;
+    if (LittleFS.exists(kSessionBakPath) && tryLoadFrom(kSessionBakPath)) return true;
+
+    Serial.println("📦 No valid session recovered");
+    return false;
+}
+
+bool BufferManager::tryLoadFrom(const char* path) {
+    File file = LittleFS.open(path, "r");
     if (!file) {
         return false;
     }
@@ -145,72 +200,77 @@ bool BufferManager::load() {
         header.magic != SESSION_FILE_MAGIC ||
         header.version != SESSION_FILE_VERSION ||
         header.payload_size != sizeof(SessionData)) {
-        Serial.println("❌ Session file invalid (header mismatch) - quarantined");
+        Serial.printf("❌ Session file invalid (header mismatch): %s - quarantined\n", path);
         file.close();
-        quarantine();
+        quarantineFile(path);
         return false;
     }
 
-    SessionData candidate;
-    bytesRead = file.readBytes((char*)&candidate, sizeof(SessionData));
+    bytesRead = file.readBytes((char*)&currentSession, sizeof(SessionData));
     file.close();
 
     if (bytesRead != sizeof(SessionData) ||
-        crc32Bytes((uint8_t*)&candidate, sizeof(SessionData)) != header.payload_crc) {
-        Serial.println("❌ Session load failed (payload CRC mismatch) - quarantined");
-        quarantine();
+        crc32Bytes((uint8_t*)&currentSession, sizeof(SessionData)) != header.payload_crc) {
+        Serial.printf("❌ Session load failed (payload CRC mismatch): %s - quarantined\n", path);
+        quarantineFile(path);
         return false;
     }
 
-    if (candidate.scan_count > MAX_SCANS ||
-        candidate.battery_count > MAX_BATTERY ||
-        candidate.bike_id[sizeof(candidate.bike_id) - 1] != '\0') {
-        Serial.println("❌ Session load failed (payload invalid) - quarantined");
-        quarantine();
+    if (currentSession.scan_count > MAX_SCANS ||
+        currentSession.battery_count > MAX_BATTERY ||
+        currentSession.bike_id[sizeof(currentSession.bike_id) - 1] != '\0') {
+        Serial.printf("❌ Session load failed (payload invalid): %s - quarantined\n", path);
+        quarantineFile(path);
         return false;
     }
 
     // R22: validação estrutural completa — terminadores de strings e contagens
-    for (uint16_t i = 0; i < candidate.scan_count; i++) {
-        const ScanData& scan = candidate.scans[i];
+    for (uint16_t i = 0; i < currentSession.scan_count; i++) {
+        const ScanData& scan = currentSession.scans[i];
         if (scan.network_count > MAX_NETWORKS_PER_SCAN) {
-            Serial.println("❌ Session load failed (network_count out of range)");
-            quarantine();
+            Serial.printf("❌ Session load failed (network_count out of range): %s\n", path);
+            quarantineFile(path);
             return false;
         }
         for (uint8_t n = 0; n < scan.network_count; n++) {
             const NetworkData& net = scan.networks[n];
             if (net.ssid[sizeof(net.ssid) - 1] != '\0' ||
                 net.bssid[sizeof(net.bssid) - 1] != '\0') {
-                Serial.println("❌ Session load failed (unterminated ssid/bssid)");
-                quarantine();
+                Serial.printf("❌ Session load failed (unterminated ssid/bssid): %s\n", path);
+                quarantineFile(path);
                 return false;
             }
         }
     }
 
-    currentSession = candidate;
-    bootId = candidate.boot_id != 0 ? candidate.boot_id : 1;
+    // N04: bootId do MEMBRO permanece o da energização atual (beginBoot);
+    // currentSession.boot_id registra a origem da sessão — serializeFragment
+    // publica "resumed" quando diferem, sinalizando sessão retomada entre boots
     sessionActive = true;
-    Serial.printf("✅ Session recovered: %s with %d scans (boot %04x)\n",
-                  currentSession.bike_id, currentSession.scan_count, currentSession.boot_id);
+    Serial.printf("✅ Session recovered: %s with %d scans (boot %04x, current boot %04x)\n",
+                  currentSession.bike_id, currentSession.scan_count,
+                  currentSession.boot_id, bootId);
     return true;
 }
 
-void BufferManager::quarantine() {
-    // R22: preserva a cópia suspeita para análise em vez de apagar silenciosamente
+void BufferManager::quarantineFile(const char* path) {
+    // R22/X05: preserva a cópia suspeita para análise em vez de apagar
     memset(&currentSession, 0, sizeof(SessionData));
     sessionActive = false;
-    LittleFS.remove("/session.corrupt");
-    if (LittleFS.exists("/session.bin")) {
-        LittleFS.rename("/session.bin", "/session.corrupt");
+    LittleFS.remove(kSessionCorruptPath);
+    if (LittleFS.exists(path)) {
+        LittleFS.rename(path, kSessionCorruptPath);
     }
 }
 
 void BufferManager::clear() {
     memset(&currentSession, 0, sizeof(SessionData));
     sessionActive = false;
-    LittleFS.remove("/session.bin");
+    batterySaturationLogged = false;
+    LittleFS.remove(kSessionPath);
+    // N03: cópias de troca de uma sessão confirmada não têm valor
+    LittleFS.remove(kSessionTmpPath);
+    LittleFS.remove(kSessionBakPath);
     Serial.println("🗑️ Session buffer cleared (only after central ACK)");
 }
 
@@ -244,7 +304,9 @@ size_t BufferManager::measureNetworkBytes(const NetworkData& net) const {
 }
 
 void BufferManager::buildChunks(std::vector<FragChunk>& chunks) const {
-    static const size_t HEADER_BYTES = 190;
+    // N04: 200 B cobre o envelope real com pior caso de dígitos + o campo
+    // "idx" (identidade do scan) transmitido em cada fragmento de dados
+    static const size_t HEADER_BYTES = 200;
 
     for (uint16_t s = 0; s < currentSession.scan_count; s++) {
         const ScanData& scan = currentSession.scans[s];
@@ -287,7 +349,10 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
         return false;
     }
 
-    DynamicJsonDocument doc(MAX_BLE_FRAGMENT_BYTES + 192);
+    // X06: a arena da ÁRVORE interna precisa comportar todos os slots do pior
+    // caso (7 redes por chunk / 10 baterias no final) — não confundir com o
+    // orçamento do payload serializado (MAX_BLE_FRAGMENT_BYTES)
+    DynamicJsonDocument doc(FRAGMENT_JSON_ARENA);
     doc["type"] = "data";
     doc["bike_id"] = currentSession.bike_id;
     doc["session_id"] = currentSession.session_start_millis;
@@ -301,6 +366,9 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
         doc["is_final"] = true;
         doc["session_start_millis"] = currentSession.session_start_millis;
         doc["scan_count"] = currentSession.scan_count;
+        // N04: sessão retomada entre boots — dados de origens temporais
+        // diferentes sob o mesmo rótulo; consumidor decide como tratar
+        doc["resumed"] = (currentSession.boot_id != bootId);
 
         JsonArray battery = doc.createNestedArray("battery");
         for (int i = 0; i < currentSession.battery_count; i++) {
@@ -324,6 +392,9 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
 
         JsonArray scans = doc.createNestedArray("scans");
         JsonObject scanObj = scans.createNestedObject();
+        // N04: identidade da observação transmitida — o consumidor remonta os
+        // chunks de um mesmo scan por (idx) em vez de adivinhar por timestamp
+        scanObj["idx"] = chunk.scan_idx;
         scanObj["ts"] = scan.timestamp_millis;
         scanObj["net_offset"] = chunk.net_start;
 
@@ -359,9 +430,25 @@ bool BufferManager::isEmpty() const {
 }
 
 bool BufferManager::isFull() const {
-    return sessionActive && (currentSession.scan_count >= MAX_SCANS || currentSession.battery_count >= MAX_BATTERY);
+    // N02: capacidade da sessão é regida pelos SCANS — telemetria de bateria
+    // satura em separado (addBattery) e não encerra a coleta prematuramente
+    return sessionActive && currentSession.scan_count >= MAX_SCANS;
 }
 
 size_t BufferManager::getSize() const {
     return sizeof(SessionData);
+}
+
+size_t BufferManager::getPendingDataBytes() const {
+    // N02: estimativa da carga útil real pendente (não a capacidade da struct)
+    size_t bytes = 60; // envelope do fragmento final
+    for (uint16_t s = 0; s < currentSession.scan_count; s++) {
+        const ScanData& scan = currentSession.scans[s];
+        bytes += 40; // envelope por scan
+        for (uint8_t n = 0; n < scan.network_count; n++) {
+            bytes += measureNetworkBytes(scan.networks[n]);
+        }
+    }
+    bytes += (size_t)currentSession.battery_count * 16;
+    return bytes;
 }

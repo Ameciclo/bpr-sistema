@@ -242,12 +242,10 @@ public:
                               conn_handle, bikeId.c_str(), registeredId.c_str());
                 return;
             }
-            // R18: mesma autorização do caminho de dados
-            if (!BikeManager::canConnect(bikeId))
-            {
-                Serial.printf("❌ Config write from non-allowed bike: %s\n", bikeId.c_str());
-                return;
-            }
+            // R18/X09: a AUTORIZAÇÃO (BikeManager/bikeStatus) não é mais
+            // consultada aqui na task do NimBLE — o processConfigRequest no
+            // loop aplica a mesma regra sem concorrer com quem altera o
+            // cadastro (merge do registry, heartbeats)
 
             if (BPRBLEServer::configCallback) {
                 BPRBLEServer::configCallback(bikeId, String(value.c_str()));

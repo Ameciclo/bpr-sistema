@@ -31,6 +31,20 @@
 #define MAX_FRAGMENT_RETRIES 3
 #define HEARTBEAT_INTERVAL_MS 5000
 
+// X06: arena da árvore JSON do fragmento — NÃO é o mesmo orçamento do payload
+// serializado. Pior caso no ESP32-C3 (slot de 16 B): chunk de 7 redes =
+// 48 slots (768 B) + strings copiadas (<= payload serializado, 460 B) e
+// fragmento final com 10 baterias = 41 slots (656 B). 1280 B cobre ambos.
+#define FRAGMENT_JSON_ARENA 1280
+
+// X02: orçamento global da visita à base — idle/busy/rejeição persistente
+// têm prazo finito; a proteção de bateria nunca fica suspensa por mais que isso
+#define AT_BASE_MAX_DURATION_MS 300000
+
+// X08: pedido de config com retry — sem ACK de config dentro do prazo, repete
+#define CONFIG_REQUEST_TIMEOUT_MS 10000
+#define MAX_CONFIG_REQUEST_RETRIES 3
+
 // Base discovery scheduling (F24: busca por agenda, não a cada loop)
 #define BASE_SEARCH_INTERVAL_MS 30000
 

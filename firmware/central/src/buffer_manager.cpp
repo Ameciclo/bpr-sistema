@@ -95,11 +95,54 @@ void BufferManager::cleanup() {
 
 void BufferManager::begin()
 {
+    // N03: recupera instalações de spool interrompidas por queda de energia —
+    // .tmp é a cópia mais nova; .bak é a anterior íntegra se o canônico sumiu
+    recoverStagedBuffers();
     // Diretórios já criados no self-check
     cleanupOldBackups();
     // R05: lotes preparados sem confirmação voltam a pendente
     reconcilePendingBatches();
     Serial.printf("📥 DataBuffer initialized: %d total items\n", getTotalDataCount());
+}
+
+// N03: varre /buffer por cópias de troca (".bin.tmp"/".bin.bak") órfãs
+void BufferManager::recoverStagedBuffers()
+{
+    if (!LittleFS.exists(BUFFER_DIR)) return;
+    File root = LittleFS.open(BUFFER_DIR);
+    if (!root) return;
+
+    std::vector<String> staged;
+    File file = root.openNextFile();
+    while (file) {
+        String name = file.name();
+        file.close();
+        if (name.startsWith("bpr-") &&
+            (name.endsWith(".bin.tmp") || name.endsWith(".bin.bak"))) {
+            staged.push_back(name);
+        }
+        file = root.openNextFile();
+    }
+    root.close();
+
+    for (const String& name : staged) {
+        String canonical = name.substring(0, name.length() - 4); // remove .tmp/.bak
+        String fullStaged = String(BUFFER_DIR) + "/" + name;
+        String fullCanonical = String(BUFFER_DIR) + "/" + canonical;
+
+        if (!LittleFS.exists(fullCanonical)) {
+            if (LittleFS.rename(fullStaged, fullCanonical)) {
+                Serial.printf("🔁 Buffer recovered from staging: %s\n", canonical.c_str());
+            } else {
+                Serial.printf("⚠️ Could not recover staging: %s\n", name.c_str());
+            }
+        } else {
+            // canônico presente: a cópia de troca é obsoleta — o estado
+            // comprometido é o canônico + reconciliação de lotes (R05)
+            LittleFS.remove(fullStaged);
+            Serial.printf("🧹 Obsolete staging removed: %s\n", name.c_str());
+        }
+    }
 }
 
 // F15: caminho canônico e determinístico por bike
@@ -227,9 +270,38 @@ bool BufferManager::addData(const String& bikeId, const uint8_t* data, size_t le
     if (file.readBytes((char*)&header, sizeof(header)) != sizeof(header) ||
         header.magic != BUFFER_MAGIC || header.version != BUFFER_VERSION ||
         header.item_count > MAX_ITEMS_PER_BIKE) {
-        Serial.printf("❌ Buffer header invalid: %s\n", path.c_str());
+        Serial.printf("❌ Buffer header invalid: %s - quarantining for recovery\n", path.c_str());
         file.close();
-        return false;
+        // X05/C9: quarentena preserva o arquivo suspeito para análise
+        // (recuperação via USB) e recria um spool limpo — antes a bike
+        // recebia "busy" para sempre neste arquivo, sem caminho de reparo
+        String corruptPath = path + ".corrupt";
+        LittleFS.remove(corruptPath);
+        if (!LittleFS.rename(path, corruptPath)) {
+            Serial.printf("❌ Cannot quarantine %s - append aborted\n", path.c_str());
+            return false;
+        }
+        file = LittleFS.open(path, "w");
+        if (!file) {
+            return false;
+        }
+        BufferFileHeader fresh;
+        fresh.magic = BUFFER_MAGIC;
+        fresh.version = BUFFER_VERSION;
+        fresh.item_count = 0;
+        fresh.last_update = time(nullptr);
+        bool ok = file.write((uint8_t*)&fresh, sizeof(fresh)) == sizeof(fresh);
+        file.close();
+        if (!ok) {
+            LittleFS.remove(path);
+            return false;
+        }
+        file = LittleFS.open(path, "r+");
+        if (!file || file.readBytes((char*)&header, sizeof(header)) != sizeof(header)) {
+            file.close();
+            return false;
+        }
+        header = fresh; // spool recém-criado: zero itens
     }
 
     // F05/R03: dedupe idempotente sobre (bike, sessão, salt, seq, CRC do
@@ -343,8 +415,15 @@ bool BufferManager::hasCompleteSession(const String& bikeId, uint32_t sessionId,
 }
 
 // Streaming de registros: valida header e cada item (tamanho + CRC, F17)
-bool BufferManager::forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor)
+// N08: corrupção/truncamento/CRC inválido propagam FALSO — o arquivo NÃO é
+// "válido até o erro"; quem substitui/remova o arquivo com base neste retorno
+// precisa saber que há registros ilegíveis (e possivelmente válidos depois
+// deles). No modo reparo (corruptRecords != nullptr) o registro corrompido é
+// PULADO, a travessia continua até o fim e o total ilegível é reportado.
+bool BufferManager::forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor,
+                                uint32_t* corruptRecords)
 {
+    if (corruptRecords) *corruptRecords = 0;
     if (!LittleFS.exists(path)) {
         return true; // sem arquivo = buffer vazio válido
     }
@@ -367,21 +446,37 @@ bool BufferManager::forEachItem(const String& path, const std::function<bool(con
     bool keepGoing = true;
     for (uint32_t i = 0; i < header.item_count && keepGoing; i++) {
         BufferItemBin bin;
+        bool recordValid = true;
         if (file.readBytes((char*)&bin, sizeof(bin)) != sizeof(bin)) {
-            Serial.printf("⚠️ Truncated item in %s at %d - stopping at %d items\n",
-                          path.c_str(), i, (int)(i));
-            break;
+            // Truncamento: o arquivo ACABA aqui — não há registros seguintes
+            Serial.printf("⚠️ Truncated item in %s at %d - file INVALID from here\n",
+                          path.c_str(), i);
+            file.close();
+            return false; // N08: truncamento nunca é "arquivo válido"
         }
         if (bin.size > MAX_ITEM_DATA_SIZE) {
-            Serial.printf("⚠️ Item %d in %s has invalid size %d - stopping\n", i, path.c_str(), bin.size);
-            break;
+            Serial.printf("⚠️ Item %d in %s has invalid size %d\n", i, path.c_str(), bin.size);
+            recordValid = false;
         }
         // F17: CRC verificado na leitura
-        CRC32 crc;
-        crc.update(bin.data, bin.size);
-        if (crc.finalize() != bin.crc32) {
-            Serial.printf("⚠️ CRC mismatch in %s item %d - stopping\n", path.c_str(), i);
-            break;
+        if (recordValid) {
+            CRC32 crc;
+            crc.update(bin.data, bin.size);
+            if (crc.finalize() != bin.crc32) {
+                Serial.printf("⚠️ CRC mismatch in %s item %d\n", path.c_str(), i);
+                recordValid = false;
+            }
+        }
+
+        if (!recordValid) {
+            if (corruptRecords) {
+                // N08 modo reparo: pula o registro corrompido e CONTINUA —
+                // registro de tamanho fixo mantém os seguintes endereçáveis
+                (*corruptRecords)++;
+                continue;
+            }
+            file.close();
+            return false; // N08
         }
 
         DataItem item;
@@ -464,8 +559,14 @@ int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, St
     doc["base_id"] = configCredentials.getBaseId();
 
     JsonArray dataArray = doc.createNestedArray("data");
-    std::vector<DataItem> manifestItems;
-    std::vector<uint32_t> manifestIndexes; // índice do registro no arquivo por bike
+    // Seção 6 da revalidação: item e índice viajam PARES daqui em diante —
+    // ordenar só os itens dissociava o par e marcava flags no registro de
+    // OUTRA bike/posição quando a enumeração não coincidia com a seleção
+    struct ManifestEntry {
+        DataItem item;
+        uint32_t index; // índice do registro no arquivo da bike
+    };
+    std::vector<ManifestEntry> manifest;
 
     for (int sel : selected) {
         const Candidate& c = candidates[sel];
@@ -495,8 +596,7 @@ int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, St
                 itemObj["data"] = decoded;
             }
 
-            manifestItems.push_back(item);
-            manifestIndexes.push_back(index);
+            manifest.push_back({item, index});
             return true;
         });
     }
@@ -511,19 +611,20 @@ int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, St
     doc["data_count"] = included;
 
     // R06: chave estável derivada da IDENTIDADE dos itens (ordenada), sem
-    // horário — retry do mesmo conjunto produz a mesma chave
-    std::sort(manifestItems.begin(), manifestItems.end(), [](const DataItem& a, const DataItem& b) {
-        if (a.bikeId != b.bikeId) return a.bikeId < b.bikeId;
-        if (a.session_id != b.session_id) return a.session_id < b.session_id;
-        if (a.session_salt != b.session_salt) return a.session_salt < b.session_salt;
-        return a.seq < b.seq;
+    // horário — retry do mesmo conjunto produz a mesma chave.
+    // O índice ACOMPANHA o item na ordenação (par item/índice preservado)
+    std::sort(manifest.begin(), manifest.end(), [](const ManifestEntry& a, const ManifestEntry& b) {
+        if (a.item.bikeId != b.item.bikeId) return a.item.bikeId < b.item.bikeId;
+        if (a.item.session_id != b.item.session_id) return a.item.session_id < b.item.session_id;
+        if (a.item.session_salt != b.item.session_salt) return a.item.session_salt < b.item.session_salt;
+        return a.item.seq < b.item.seq;
     });
     CRC32 keyCrc;
     keyCrc.update((const uint8_t*)configCredentials.getBaseId().c_str(),
                   configCredentials.getBaseId().length());
-    for (const DataItem& item : manifestItems) {
-        String line = item.bikeId + "|" + String(item.session_id) + "|" +
-                      String(item.session_salt) + "|" + String(item.seq) + "\n";
+    for (const ManifestEntry& entry : manifest) {
+        String line = entry.item.bikeId + "|" + String(entry.item.session_id) + "|" +
+                      String(entry.item.session_salt) + "|" + String(entry.item.seq) + "\n";
         keyCrc.update((const uint8_t*)line.c_str(), line.length());
     }
     char keyBuf[16];
@@ -531,6 +632,11 @@ int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, St
     batchId = String(keyBuf);
 
     // R05: manifesto durável ANTES de marcar qualquer item como enviado
+    std::vector<DataItem> manifestItems;
+    manifestItems.reserve(manifest.size());
+    for (const ManifestEntry& entry : manifest) {
+        manifestItems.push_back(entry.item);
+    }
     if (!writeManifest(batchId, manifestItems)) {
         Serial.println("❌ Batch manifest write failed - batch not prepared");
         unlock();
@@ -538,15 +644,32 @@ int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, St
     }
 
     // Passo 4: marca EXATAMENTE os itens incluídos (in-place) e persiste
-    for (size_t i = 0; i < manifestItems.size(); i++) {
-        setItemUploadedFlag(getBikeBufferPath(manifestItems[i].bikeId), manifestIndexes[i], true);
+    // N07: falha de flag é PROPAGADA — lote volta a pendente com o manifesto
+    // removido, em vez de ficar "meio preparado" (itens marcados sem recibo)
+    bool flagsOk = true;
+    for (const ManifestEntry& entry : manifest) {
+        if (!setItemUploadedFlag(getBikeBufferPath(entry.item.bikeId), entry.index, true)) {
+            Serial.printf("❌ Failed to set uploaded flag for %s idx %lu\n",
+                          entry.item.bikeId.c_str(), (unsigned long)entry.index);
+            flagsOk = false;
+        }
+    }
+    unlock();
+    if (!flagsOk) {
+        // N07: rollback FORA do lock — rollbackUpload adquire o próprio
+        // mutex (chamá-lo segurando o lock faria o tryLock interno falhar
+        // em no-op e o lote ficaria "meio preparado")
+        rollbackUpload(batchId);
+        return 0;
     }
 
-    unlock();
     return included;
 }
 
 // R05: manifesto durável com a identidade exata do lote
+// N07: existir ≠ estar íntegro — overflow da árvore, escrita curta, crash no
+// meio da gravação e releitura inválida impedem o manifesto de ser tratado
+// como durável ANTES de qualquer flag mudar. Gravação via tmp+rename.
 bool BufferManager::writeManifest(const String& batchId, const std::vector<DataItem>& items)
 {
     DynamicJsonDocument doc(2048);
@@ -563,11 +686,40 @@ bool BufferManager::writeManifest(const String& batchId, const std::vector<DataI
         o["crc32"] = String(item.crc32, HEX);
     }
 
+    if (doc.overflowed()) {
+        Serial.println("❌ Manifest JSON overflow - batch not prepared");
+        return false;
+    }
+
+    String out;
+    serializeJson(doc, out);
+
+    // N07: tmp + rename — crash no meio da gravação não deixa manifesto parcial
     String path = getManifestPath(batchId);
-    File file = LittleFS.open(path, "w");
+    String tmpPath = path + ".tmp";
+    File file = LittleFS.open(tmpPath, "w");
     if (!file) return false;
-    serializeJson(doc, file);
+    size_t written = file.write((const uint8_t*)out.c_str(), out.length());
     file.close();
+    if (written != out.length()) {
+        Serial.printf("❌ Manifest short write (%d/%d) - discarded\n",
+                      (int)written, (int)out.length());
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    LittleFS.remove(path);
+    if (!LittleFS.rename(tmpPath, path)) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    // N07: releitura valida o manifesto gravado — bytes na flash ≠ JSON legível
+    std::vector<DataItem> check;
+    if (!readManifest(batchId, check) || check.size() != items.size()) {
+        Serial.println("❌ Manifest verification failed (re-read) - removed");
+        removeManifest(batchId);
+        return false;
+    }
     return true;
 }
 
@@ -641,7 +793,10 @@ bool BufferManager::markAsConfirmed(const String& batchId)
     return ok;
 }
 
-// R04: reescrita recuperável — temporário + rename; falha preserva o original
+// R04/N08: reescrita recuperável — temporário + rename; falha preserva o
+// original. Registros corrompidos no MEIO do arquivo não descartam os válidos
+// que vêm depois: o modo reparo pula os ilegíveis, mantém os recuperáveis e o
+// original é QUARENTENADO (.corrupt) em vez de descartado silenciosamente.
 bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::vector<DataItem>& manifestItems)
 {
     String path = getBikeBufferPath(bikeId);
@@ -666,7 +821,9 @@ bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::
     }
 
     uint32_t kept = 0;
+    uint32_t corrupted = 0;
     bool writeOk = true;
+    // N08: modo reparo — registra corrompidos, preserva os válidos DEPOIS deles
     bool valid = forEachItem(path, [&](const DataItem& item, uint32_t) {
         bool inBatch = false;
         for (const DataItem& m : manifestItems) {
@@ -685,11 +842,11 @@ bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::
         }
         kept++;
         return true;
-    });
+    }, &corrupted);
     out.close();
 
     if (!valid || !writeOk) {
-        // Falha de escrita ou arquivo original inválido — preserva o original
+        // Falha de escrita ou arquivo truncado/inválido — preserva o original
         Serial.printf("❌ Rewrite failed for %s - original preserved\n", bikeId.c_str());
         LittleFS.remove(tmpPath);
         return false;
@@ -708,6 +865,26 @@ bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::
         return false;
     }
 
+    if (corrupted > 0) {
+        // N08: o original continha registros ilegíveis — ele é quarentenado
+        // (nunca apresentado como cópia completa) e o novo spool carrega
+        // apenas os registros válidos recuperáveis, com diagnóstico explícito
+        Serial.printf("⚠️ %s had %d corrupt records: %d valid kept, original quarantined\n",
+                      bikeId.c_str(), (int)corrupted, (int)kept);
+        String corruptPath = path + ".corrupt";
+        LittleFS.remove(corruptPath);
+        if (!LittleFS.rename(path, corruptPath)) {
+            // sem como quarentenar, o original fica (estado seguro)
+            Serial.printf("❌ Cannot quarantine %s - original preserved\n", bikeId.c_str());
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+        if (kept == 0 || !LittleFS.rename(tmpPath, path)) {
+            LittleFS.remove(tmpPath);
+        }
+        return true;
+    }
+
     if (kept == 0) {
         LittleFS.remove(tmpPath);
         LittleFS.remove(path);
@@ -715,15 +892,32 @@ bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::
         return true;
     }
 
-    LittleFS.remove(path);
+    // N03: instalação por rename DIRETO (substituição atômica); fallback .bak
+    // preserva o original íntegro durante a troca — a sequência antiga
+    // remove-then-rename perdia o spool inteiro se faltasse energia entre as duas
     if (!LittleFS.rename(tmpPath, path)) {
-        LittleFS.remove(tmpPath);
-        return false;
+        String bakPath = path + ".bak";
+        LittleFS.remove(bakPath);
+        if (LittleFS.exists(path) && !LittleFS.rename(path, bakPath)) {
+            Serial.printf("❌ Backup move failed for %s - original preserved\n", bikeId.c_str());
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+        if (!LittleFS.rename(tmpPath, path)) {
+            Serial.printf("❌ Rename failed for %s - restoring original\n", bikeId.c_str());
+            LittleFS.rename(bakPath, path);
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+        LittleFS.remove(bakPath);
     }
     return true;
 }
 
 // R05: lote sem entrega comprovada volta a pendente
+// N07: falha ao restaurar UMA flag mantém o manifesto — o reconcile do boot
+// tenta de novo; remover o recibo sem restaurar o estado deixaria itens
+// marcados como enviados sem entrega comprovada
 bool BufferManager::rollbackUpload(const String& batchId)
 {
     std::vector<DataItem> items;
@@ -732,23 +926,38 @@ bool BufferManager::rollbackUpload(const String& batchId)
     }
 
     if (!tryLock()) return false;
+    bool restoreOk = true;
     for (const DataItem& item : items) {
         String path = getBikeBufferPath(item.bikeId);
+        bool itemRestored = false;
         forEachItem(path, [&](const DataItem& it, uint32_t index) {
             if (sameIdentity(it, item) && it.uploaded) {
-                setItemUploadedFlag(path, index, false);
+                if (!setItemUploadedFlag(path, index, false)) {
+                    restoreOk = false;
+                } else {
+                    itemRestored = true;
+                }
             }
             return true;
         });
+        // item ausente do spool (já confirmado/removido) não é erro
+        (void)itemRestored;
     }
-    removeManifest(batchId);
+    if (restoreOk) {
+        removeManifest(batchId);
+    } else {
+        Serial.printf("⚠️ Rollback incomplete for %s - manifest kept for retry\n", batchId.c_str());
+    }
     unlock();
     Serial.printf("⚠️ Batch %s rolled back to pending\n", batchId.c_str());
-    return true;
+    return restoreOk;
 }
 
 // R05: boot com lotes preparados sem confirmação — reconciliação conservadora:
 // os itens voltam a pendente (a nuvem deduplica pela chave estável do lote)
+// N07: manifesto ILEGÍVEL tem plano alternativo — é quarentenado e TODAS as
+// flags uploaded voltam a pendente (a nuvem deduplica reenvios); sem isso,
+// itens marcados como enviados ficariam fora de entrega para sempre
 void BufferManager::reconcilePendingBatches()
 {
     std::vector<String> manifests = listManifestPaths();
@@ -756,6 +965,31 @@ void BufferManager::reconcilePendingBatches()
         String fileName = path.substring(path.lastIndexOf('/') + 1);
         if (!fileName.startsWith("batch-") || !fileName.endsWith(".manifest")) continue;
         String batchId = fileName.substring(6, fileName.length() - 9);
+
+        std::vector<DataItem> items;
+        if (!readManifest(batchId, items)) {
+            Serial.printf("🚨 Manifest %s unreadable - quarantining and resetting all uploaded flags\n",
+                          batchId.c_str());
+            String corruptPath = path + ".corrupt";
+            LittleFS.remove(corruptPath);
+            LittleFS.rename(path, corruptPath);
+
+            // Conservador: tudo volta a pendente; nada fica sem caminho de envio
+            if (tryLock()) {
+                std::vector<String> ids = listBikeIds();
+                for (const String& bikeId : ids) {
+                    forEachItem(getBikeBufferPath(bikeId), [&](const DataItem& item, uint32_t index) {
+                        if (item.uploaded) {
+                            setItemUploadedFlag(getBikeBufferPath(bikeId), index, false);
+                        }
+                        return true;
+                    });
+                }
+                unlock();
+            }
+            continue;
+        }
+
         Serial.printf("🔁 Unconfirmed batch at boot: %s -> back to pending\n", batchId.c_str());
         rollbackUpload(batchId);
     }
@@ -798,6 +1032,14 @@ void BufferManager::createBackup()
     std::vector<String> ids = listBikeIds();
     if (ids.empty()) return;
 
+    // O04/X05: SEM espaço para temporários + spool + backup, a cópia é
+    // adiada (logada) — encher a flash aqui faria a PRÓXIMA gravação crítica
+    // (manifesto/spool) falhar por causa de um backup
+    if (!hasEnoughSpace()) {
+        Serial.println("⚠️ Backup skipped: low free space (spool writes take priority)");
+        return;
+    }
+
     if (!LittleFS.exists("/backup")) {
         LittleFS.mkdir("/backup");
     }
@@ -835,6 +1077,10 @@ void BufferManager::createBackup()
 
     if (copies > 0) {
         Serial.printf("💾 Backup created: %d bike buffers (stamp %s)\n", copies, stamp.c_str());
+        // O04 (seção 6): a limpeza não pode esperar o próximo boot — entre
+        // lotes o /backup cresce sem limite. Orçamento de bytes aplicado na
+        // criação (BACKUP_MAX_BYTES), além da retenção por contagem.
+        cleanupOldBackups();
     }
 }
 
@@ -863,7 +1109,13 @@ void BufferManager::cleanupOldBackups()
     }
     root.close();
 
-    if (stamps.size() <= 3) return;
+    if (stamps.size() <= 3) {
+        // O04: mesmo dentro da retenção por contagem, o ORÇAMENTO de bytes
+        // precisa ser respeitado (3 cópias integrais do spool cheio não cabem
+        // na partição junto com spool + temporário de reescrita)
+        enforceBackupBudget(stamps);
+        return;
+    }
     std::sort(stamps.begin(), stamps.end());
 
     size_t toRemove = stamps.size() - 3;
@@ -886,6 +1138,59 @@ void BufferManager::cleanupOldBackups()
             LittleFS.remove(p);
         }
         Serial.printf("🗑️ Old backup removed (stamp %s)\n", oldStamp.c_str());
+    }
+
+    // Recalcula os stamps sobreviventes e aplica o orçamento de bytes
+    std::vector<String> remaining;
+    for (size_t i = toRemove; i < stamps.size(); i++) {
+        remaining.push_back(stamps[i]);
+    }
+    enforceBackupBudget(remaining);
+}
+
+// O04: mantém os stamps MAIS RECENTES enquanto o total de bytes do /backup
+// exceder BACKUP_MAX_BYTES; remove sempre o stamp mais antigo primeiro
+void BufferManager::enforceBackupBudget(std::vector<String> stamps)
+{
+    if (!LittleFS.exists("/backup")) return;
+    std::sort(stamps.begin(), stamps.end()); // mais antigo primeiro
+
+    while (stamps.size() > 1) {
+        size_t totalBytes = 0;
+        File root = LittleFS.open("/backup");
+        if (!root) return;
+        File f = root.openNextFile();
+        while (f) {
+            String name = f.name();
+            size_t sz = f.size();
+            f.close();
+            if (name.endsWith(".bkp")) totalBytes += sz;
+            f = root.openNextFile();
+        }
+        root.close();
+
+        if (totalBytes <= BACKUP_MAX_BYTES) break;
+
+        String oldStamp = stamps[0];
+        std::vector<String> doomed;
+        File root2 = LittleFS.open("/backup");
+        if (!root2) return;
+        File f2 = root2.openNextFile();
+        while (f2) {
+            String name = f2.name();
+            f2.close();
+            if (name.endsWith(".bkp") && name.startsWith(oldStamp + "_")) {
+                doomed.push_back("/backup/" + name);
+            }
+            f2 = root2.openNextFile();
+        }
+        root2.close();
+        for (const String& p : doomed) {
+            LittleFS.remove(p);
+        }
+        stamps.erase(stamps.begin());
+        Serial.printf("🗑️ Backup stamp %s removed (byte budget %d exceeded)\n",
+                      oldStamp.c_str(), (int)BACKUP_MAX_BYTES);
     }
 }
 

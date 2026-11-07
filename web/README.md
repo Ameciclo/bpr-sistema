@@ -2,6 +2,9 @@
 
 Dashboard web moderno para monitoramento do sistema de bicicletas BPR.
 
+> **Status atual:** esqueleto Remix/Vite. `app/root.jsx` é apenas o shell HTML —
+> **não há integração Firebase ativa**, rotas de dashboard, mapas ou relatórios. Ver README raiz.
+
 ## 🚀 Tecnologias
 
 - **Framework**: [Remix](https://remix.run/) v2.17.2
@@ -48,17 +51,9 @@ npm run start    # Servidor de produção
 npm test         # Executar testes (não implementado)
 ```
 
-## 🔧 Configuração
+## 🔗 Integração Firebase (planejada — não ativa)
 
-### Integração Firebase
-O dashboard se conecta ao Firebase Realtime Database para:
-- Monitorar status das bicicletas em tempo real
-- Visualizar dados de sessões e scans WiFi
-- Gerenciar configurações do sistema
-- Exibir métricas e estatísticas
-
-### Estrutura de Dados
-Consome os seguintes endpoints do Firebase:
+Quando houver integração, o dashboard lerá (somente leitura) do Firebase Realtime Database:
 - `/bikes/{bikeId}` - Status e dados das bicicletas
 - `/bases/{baseId}` - Status das centrais/estações
 - `/rides/{bikeId}` - Histórico de viagens

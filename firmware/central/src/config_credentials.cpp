@@ -21,6 +21,20 @@ void ConfigCredentials::setDefaults()
 
 bool ConfigCredentials::loadCredentials()
 {
+    // N03: recupera de tmp/bak se o canônico sumiu na janela de troca
+    if (!LittleFS.exists(CREDENTIALS_FILE))
+    {
+        if (LittleFS.exists("/config_credentials.tmp") &&
+            LittleFS.rename("/config_credentials.tmp", CREDENTIALS_FILE))
+        {
+            Serial.println("🔁 Credentials recovered from staging copy");
+        }
+        else if (LittleFS.exists("/config_credentials.bak") &&
+                 LittleFS.rename("/config_credentials.bak", CREDENTIALS_FILE))
+        {
+            Serial.println("🔁 Credentials recovered from backup copy");
+        }
+    }
     if (!LittleFS.exists(CREDENTIALS_FILE))
     {
         Serial.println("📄 Credentials file not found, using defaults");
@@ -82,10 +96,13 @@ bool ConfigCredentials::saveCredentials()
     // Copiar dados para buffer alinhado
     memcpy(buffer, &credentials, expectedSize);
     
-    File file = LittleFS.open(CREDENTIALS_FILE, "w");
+    // N03: gravação recuperável — tmp + rename substitui o canônico
+    // atomicamente (a gravação DIRETA destruiria as credenciais se faltasse
+    // energia no meio da escrita; sem elas a central não reconecta nunca)
+    File file = LittleFS.open("/config_credentials.tmp", "w");
     if (!file)
     {
-        Serial.println("❌ Failed to create credentials file");
+        Serial.println("❌ Failed to create credentials temp file");
         free(buffer);
         return false;
     }
@@ -97,7 +114,28 @@ bool ConfigCredentials::saveCredentials()
     if (bytesWritten != expectedSize)
     {
         Serial.printf("❌ Failed to write credentials: %d != %d\n", bytesWritten, expectedSize);
+        LittleFS.remove("/config_credentials.tmp");
         return false;
+    }
+
+    if (!LittleFS.rename("/config_credentials.tmp", CREDENTIALS_FILE))
+    {
+        LittleFS.remove("/config_credentials.bak");
+        if (LittleFS.exists(CREDENTIALS_FILE) &&
+            !LittleFS.rename(CREDENTIALS_FILE, "/config_credentials.bak"))
+        {
+            Serial.println("❌ Credentials backup move failed - previous file kept");
+            LittleFS.remove("/config_credentials.tmp");
+            return false;
+        }
+        if (!LittleFS.rename("/config_credentials.tmp", CREDENTIALS_FILE))
+        {
+            Serial.println("❌ Credentials rename failed - restoring previous file");
+            LittleFS.rename("/config_credentials.bak", CREDENTIALS_FILE);
+            LittleFS.remove("/config_credentials.tmp");
+            return false;
+        }
+        LittleFS.remove("/config_credentials.bak");
     }
 
     Serial.println("💾 Credentials saved");
