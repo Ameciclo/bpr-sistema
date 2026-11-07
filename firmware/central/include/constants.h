@@ -57,6 +57,10 @@
 #define MAX_BUFFER_SIZE MAX_TOTAL_ITEMS  // compat: capacidade total de itens
 #define MINIMAL_FREE_FS_SPACE 20480
 
+// PRD lotes/recibos (BTP1): spool por lote + recibos duráveis
+#define BATCH_SPOOL_DIR "/buffer/batches"
+#define BATCH_RECEIPTS_DIR "/buffer/receipts"
+
 // O04 (seção 6 da revalidação): orçamento de BYTES para /backup — a limpeza
 // não pode ocorrer só no boot; entre lotes o diretório é limitado por
 // tamanho, não apenas por contagem de stamps. Pior transitório do flash:

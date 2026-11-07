@@ -72,3 +72,70 @@ String BPRJsonHelper::createDataAckResponse(const String& bikeId, uint32_t sessi
     serializeJson(doc, result);
     return result;
 }
+
+// T03 (PRD lotes): mesmo índice com conteúdo diferente = conflito explícito —
+// a bike mantém o lote e não conta a parte como válida
+String BPRJsonHelper::createDataAckConflict(const String& bikeId, uint32_t sessionId,
+                                            uint16_t sessionSalt, uint16_t seq) {
+    DynamicJsonDocument doc(256);
+    doc["type"] = "data_ack";
+    doc["bike_id"] = bikeId;
+    doc["session_id"] = sessionId;
+    doc["session_salt"] = sessionSalt;
+    doc["seq"] = seq;
+    doc["stored"] = false;
+    doc["conflict"] = true;
+
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+// PRD lotes/recibos: página do bitmap de pendências (bit 1 = parte presente).
+// Páginas de 64 partes (16 hex chars) cabem em MTU pequeno (T16).
+String BPRJsonHelper::createBatchStatusPage(const String& bikeId, uint32_t sessionId,
+                                            uint16_t sessionSalt, const String& state,
+                                            uint8_t page, uint8_t pages,
+                                            const uint8_t bitmap8[8]) {
+    DynamicJsonDocument doc(320);
+    doc["type"] = "batch_status";
+    doc["v"] = 1;
+    doc["bike_id"] = bikeId;
+    doc["session_id"] = sessionId;
+    doc["session_salt"] = sessionSalt;
+    doc["state"] = state;
+    doc["page"] = page;
+    doc["pages"] = pages;
+
+    char hex[17];
+    for (int i = 0; i < 8; i++) {
+        snprintf(&hex[i * 2], 3, "%02x", bitmap8[i]);
+    }
+    doc["missing"] = hex;
+
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+// PRD lotes/recibos: autorização de limpeza ligada à confirmação DURÁVEL na
+// nuvem — identifica exatamente o conteúdo que pode ser liberado (5.2)
+String BPRJsonHelper::createBatchClearAuth(const String& bikeId, uint32_t sessionId,
+                                           uint16_t sessionSalt, uint16_t total,
+                                           uint32_t totalBytes, const char shaHex[65],
+                                           uint32_t confirmedAt) {
+    DynamicJsonDocument doc(384);
+    doc["type"] = "batch_clear_auth";
+    doc["v"] = 1;
+    doc["bike_id"] = bikeId;
+    doc["session_id"] = sessionId;
+    doc["session_salt"] = sessionSalt;
+    doc["total"] = total;
+    doc["total_bytes"] = totalBytes;
+    doc["sha256"] = shaHex;
+    doc["confirmed_at"] = confirmedAt;
+
+    String result;
+    serializeJson(doc, result);
+    return result;
+}

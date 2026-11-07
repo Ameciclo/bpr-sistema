@@ -21,4 +21,16 @@ public:
     static String createDataAckResponse(const String& bikeId, uint32_t sessionId,
                                         uint16_t sessionSalt, uint16_t seq,
                                         bool isFinal, bool canClear);
+
+    // PRD lotes/recibos (BTP1)
+    static String createDataAckConflict(const String& bikeId, uint32_t sessionId,
+                                        uint16_t sessionSalt, uint16_t seq);
+    static String createBatchStatusPage(const String& bikeId, uint32_t sessionId,
+                                        uint16_t sessionSalt, const String& state,
+                                        uint8_t page, uint8_t pages,
+                                        const uint8_t bitmap8[8]);
+    static String createBatchClearAuth(const String& bikeId, uint32_t sessionId,
+                                       uint16_t sessionSalt, uint16_t total,
+                                       uint32_t totalBytes, const char shaHex[65],
+                                       uint32_t confirmedAt);
 };

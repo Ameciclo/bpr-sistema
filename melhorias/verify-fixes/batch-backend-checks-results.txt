@@ -1,0 +1,13 @@
+t17_case_0: c07430a12ab1c654071835867d3dbc96364722de587703203867449b394cea46
+t17_case_1: 283e56f77e3a3cc6618294b1766e0bc02daf5346c30c9500e82c88db61e84602
+t17_case_2: 0b55a4aa3e0515e6d77fbdce4defe240ab1488693796e08a283dfbf1f0de12ce
+t00_crc32_iso_hdlc: cbf43926
+t02_valid_batch_accepted: yes
+t02_missing_part_pending: yes
+t02_truncated_part_pending: yes
+t02_corrupted_crc_pending: yes
+t04_total_above_contract: yes
+t05_global_hash_mismatch_rejected: yes
+t20_unsupported_version: yes
+t04_noncanonical_bike_id: yes
+== batch backend checks: sem BUG ==

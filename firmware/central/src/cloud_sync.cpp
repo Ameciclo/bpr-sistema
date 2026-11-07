@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include "bike_manager.h"
 #include "binary_structs.h"
+#include "batch_proto.h"
+#include "batch_spool.h"
 #include "ble_server.h"
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
@@ -30,6 +32,10 @@ static String redactUrl(const String& url)
     int cut = url.indexOf("?auth=");
     return (cut > 0) ? url.substring(0, cut) : url;
 }
+
+// PRD lotes/recibos (definida ao final): upload dos lotes BTP1 + conferência
+// das confirmações remotas; falha remota não derruba a sync (T09)
+static void uploadBatchSpools();
 
 SyncResult CloudSync::enter()
 {
@@ -86,6 +92,11 @@ SyncResult CloudSync::update()
         Serial.println("❌ Sync failed");
         return currentResult;
     }
+
+    // PRD lotes/recibos: upload dos lotes BTP1 (progressivo) e conferência
+    // das confirmações remotas — falha remota NÃO falha a sync inteira (os
+    // lotes ficam aguardando nuvem; a bike mantém a cópia — T09)
+    uploadBatchSpools();
 
     // X10: heartbeat é OBSERVABILIDADE — falha dele não pode bloquear os
     // downloads de configuração/registry que corrigiriam o próprio sistema
@@ -630,4 +641,165 @@ bool CloudSync::uploadHeartbeat()
     }
 
     return success;
+}
+
+// ---- PRD lotes/recibos (BTP1): upload dos lotes e conferência remota -----
+// Ordem das gravações (PRD 5.2): confirmação remota → persistir RECIBO →
+// remover payload local → (a autorização à bike vem pelo recibo quando ela
+// anunciar de novo). Falha remota mantém o estado aguardando nuvem (T09) —
+// a bike conserva a própria cópia até a autorização durável.
+static void uploadBatchSpools()
+{
+    // 1) Upload progressivo: lotes completos localmente (complete_local) com
+    // partes ainda não enviadas — retomável entre syncs/reboots (T07)
+    std::vector<BatchSpoolHeader> ready = BatchSpool::listReadyForUpload();
+    for (const BatchSpoolHeader &h : ready)
+    {
+        String bikeId(h.bike_id);
+        int sent = 0;
+        bool failed = false;
+
+        for (uint16_t i = 0; i < h.total_parts && sent < MAX_PART_UPLOADS_PER_SYNC; i++)
+        {
+            if (h.uploaded_bitmap[i / 8] & (1u << (i % 8))) continue;
+
+            BatchPartRecord rec;
+            if (!BatchSpool::readPartForUpload(h, i, rec))
+            {
+                Serial.printf("🚨 Falha lendo parte %d do lote %lu-%d\n",
+                              i, (unsigned long)h.session_id, h.session_salt);
+                failed = true;
+                break;
+            }
+
+            // A parte vai como STRING: o RTDB preserva os bytes UTF-8 exatos
+            // e a validação na nuvem recomputa CRC/SHA do contrato (T17)
+            DynamicJsonDocument doc(BIKE_DATA_BUFFER + 64);
+            doc["len"] = rec.len;
+            char crcHex[9];
+            snprintf(crcHex, sizeof(crcHex), "%08x", rec.crc32);
+            doc["crc32"] = crcHex;
+            doc["payload"] = String((const char *)rec.data, rec.len);
+
+            String body;
+            serializeJson(doc, body);
+
+            String url = Endpoints::getBatchPartUrl(bikeId, h.session_id, h.session_salt, i);
+            HTTPClient http;
+            http.begin(url);
+            Endpoints::setupHttp(http); // X10
+            http.addHeader("Content-Type", "application/json");
+            int code = http.PUT(body);
+            http.end();
+
+            if (code == HTTP_CODE_OK)
+            {
+                BatchSpool::markUploaded(bikeId, h.session_id, h.session_salt, i);
+                sent++;
+            }
+            else
+            {
+                Serial.printf("⚠️ Upload da parte %d falhou (HTTP %d) - continuará no próximo sync\n",
+                              i, code);
+                failed = true;
+            }
+            yield(); // X10: loop longo no C3 single-core
+            if (failed) break;
+        }
+
+        if (failed || sent > 0) {
+            Serial.printf("☁️ Lote %lu-%d: %d partes enviadas neste ciclo\n",
+                          (unsigned long)h.session_id, h.session_salt, sent);
+        }
+
+        // Todas as partes enviadas? publica o meta — o gatilho na nuvem valida
+        // o conjunto inteiro (CRC por parte + hash global) e instala a
+        // conclusão canônica; um pedido isolado NÃO representa o todo (PRD §3)
+        BatchSpoolHeader now;
+        if (!failed && BatchSpool::find(bikeId, h.session_id, h.session_salt, now))
+        {
+            bool all = true;
+            for (uint16_t i = 0; i < now.total_parts && all; i++) {
+                if ((now.uploaded_bitmap[i / 8] & (1u << (i % 8))) == 0) all = false;
+            }
+            if (all)
+            {
+                char shaHex[65];
+                batch_sha256_hex(now.sha256, shaHex);
+                DynamicJsonDocument meta(320);
+                meta["v"] = BATCH_PROTO_VERSION;
+                meta["total"] = now.total_parts;
+                meta["total_bytes"] = now.total_bytes;
+                meta["sha256"] = shaHex;
+                meta["uploaded_by"] = configCredentials.getBaseId(); // proveniência
+                String body;
+                serializeJson(meta, body);
+
+                String url = Endpoints::getBatchMetaUrl(bikeId, h.session_id, h.session_salt);
+                HTTPClient http;
+                http.begin(url);
+                Endpoints::setupHttp(http);
+                http.addHeader("Content-Type", "application/json");
+                int code = http.PUT(body);
+                http.end();
+                if (code == HTTP_CODE_OK)
+                {
+                    BatchSpool::markAwaitingCloud(bikeId, h.session_id, h.session_salt);
+                    Serial.printf("☁️ Meta do lote %lu-%d publicado - aguardando confirmação\n",
+                                  (unsigned long)h.session_id, h.session_salt);
+                }
+                else
+                {
+                    Serial.printf("⚠️ Meta do lote %lu-%d falhou (HTTP %d) - reenviará\n",
+                                  (unsigned long)h.session_id, h.session_salt, code);
+                }
+            }
+        }
+    }
+
+    // 2) Conferir confirmações remotas dos lotes aguardando nuvem — o recibo
+    // canônico por ORIGEM independe da estação que fez o upload (T10/T18)
+    std::vector<BatchSpoolHeader> waiting = BatchSpool::listAwaitingCloud();
+    for (const BatchSpoolHeader &h : waiting)
+    {
+        String bikeId(h.bike_id);
+        String url = Endpoints::getBatchConfirmationUrl(bikeId, h.session_id, h.session_salt);
+        HTTPClient http;
+        http.begin(url);
+        Endpoints::setupHttp(http);
+        int code = http.GET();
+        if (code != HTTP_CODE_OK)
+        {
+            // T09: sem confirmação acessível = pendência; nada é inferido
+            continue;
+        }
+        String body = http.getString();
+        http.end();
+
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, body) != DeserializationError::Ok) continue;
+
+        String state = doc["state"] | "";
+        String shaHex = doc["sha256"] | "";
+        char want[65];
+        batch_sha256_hex(h.sha256, want);
+
+        if (state == "confirmed" && shaHex == want)
+        {
+            // PRD 5.2: recibo ANTES de remover o payload; o recibo sobrevive
+            // à remoção e autoriza a limpeza repetidamente (T11)
+            uint32_t confirmedAt = doc["confirmed_at"] | 0;
+            if (BatchSpool::writeReceipt(h, confirmedAt))
+            {
+                BatchSpool::removeSpool(bikeId, h.session_id, h.session_salt);
+                Serial.printf("🧾 Lote %lu-%d confirmado na nuvem - recibo local, payload liberado\n",
+                              (unsigned long)h.session_id, h.session_salt);
+            }
+        }
+        else if (state == "confirmed")
+        {
+            Serial.printf("🚨 Confirmação com hash divergente para lote %lu-%d - mantido aguardando\n",
+                          (unsigned long)h.session_id, h.session_salt);
+        }
+    }
 }

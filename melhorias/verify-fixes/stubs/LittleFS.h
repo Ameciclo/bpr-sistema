@@ -70,27 +70,37 @@ public:
 struct MockFS {
   bool begin(bool = false) { return true; }
   bool format() { mockFiles.clear(); return true; }
+  bool isDirPath(const std::string& p) {
+    if (p == "/" || p == "/buffer" || p == "/backup") return true;
+    if (mockFiles.count(p) > 0) return false; // é arquivo
+    // diretório implícito: algum arquivo sob p/ (mkdir do BatchSpool etc.)
+    std::string ps = p + "/";
+    for (auto& kv : mockFiles) if (kv.first.rfind(ps, 0) == 0) return true;
+    return false;
+  }
   bool exists(const String& p) {
-    if (p == "/buffer" || p == "/backup") return true;
-    return mockFiles.count(p) > 0;
+    if (mockFiles.count(p) > 0) return true;
+    return isDirPath(std::string(p.c_str()));
   }
   bool mkdir(const String&) { return true; }
   File open(const String& p, const char* mode = "r") {
-    bool isDir = (p == "/buffer" || p == "/backup" || p == "/");
+    std::string ps(p.c_str());
+    bool isDir = isDirPath(ps);
     if (mode[0] == 'w') {
       if (mockWriteFailure) return File();
-      mockFiles[p] = "";
+      if (isDir) return File(); // abrir diretório em modo w não faz sentido
+      mockFiles[ps] = "";
     } else if (mode[0] == 'r') {
       // "r" e "r+": "r+" abre existente sem truncar; inexistente é inválido
-      if (mockFiles.count(p) == 0 && !isDir) return File();
+      if (mockFiles.count(ps) == 0 && !isDir) return File();
     }
-    return File(p, isDir || mockFiles.count(p), isDir);
+    return File(ps, isDir || mockFiles.count(ps) > 0, isDir);
   }
-  bool remove(const String& p) { return mockFiles.erase(p) > 0; }
+  bool remove(const String& p) { return mockFiles.erase(std::string(p.c_str())) > 0; }
   bool rename(const String& from, const String& to) {
-    auto it = mockFiles.find(from);
+    auto it = mockFiles.find(std::string(from.c_str()));
     if (it == mockFiles.end()) return false;
-    mockFiles[to] = it->second;
+    mockFiles[std::string(to.c_str())] = it->second;
     mockFiles.erase(it);
     return true;
   }

@@ -8,6 +8,7 @@
 #include "ble_server.h"
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
+#include "batch_spool.h"
 #include "config_manager.h"
 #include "constants.h"
 
@@ -367,6 +368,167 @@ static void processBikeDisconnected(const String &bikeId)
     }
 }
 
+// ---- PRD lotes/recibos (BTP1) — processadores no contexto do loop --------
+
+static void sendBatchStatusFor(const String &bikeId, const BatchSpoolHeader &h) {
+    const char *state =
+        h.state == BATCH_STATE_RECEIVING ? "receiving" :
+        h.state == BATCH_STATE_COMPLETE_LOCAL ? "complete_local" :
+        h.state == BATCH_STATE_AWAITING_CLOUD ? "awaiting_cloud" :
+        h.state == BATCH_STATE_HASH_MISMATCH ? "hash_mismatch" : "receiving";
+
+    uint8_t pages = (uint8_t)((h.total_parts + 63) / 64);
+    for (uint8_t p = 0; p < pages; p++) {
+        uint8_t bitmap8[8];
+        if (BatchSpool::missingPage(bikeId, h.session_id, h.session_salt, p, pages, bitmap8)) {
+            String msg = BPRJsonHelper::createBatchStatusPage(
+                bikeId, h.session_id, h.session_salt, state, p, pages, bitmap8);
+            BPRBLEServer::pushConfigToBike(bikeId, msg);
+        }
+    }
+    Serial.printf("📤 batch_status %s enviado (%d páginas) para %s lote %lu-%d\n",
+                  state, pages, bikeId.c_str(), (unsigned long)h.session_id, h.session_salt);
+}
+
+static void sendClearAuthFromReceipt(const String &bikeId, const BatchReceiptData &r) {
+    char shaHex[65];
+    batch_sha256_hex(r.sha256, shaHex);
+    String msg = BPRJsonHelper::createBatchClearAuth(
+        bikeId, r.session_id, r.session_salt, r.total_parts, r.total_bytes,
+        shaHex, r.confirmed_at);
+    BPRBLEServer::pushConfigToBike(bikeId, msg);
+    Serial.printf("📤 Autorização repetida pelo recibo (lote %lu-%d) para %s\n",
+                  (unsigned long)r.session_id, r.session_salt, bikeId.c_str());
+}
+
+static bool parseShaHex(const String &hex, uint8_t out[32]) {
+    if (hex.length() != 64) return false;
+    for (int i = 0; i < 32; i++) {
+        char byte[3] = {hex[i * 2], hex[i * 2 + 1], 0};
+        char *end = nullptr;
+        long v = strtol(byte, &end, 16);
+        if (end == byte || v < 0 || v > 255) return false;
+        out[i] = (uint8_t)v;
+    }
+    return true;
+}
+
+static void processBatchAnnounce(const String &bikeId, const String &jsonData) {
+    DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
+    if (deserializeJson(doc, jsonData) != DeserializationError::Ok) return;
+
+    uint8_t v = doc["v"] | 0;
+    if (v != BATCH_PROTO_VERSION) {
+        // T20: versão não negociada — recusa com diagnóstico, dados preservados
+        Serial.printf("🚨 Announce v%d não suportado (bike %s) - busy\n", v, bikeId.c_str());
+        String busy = BPRJsonHelper::createBusyResponse(bikeId, 60);
+        BPRBLEServer::pushConfigToBike(bikeId, busy);
+        return;
+    }
+
+    uint32_t sid = doc["session_id"] | 0;
+    uint16_t salt = doc["session_salt"] | 0;
+    uint16_t total = doc["total"] | 0;
+    uint32_t totalBytes = doc["total_bytes"] | 0;
+    String shaHex = doc["sha256"] | "";
+    uint8_t sha[32];
+    if (sid == 0 || salt == 0 || !parseShaHex(shaHex, sha)) {
+        Serial.printf("🚨 Announce inválido de %s - ignorado\n", bikeId.c_str());
+        return;
+    }
+
+    // Recibo existente: a autorização é repetida pelo recibo, SEM payload
+    // (T11: "pode apagar" perdido → central responde de novo; T18: outra
+    // estação recupera a conclusão canônica pela identidade)
+    BatchReceiptData receipt;
+    if (BatchSpool::hasReceipt(bikeId, sid, salt, receipt)) {
+        sendClearAuthFromReceipt(bikeId, receipt);
+        return;
+    }
+
+    // Lote em andamento: retomada (mesma identidade+conteúdo) ou conflito
+    BatchSpoolHeader existing;
+    if (BatchSpool::find(bikeId, sid, salt, existing)) {
+        if (existing.total_parts == total && existing.total_bytes == totalBytes &&
+            memcmp(existing.sha256, sha, 32) == 0) {
+            sendBatchStatusFor(bikeId, existing); // pendências ATUAIS (T07/T08)
+        } else {
+            // Mesma identidade, conteúdo diferente (PRD 4.1) — conflito
+            // explícito; bike preserva e não recebe autorização
+            Serial.printf("🚨 Conflito de identidade: lote %lu-%d de %s com conteúdo diferente\n",
+                          (unsigned long)sid, salt, bikeId.c_str());
+            const uint8_t zeros[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            String msg = BPRJsonHelper::createBatchStatusPage(
+                bikeId, sid, salt, "conflict", 0, 1, zeros);
+            BPRBLEServer::pushConfigToBike(bikeId, msg);
+        }
+        return;
+    }
+
+    // Admissão com reserva de capacidade (T15) — sem espaço: busy explícito
+    String reason;
+    if (!BatchSpool::admit(bikeId, sid, salt, total, totalBytes, sha, reason)) {
+        if (reason == "receipt_exists") return; // corrida com o bloco acima
+        Serial.printf("⚠️ Lote %lu-%d de %s não admitido: %s\n",
+                      (unsigned long)sid, salt, bikeId.c_str(), reason.c_str());
+        String busy = BPRJsonHelper::createBusyResponse(bikeId, 60);
+        BPRBLEServer::pushConfigToBike(bikeId, busy);
+        return;
+    }
+
+    // Admitido: informa as pendências (todas as partes, ainda)
+    BatchSpoolHeader h;
+    if (BatchSpool::find(bikeId, sid, salt, h)) {
+        sendBatchStatusFor(bikeId, h);
+    }
+}
+
+static void processBatchPart(const String &bikeId, const String &jsonData,
+                             uint32_t sid, uint16_t salt, uint16_t seq, bool isFinal) {
+    // O spool do lote precisa estar admitido (announce) — sem lote, cai no
+    // caminho legado (compat T20)
+    BatchSpoolHeader h;
+    if (!BatchSpool::find(bikeId, sid, salt, h)) return;
+
+    // Bytes da parte = os bytes EXATOS recebidos no write GATT (contrato
+    // BTP1: CRC/SHA sobre os bytes como transmitidos, sem re-serialização)
+    int stored = BatchSpool::addPart(bikeId, sid, salt, seq,
+                                     (const uint8_t *)jsonData.c_str(),
+                                     (uint16_t)jsonData.length());
+    if (stored < 0) {
+        // T03: mesmo índice com conteúdo diferente — conflito explícito
+        String ack = BPRJsonHelper::createDataAckConflict(bikeId, sid, salt, seq);
+        BPRBLEServer::pushConfigToBike(bikeId, ack);
+        return;
+    }
+    if (stored == 0) {
+        // Persistência não confirmada (T06): a bike conserva e reenvia
+        Serial.printf("⚠️ Parte %d de %s não persistiu - pedindo reenvio\n",
+                      seq, bikeId.c_str());
+        String busy = BPRJsonHelper::createBusyResponse(bikeId, 5);
+        BPRBLEServer::pushConfigToBike(bikeId, busy);
+        return;
+    }
+
+    // ACK da parte — SEM autorizar limpeza (PRD §3: a autorização vem só da
+    // confirmação durável da nuvem; can_clear_buffer é sempre false aqui)
+    String ack = BPRJsonHelper::createDataAckResponse(bikeId, sid, salt, seq,
+                                                       isFinal, false);
+    BPRBLEServer::pushConfigToBike(bikeId, ack);
+
+    // Conjunto completo? Conferir hash global (uma vez; T05)
+    BatchSpoolHeader now;
+    if (BatchSpool::find(bikeId, sid, salt, now)) {
+        uint16_t present = 0;
+        for (uint16_t i = 0; i < now.total_parts; i++) {
+            if (now.part_bitmap[i / 8] & (1u << (i % 8))) present++;
+        }
+        if (present == now.total_parts) {
+            BatchSpool::checkComplete(bikeId, sid, salt);
+        }
+    }
+}
+
 static void processBikeData(const String &bikeId, const String &jsonData)
 {
     // R19: admissão vinculada ao estado real da central, não só ao prazo de
@@ -406,6 +568,24 @@ static void processBikeData(const String &bikeId, const String &jsonData)
 
     String type = doc["type"] | "data";
 
+    // ---- PRD lotes/recibos (BTP1): roteamento do protocolo de lotes ------
+    if (type == "batch_announce")
+    {
+        processBatchAnnounce(bikeId, jsonData);
+        return;
+    }
+
+    if (type == "batch_cleared")
+    {
+        // Bike confirmou a limpeza (PRD 5.2) — diagnóstico do ciclo fechado
+        uint32_t sid = doc["session_id"] | 0;
+        uint16_t salt = doc["session_salt"] | 0;
+        String sha = doc["sha256"] | "";
+        Serial.printf("✅ Bike %s confirmou limpeza do lote %lu-%d (sha %s)\n",
+                      bikeId.c_str(), (unsigned long)sid, salt, sha.c_str());
+        return;
+    }
+
     if (type == "heartbeat")
     {
         int batteryPercent = doc["battery_percent"] | 0;
@@ -443,7 +623,29 @@ static void processBikeData(const String &bikeId, const String &jsonData)
         return;
     }
 
-    // type == "data": fragmento de sessão
+    // type == "data": parte de lote (BTP1) ou fragmento legado
+    {
+        uint32_t sid = doc["session_id"] | 0;
+        uint16_t salt = doc["session_salt"] | 0;
+        uint16_t seq = doc["seq"] | 0;
+        bool isFinal = doc["is_final"] | false;
+
+        // Lote admitido (announce) → protocolo de lotes: spool próprio,
+        // CRC por parte e SEM can_clear (a autorização vem da nuvem)
+        BatchSpoolHeader lot;
+        if (sid != 0 && salt != 0 && BatchSpool::find(bikeId, sid, salt, lot)) {
+            if (pairingState.currentBike.isEmpty() ||
+                pairingState.currentBike == bikeId) {
+                processBatchPart(bikeId, jsonData, sid, salt, seq, isFinal);
+                return;
+            }
+            uint8_t priority = BikeManager::isBatteryLow(bikeId) ? 1 : 2;
+            BikePairing::enqueueBike(bikeId, jsonData, priority);
+            return;
+        }
+        // Sem lote admitido: caminho legado (firmware antigo — T20)
+    }
+
     if (pairingState.currentBike.isEmpty() || pairingState.currentBike == bikeId)
     {
         BikePairing::processDataFromBike(bikeId, jsonData);

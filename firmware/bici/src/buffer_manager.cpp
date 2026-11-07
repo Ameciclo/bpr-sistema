@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <esp_system.h>
+#include "batch_proto.h"
 
 // N03: caminhos canônicos da sessão — tmp (cópia nova), bak (cópía anterior
 // íntegra durante a troca), corrupt (quarentena)
@@ -28,6 +29,15 @@ BufferManager::BufferManager() : sessionActive(false), bootId(0),
 }
 
 void BufferManager::startSession(const char* bikeId) {
+    // T12 (PRD lotes/recibos): a memória do último lote limpo sobrevive à
+    // abertura de sessão nova — "recebido e apaguei" pode ser repetido
+    uint32_t clearedSid = currentSession.last_cleared_sid;
+    uint16_t clearedSalt = currentSession.last_cleared_salt;
+    uint16_t clearedTotal = currentSession.last_cleared_total;
+    uint8_t clearedValid = currentSession.last_cleared_valid;
+    uint8_t clearedSha[32];
+    memcpy(clearedSha, currentSession.last_cleared_sha, 32);
+
     memset(&currentSession, 0, sizeof(SessionData));
     strncpy(currentSession.bike_id, bikeId, sizeof(currentSession.bike_id) - 1);
     currentSession.bike_id[sizeof(currentSession.bike_id) - 1] = '\0';
@@ -38,6 +48,12 @@ void BufferManager::startSession(const char* bikeId) {
     currentSession.battery_count = 0;
     sessionActive = true;
     batterySaturationLogged = false;
+
+    currentSession.last_cleared_sid = clearedSid;
+    currentSession.last_cleared_salt = clearedSalt;
+    currentSession.last_cleared_total = clearedTotal;
+    currentSession.last_cleared_valid = clearedValid;
+    memcpy(currentSession.last_cleared_sha, clearedSha, 32);
 
     Serial.printf("📊 Session started: %s at %lu (salt %04x, boot %04x)\n",
                   bikeId, currentSession.session_start_millis,
@@ -99,8 +115,11 @@ void BufferManager::addBattery(uint32_t timestamp, uint8_t percent) {
 }
 
 bool BufferManager::save() {
-    // F08: persistir sempre que houver dados, mesmo com sessão já encerrada
-    if (currentSession.scan_count == 0 && currentSession.battery_count == 0) {
+    // F08: persistir sempre que houver dados, mesmo com sessão já encerrada.
+    // T12 (PRD lotes): sessão vazia com memória de lote limpo TAMBÉM persiste
+    // — o "recebido e apaguei" precisa poder ser repetido após reboot.
+    if (currentSession.scan_count == 0 && currentSession.battery_count == 0 &&
+        !currentSession.last_cleared_valid) {
         return true;
     }
 
@@ -264,14 +283,40 @@ void BufferManager::quarantineFile(const char* path) {
 }
 
 void BufferManager::clear() {
+    // T12: a memória do último lote limpo sobrevive à limpeza total
+    uint32_t clearedSid = currentSession.last_cleared_sid;
+    uint16_t clearedSalt = currentSession.last_cleared_salt;
+    uint16_t clearedTotal = currentSession.last_cleared_total;
+    uint8_t clearedValid = currentSession.last_cleared_valid;
+    uint8_t clearedSha[32];
+    memcpy(clearedSha, currentSession.last_cleared_sha, 32);
+
     memset(&currentSession, 0, sizeof(SessionData));
     sessionActive = false;
     batterySaturationLogged = false;
+
+    currentSession.last_cleared_sid = clearedSid;
+    currentSession.last_cleared_salt = clearedSalt;
+    currentSession.last_cleared_total = clearedTotal;
+    currentSession.last_cleared_valid = clearedValid;
+    memcpy(currentSession.last_cleared_sha, clearedSha, 32);
+
     LittleFS.remove(kSessionPath);
     // N03: cópias de troca de uma sessão confirmada não têm valor
     LittleFS.remove(kSessionTmpPath);
     LittleFS.remove(kSessionBakPath);
     Serial.println("🗑️ Session buffer cleared (only after central ACK)");
+}
+
+void BufferManager::resetBatchFields() {
+    currentSession.batch_frozen = 0;
+    currentSession.batch_scan_count = 0;
+    currentSession.batch_battery_count = 0;
+    currentSession.batch_total_parts = 0;
+    currentSession.batch_total_bytes = 0;
+    memset(currentSession.batch_sha256, 0, 32);
+    currentSession.batch_authorized = 0;
+    currentSession.batch_resumed = 0;
 }
 
 uint32_t BufferManager::getSessionId() const {
@@ -304,11 +349,19 @@ size_t BufferManager::measureNetworkBytes(const NetworkData& net) const {
 }
 
 void BufferManager::buildChunks(std::vector<FragChunk>& chunks) const {
+    // PRD lotes: quando há lote congelado, os chunks são do SUBCONJUNTO
+    // congelado — novas coletas ficam fora e não alteram as partes
+    buildChunksForRange(chunks, currentSession.batch_frozen
+        ? currentSession.batch_scan_count
+        : currentSession.scan_count);
+}
+
+void BufferManager::buildChunksForRange(std::vector<FragChunk>& chunks, uint16_t scanLimit) const {
     // N04: 200 B cobre o envelope real com pior caso de dígitos + o campo
     // "idx" (identidade do scan) transmitido em cada fragmento de dados
     static const size_t HEADER_BYTES = 200;
 
-    for (uint16_t s = 0; s < currentSession.scan_count; s++) {
+    for (uint16_t s = 0; s < scanLimit; s++) {
         const ScanData& scan = currentSession.scans[s];
         uint8_t start = 0;
         while (start < scan.network_count) {
@@ -332,6 +385,10 @@ void BufferManager::buildChunks(std::vector<FragChunk>& chunks) const {
 }
 
 uint16_t BufferManager::fragmentCount() const {
+    // PRD lotes: total de partes é FIXADO no fechamento do lote
+    if (currentSession.batch_frozen) {
+        return currentSession.batch_total_parts;
+    }
     if (currentSession.scan_count == 0 && currentSession.battery_count == 0) {
         return 0;
     }
@@ -343,8 +400,14 @@ uint16_t BufferManager::fragmentCount() const {
     return (uint16_t)chunks.size() + 1;
 }
 
-bool BufferManager::serializeFragment(uint16_t index, String& out) const {
-    uint16_t total = fragmentCount();
+// Serialização com limites explícitos (lote congelado ou sessão atual) —
+// o freeze e os reenvios usam ESTA função, garantindo bytes idênticos.
+// `resumedFixed`: quando há lote congelado, o valor de 'resumed' é o
+// CONGELADO no fechamento — derivar do boot atual mudaria os bytes da parte
+// após reboot e invalidaria o hash do lote.
+bool BufferManager::serializePartWithLimits(uint16_t index, uint16_t total,
+                                            uint16_t scanLimit, uint16_t batteryLimit,
+                                            bool resumedFixed, String& out) const {
     if (total == 0 || index >= total) {
         return false;
     }
@@ -365,13 +428,13 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
         // Fragmento final: bateria + resumo da sessão
         doc["is_final"] = true;
         doc["session_start_millis"] = currentSession.session_start_millis;
-        doc["scan_count"] = currentSession.scan_count;
-        // N04: sessão retomada entre boots — dados de origens temporais
-        // diferentes sob o mesmo rótulo; consumidor decide como tratar
-        doc["resumed"] = (currentSession.boot_id != bootId);
+        doc["scan_count"] = scanLimit;
+        // N04: sessão retomada entre boots — VALOR CONGELADO no lote
+        // (bytes estáveis entre reenvios/reboots — contrato BTP1)
+        doc["resumed"] = resumedFixed;
 
         JsonArray battery = doc.createNestedArray("battery");
-        for (int i = 0; i < currentSession.battery_count; i++) {
+        for (int i = 0; i < batteryLimit; i++) {
             JsonArray batArray = battery.createNestedArray();
             batArray.add(currentSession.battery[i].timestamp_millis);
             batArray.add(currentSession.battery[i].percent);
@@ -381,7 +444,7 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
         doc["is_final"] = false;
 
         std::vector<FragChunk> chunks;
-        buildChunks(chunks);
+        buildChunksForRange(chunks, scanLimit);
         if (index >= chunks.size()) {
             return false;
         }
@@ -421,6 +484,208 @@ bool BufferManager::serializeFragment(uint16_t index, String& out) const {
         return false;
     }
     return true;
+}
+
+bool BufferManager::serializeFragment(uint16_t index, String& out) const {
+    if (currentSession.batch_frozen) {
+        // Parte do lote congelado: limites, total e 'resumed' FIXADOS no
+        // fechamento — bytes idênticos entre reenvios e reboots
+        return serializePartWithLimits(index, currentSession.batch_total_parts,
+                                       currentSession.batch_scan_count,
+                                       currentSession.batch_battery_count,
+                                       currentSession.batch_resumed != 0, out);
+    }
+    return serializePartWithLimits(index, fragmentCount(),
+                                   currentSession.scan_count,
+                                   currentSession.battery_count,
+                                   currentSession.boot_id != bootId, out);
+}
+
+// ---- Lote de entrega (PRD lotes, integridade e recibos) ------------------
+
+bool BufferManager::freezeBatch() {
+    if (currentSession.batch_frozen) {
+        return true; // idempotente: retry não cria outro lote (PRD 4.1)
+    }
+    if (!sessionActive ||
+        (currentSession.scan_count == 0 && currentSession.battery_count == 0)) {
+        return false;
+    }
+
+    // Identidade canônica exige bike_id de 12 bytes ("bpr-XXXXXX")
+    if (strlen(currentSession.bike_id) != BATCH_PROTO_BIKE_ID_LEN) {
+        Serial.printf("🚨 freezeBatch: bike_id '%s' fora do formato canônico — lote não fechado\n",
+                      currentSession.bike_id);
+        return false;
+    }
+
+    const uint16_t scanLimit = currentSession.scan_count;
+    const uint16_t batteryLimit = currentSession.battery_count;
+    // 'resumed' avaliado NO fechamento (estável nos bytes das partes)
+    const bool resumedAtFreeze = (currentSession.boot_id != bootId);
+
+    std::vector<FragChunk> chunks;
+    buildChunksForRange(chunks, scanLimit);
+    const uint16_t total = (uint16_t)chunks.size() + 1; // + final
+    if (total == 0 || total > BATCH_PROTO_MAX_PARTS) {
+        Serial.printf("🚨 freezeBatch: total %d fora do contrato — lote não fechado\n", total);
+        return false;
+    }
+
+    // Serializa todas as partes (bytes determinísticos) e computa o hash
+    // do lote sobre a representação canônica BTP1
+    std::vector<String> parts((size_t)total);
+    uint32_t totalBytes = 0;
+    for (uint16_t i = 0; i < total; i++) {
+        if (!serializePartWithLimits(i, total, scanLimit, batteryLimit,
+                                     resumedAtFreeze, parts[i])) {
+            Serial.printf("🚨 freezeBatch: parte %d não serializou — lote não fechado\n", i);
+            return false;
+        }
+        totalBytes += parts[i].length();
+    }
+
+    batch_hash_input input;
+    input.begin(currentSession.bike_id,
+                currentSession.session_start_millis, currentSession.session_salt,
+                total, totalBytes);
+    for (uint16_t i = 0; i < total; i++) {
+        input.part(i, (const uint8_t*)parts[i].c_str(),
+                   (uint16_t)parts[i].length());
+    }
+    uint8_t sha[32];
+    input.final(sha);
+
+    // Congela o conjunto e persiste ANTES de transmitir (PRD 4.1)
+    currentSession.batch_frozen = 1;
+    currentSession.batch_scan_count = scanLimit;
+    currentSession.batch_battery_count = batteryLimit;
+    currentSession.batch_total_parts = total;
+    currentSession.batch_total_bytes = totalBytes;
+    memcpy(currentSession.batch_sha256, sha, 32);
+    currentSession.batch_authorized = 0;
+    currentSession.batch_resumed = resumedAtFreeze ? 1 : 0;
+
+    char hex[65];
+    batch_sha256_hex(sha, hex);
+    Serial.printf("📦 Batch frozen: %d partes, %lu bytes, sha256 %s\n",
+                  total, (unsigned long)totalBytes, hex);
+
+    if (!save()) {
+        // Sem persistência do freeze, o lote não pode ser anunciado
+        resetBatchFields();
+        Serial.println("🚨 freezeBatch: persistência falhou — lote não fechado");
+        return false;
+    }
+    return true;
+}
+
+bool BufferManager::hasBatchToDeliver() const {
+    return sessionActive && currentSession.batch_frozen &&
+           currentSession.batch_authorized == 0 &&
+           currentSession.batch_total_parts > 0;
+}
+
+void BufferManager::getBatchSha256Hex(char out[65]) const {
+    batch_sha256_hex(currentSession.batch_sha256, out);
+}
+
+bool BufferManager::applyClearAuthorization(const char shaHex[65],
+                                            uint16_t totalParts, uint32_t totalBytes) {
+    if (!currentSession.batch_frozen || currentSession.batch_authorized) {
+        return false;
+    }
+    if (totalParts != currentSession.batch_total_parts ||
+        totalBytes != currentSession.batch_total_bytes) {
+        Serial.printf("🚨 Clear auth mismatch: total %d/%d bytes %lu/%lu — ignorada\n",
+                      totalParts, currentSession.batch_total_parts,
+                      (unsigned long)totalBytes,
+                      (unsigned long)currentSession.batch_total_bytes);
+        return false;
+    }
+    char expected[65];
+    batch_sha256_hex(currentSession.batch_sha256, expected);
+    if (shaHex == nullptr || strlen(shaHex) != 64 ||
+        strcasecmp(shaHex, expected) != 0) {
+        Serial.println("🚨 Clear auth com hash divergente — ignorada");
+        return false;
+    }
+
+    // PRD 5.2: a autorização é PERSISTIDA antes de remover qualquer registro
+    currentSession.batch_authorized = 1;
+    if (!save()) {
+        currentSession.batch_authorized = 0;
+        Serial.println("🚨 Autorização não persistiu — limpeza não executada");
+        return false;
+    }
+    Serial.println("🔓 Limpeza autorizada e persistida (aguardando execução)");
+    return true;
+}
+
+bool BufferManager::performClearIfAuthorized() {
+    if (!currentSession.batch_frozen || !currentSession.batch_authorized) {
+        return false;
+    }
+
+    const uint16_t removeScans = currentSession.batch_scan_count;
+    const uint16_t removeBattery = currentSession.batch_battery_count;
+
+    // T14: apenas os registros COBERTOS pelo lote são removidos — observações
+    // coletadas durante/após a transferência permanecem (shift para o início)
+    if (currentSession.scan_count > removeScans) {
+        memmove(currentSession.scans, &currentSession.scans[removeScans],
+                (size_t)(currentSession.scan_count - removeScans) * sizeof(ScanData));
+    }
+    currentSession.scan_count -= removeScans;
+
+    if (currentSession.battery_count > removeBattery) {
+        memmove(currentSession.battery, &currentSession.battery[removeBattery],
+                (size_t)(currentSession.battery_count - removeBattery) * sizeof(BatteryData));
+    }
+    currentSession.battery_count -= removeBattery;
+
+    // T12: memória do lote limpo — "recebido e apaguei" pode ser repetido
+    currentSession.last_cleared_sid = currentSession.session_start_millis;
+    currentSession.last_cleared_salt = currentSession.session_salt;
+    currentSession.last_cleared_total = currentSession.batch_total_parts;
+    memcpy(currentSession.last_cleared_sha, currentSession.batch_sha256, 32);
+    currentSession.last_cleared_valid = 1;
+
+    resetBatchFields();
+
+    // Persiste o estado final (PRD 5.2) — vazio com memória também persiste
+    if (currentSession.scan_count == 0 && currentSession.battery_count == 0) {
+        if (!save()) {
+            Serial.println("🚨 Estado final (vazio) não persistiu — memória T12 em risco");
+        }
+        sessionActive = false;
+        // Cópias de troca não têm valor; o CANÔNICO permanece quando carrega
+        // a memória do lote limpo (T12: responder "apaguei" após reboot)
+        LittleFS.remove(kSessionTmpPath);
+        LittleFS.remove(kSessionBakPath);
+        if (!currentSession.last_cleared_valid) {
+            LittleFS.remove(kSessionPath);
+        }
+    } else {
+        if (!save()) {
+            Serial.println("🚨 Estado final não persistiu — próxima entrega repetirá o lote");
+        }
+    }
+
+    Serial.printf("🗑️ Lote limpo: %d scans, %d baterias removidos; restam %d scans\n",
+                  removeScans, removeBattery, currentSession.scan_count);
+    return true;
+}
+
+bool BufferManager::isBatchCleared(uint32_t sid, uint16_t salt, const char shaHex[65]) const {
+    if (!currentSession.last_cleared_valid) return false;
+    if (sid != currentSession.last_cleared_sid || salt != currentSession.last_cleared_salt) {
+        return false;
+    }
+    char expected[65];
+    batch_sha256_hex(currentSession.last_cleared_sha, expected);
+    return shaHex != nullptr && strlen(shaHex) == 64 &&
+           strcasecmp(shaHex, expected) == 0;
 }
 
 // ------------------------------------------------------------------------

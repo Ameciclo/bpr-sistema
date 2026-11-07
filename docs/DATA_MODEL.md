@@ -20,6 +20,8 @@ e devem ser normalizados pelos consumidores (`normalizeScan`, `normalizeNetwork`
 ├── bike_configs/{bike_id}  # Parâmetros por bike (wifi/ble/power/battery/states)
 ├── bikes/{bike_id}/
 │   ├── raw_fragments/{sid}-{salt}/{seq}   # Fragmentos brutos (Functions)
+│   ├── batches/{sid}-{salt}/             # PRD lotes (BTP1): parts/{i} + meta
+│   ├── batch_confirmations/{sid}-{salt}  # Conclusão canônica por origem
 │   ├── sessions_v2/{sid}-{salt}            # Projeção canônica (Functions)
 │   ├── sessions/{sessionId}                # (legado, leitura histórica)
 │   └── metrics             # Agregados (km_total, rides_total, last_ride)

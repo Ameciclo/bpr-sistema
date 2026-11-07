@@ -59,6 +59,14 @@ import {
   scanKey,
 } from "./assembly";
 
+// PRD lotes/recibos: contrato de bytes do protocolo de lotes (BTP1)
+import {
+  BATCH_PROTO_VERSION,
+  BatchMeta,
+  BatchPartRecord,
+  validateBatch,
+} from "./batchProto";
+
 // Sessão tocada por um lote (aguarda completude)
 interface TouchedSession {
   bikeId: string;
@@ -271,6 +279,30 @@ async function assembleSessionIfComplete(
     return;
   }
 
+  await assembleFromFragments(
+    bikeId, sessionId, salt, total, bySeq, sourceBatch);
+}
+
+/**
+ * Publica a projeção v2 a partir dos fragmentos já completos — usada pelo
+ * fluxo legado (raw_fragments) e pelo protocolo de lotes (BTP1), que faz a
+ // MESMA identidade convergir para a MESMA sessão (T10: sem cópias).
+ * @param {string} bikeId ID canônico da bike
+ * @param {number} sessionId ID da sessão
+ * @param {number} salt sal da sessão
+ * @param {number} total total de fragmentos
+ * @param {Map<number, Fragment>} bySeq fragmentos por seq (0..total-1)
+ * @param {string} sourceLabel origem auditável (lote/base)
+ * @return {Promise<void>}
+ */
+async function assembleFromFragments(
+  bikeId: string,
+  sessionId: number,
+  salt: number,
+  total: number,
+  bySeq: Map<number, Fragment>,
+  sourceLabel: string
+): Promise<void> {
   const finalFrag = bySeq.get(total - 1);
   if (!finalFrag) return;
 
@@ -320,12 +352,111 @@ async function assembleSessionIfComplete(
     ingest_ts: Math.floor(Date.now() / 1000),
   });
   // Registra a origem sem sobrescrever as anteriores (replay auditável)
-  await sessionRef.child(`source_batches/${sourceBatch}`).set(true);
+  await sessionRef.child(`source_batches/${sourceLabel}`).set(true);
 
   const nscans = scans.length;
   console.log(`✅ Sessão ${sessionId}-${salt} de ${bikeId} ` +
     `(${nscans} observações reunidas)`);
 }
+
+// === PRD lotes/recibos: conclusão canônica do lote (BTP1) ==================
+// A central publica as partes (por índice, idempotentes) e por último o meta.
+// Este gatilho valida o conjunto INTEIRO contra o contrato de bytes (CRC por
+// parte + SHA-256 global) e só então instala a confirmação canônica por
+// ORIGEM — independente da estação que fez o upload (T10/T17/T18). Um
+// pedido isolado bem-sucedido não representa a entrega completa (PRD §3).
+export const onBatchMetaUploaded = functions.database
+  .ref("/bikes/{bikeId}/batches/{batchId}/meta")
+  .onWrite(async (change, context) => {
+    const bikeId = context.params.bikeId as string;
+    const batchId = context.params.batchId as string; // "{sid}-{salt}"
+    const meta = change.after.val() as BatchMeta | null;
+
+    if (!meta) return; // meta removido — nada a concluir
+    if (meta.v !== BATCH_PROTO_VERSION) {
+      console.log("Meta " + bikeId + "/" + batchId +
+          ": versão " + meta.v + " não suportada");
+      return;
+    }
+
+    const partsSnap =
+      await db.ref(`bikes/${bikeId}/batches/${batchId}/parts`).once("value");
+    const parts = (partsSnap.val() ?? {}) as
+      {[index: string]: BatchPartRecord};
+
+    const validation = validateBatch(meta, parts);
+    if (!validation.valid) {
+      // T02/T04/T05: pendência explícita — nada é confirmado com partes
+      // ausentes/corrompidas ou hash divergente; o meta pode ser reescrito
+      console.log(`Lote ${bikeId}/${batchId} PENDENTE: ${validation.reason}`);
+      return;
+    }
+
+    // Conclusão canônica por origem — criação exclusiva (T10: duas
+    // instâncias convergem para o MESMO registro; mesmos ID/hash reutilizam)
+    const confirmRef =
+      db.ref(`bikes/${bikeId}/batch_confirmations/${batchId}`);
+    const confirmedAt = Date.now();
+    const result = await confirmRef.transaction((current) => {
+      if (current !== null) return undefined; // já concluído — aborta
+      return {
+        state: "confirmed",
+        bike_id: bikeId,
+        total: Number(meta.total),
+        total_bytes: Number(meta.total_bytes),
+        sha256: String(meta.sha256).toLowerCase(),
+        confirmed_at: confirmedAt,
+        sources: {[String(meta.uploaded_by ?? "unknown")]: true},
+      };
+    });
+
+    if (!result.committed) {
+      // Já existia: mesmo hash reutiliza a conclusão; divergente é conflito
+      const existingSnap = await confirmRef.once("value");
+      const existing = existingSnap.val() as {sha256?: string} | null;
+      if (existing && String(existing.sha256).toLowerCase() !==
+          String(meta.sha256).toLowerCase()) {
+        console.log("🚨 Hash divergente na conclusão existente " +
+            `de ${bikeId}/${batchId} — canônica mantida`);
+      }
+      // Proveniência de outra estação é acrescentada sem trocar a canônica
+      if (meta.uploaded_by) {
+        await confirmRef.child(`sources/${meta.uploaded_by}`).set(true);
+      }
+    }
+
+    // Processa o conjunto CONFIRMADO preservando a identidade existente
+    // (PRD passo 5): as partes são os fragmentos do produtor — a mesma
+    // remontagem do fluxo legado, mesma chave sessions_v2/{sid}-{salt}
+    const [sidStr, saltStr] = batchId.split("-");
+    const sessionId = Number(sidStr);
+    const salt = Number(saltStr);
+    const total = Number(meta.total);
+    if (!Number.isInteger(sessionId) || !Number.isInteger(salt) ||
+        sessionId <= 0 || salt <= 0) {
+      console.log(`batchId ${batchId} fora do formato — sessão não montada`);
+      return;
+    }
+
+    const bySeq = new Map<number, Fragment>();
+    for (let i = 0; i < total; i++) {
+      const rec = parts[String(i)];
+      if (!rec || typeof rec.payload !== "string") continue;
+      try {
+        bySeq.set(i, JSON.parse(rec.payload) as Fragment);
+      } catch {
+        console.log(`Parte ${i} de ${bikeId}/${batchId} com payload ilegível`);
+        return;
+      }
+    }
+    if (bySeq.size < total) {
+      console.log(`Lote ${bikeId}/${batchId} sem partes legíveis ` +
+          "após validar — inconsistência");
+      return;
+    }
+    await assembleFromFragments(bikeId, sessionId, salt, total, bySeq,
+      `batch:${batchId}`);
+  });
 
 // Notificação de sessão completa (projeção v2)
 export const onSessionAssembled = functions.database

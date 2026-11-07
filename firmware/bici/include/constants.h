@@ -22,7 +22,10 @@
 
 // Session persistence (F08/R22: header com magic/versão/CRC do payload)
 #define SESSION_FILE_MAGIC 0x42505253   // "BPRS"
-#define SESSION_FILE_VERSION 3
+// v4 (PRD lotes/recibos): campos do lote congelado + memória de limpeza.
+// v3 nunca foi gravado em placa em produção (criado nesta branch) — bump
+// seguro, sem perda de dados reais (R21).
+#define SESSION_FILE_VERSION 4
 
 // BLE transfer protocol (F04/F05: fragmentação com ACK por fragmento)
 // MTU negociado 512 -> payload de escrita ~509; orçamento total por mensagem 460
@@ -85,6 +88,27 @@ struct SessionData {
     ScanData scans[MAX_SCANS];
     BatteryData battery[MAX_BATTERY];
     uint16_t boot_id;           // R16: origem monotônica por boot
+
+    // ---- Lote de entrega congelado (PRD lotes/recibos, formato v4) ----
+    // O lote fecha no início da entrega: identidade, total, bytes e hash
+    // persistidos ANTES de transmitir; novas coletas ficam FORA do lote e
+    // são preservadas (a limpeza autorizada cobre só este conjunto).
+    uint8_t batch_frozen;            // 1 = lote fechado para entrega
+    uint16_t batch_scan_count;       // observações cobertas pelo lote
+    uint16_t batch_battery_count;    // leituras de bateria cobertas
+    uint16_t batch_total_parts;      // partes anunciadas (0..total-1)
+    uint32_t batch_total_bytes;      // soma dos comprimentos das partes
+    uint8_t batch_sha256[32];        // hash do lote (contrato BTP1)
+    uint8_t batch_authorized;        // autorização de limpeza persistida
+    uint8_t batch_resumed;           // valor de 'resumed' CONGELADO no fechamento
+
+    // Memória do último lote limpo: responder "recebido e apaguei" de novo
+    // sem recriar a entrega se a confirmação final se perder (T12)
+    uint8_t last_cleared_valid;
+    uint32_t last_cleared_sid;
+    uint16_t last_cleared_salt;
+    uint16_t last_cleared_total;
+    uint8_t last_cleared_sha[32];
 } __attribute__((packed));
 
 // Header do arquivo de sessão (F08/F17/R22: versão, tamanho e CRC validados no load)

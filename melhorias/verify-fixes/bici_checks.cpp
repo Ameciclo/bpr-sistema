@@ -5,6 +5,7 @@
 #include "LittleFS.h"
 #include "WiFi.h"
 #include "esp_sleep.h"
+#include "batch_proto.h"
 #include <ArduinoJson.h>
 #include "config_manager.h"
 #include "buffer_manager.h"
@@ -18,6 +19,7 @@ BufferManager bufferManager;
 PowerManager powerManager;
 
 void result(const std::string& name, const std::string& v) { std::cout << name << ": " << v << "\n"; }
+void check(const std::string& name, bool ok) { result(name, ok ? "yes" : "no(BUG)"); }
 
 int main() {
     // ---------- R01: scan assíncrono consumido via scanComplete ----------
@@ -401,6 +403,124 @@ int main() {
         LittleFS.remove("/config.bin");
         LittleFS.remove("/config.tmp");
         LittleFS.remove("/config.bak");
+    }
+
+    // ---------- PRD lotes/recibos (bike): freeze, estabilidade e limpeza --
+    {
+        // T07 bike: freeze persiste e o lote sobrevive a "reboot"
+        {
+            BufferManager buf;
+            buf.beginBoot();
+            buf.startSession("bpr-770012");
+            NetworkData n;
+            strcpy(n.ssid, "rede-c1");
+            strcpy(n.bssid, "AA:BB:CC:DD:EE:01");
+            n.rssi = -60;
+            n.channel = 6;
+            buf.addScan(1000, &n, 1);
+            buf.addScan(2000, &n, 1);
+            buf.addBattery(1500, 80);
+            check("bt_freeze_closes_batch", buf.freezeBatch());
+
+            uint16_t total = buf.getBatchTotalParts();
+            result("bt_total_parts", std::to_string(total));
+            check("bt_total_parts_nonzero", total > 1);
+
+            // Hash recomputado das serializações ATUAIS == hash do freeze
+            // (estabilidade dos bytes: reenvio/reboot produzem o mesmo lote)
+            batch_hash_input h;
+            uint32_t totalBytes = 0;
+            std::vector<std::string> parts;
+            for (uint16_t i = 0; i < total; i++) {
+                String frag;
+                if (!buf.serializeFragment(i, frag)) { check("bt_serialize_stable", false); break; }
+                parts.push_back(frag.c_str());
+                totalBytes += frag.length();
+            }
+            h.begin("bpr-770012", buf.getSessionId(), buf.getSessionSalt(), total, totalBytes);
+            for (uint16_t i = 0; i < total; i++) {
+                h.part(i, (const uint8_t*)parts[i].data(), (uint16_t)parts[i].size());
+            }
+            uint8_t sha[32];
+            h.final(sha);
+            char shaHex[65], batchHex[65];
+            batch_sha256_hex(sha, shaHex);
+            buf.getBatchSha256Hex(batchHex);
+            check("bt_hash_matches_serializations", strcmp(shaHex, batchHex) == 0);
+            result("bt_total_bytes", std::to_string(totalBytes));
+
+            // T14: coleta DURANTE/APÓS o freeze fica FORA do lote — as partes
+            // congeladas não mudam (bytes idênticos)
+            buf.addScan(3000, &n, 1); // nova observação pós-freeze
+            buf.addBattery(3500, 79);
+            buf.save(); // checkpoint pós-coleta (como o ScanningState faz)
+            bool stable = true;
+            for (uint16_t i = 0; i < total; i++) {
+                String frag;
+                if (!buf.serializeFragment(i, frag) || frag != parts[i].c_str()) {
+                    stable = false;
+                    break;
+                }
+            }
+            check("bt_new_collection_outside_batch", stable);
+            check("bt_scan_count_grew", buf.getCurrentSession().scan_count == 3);
+            check("bt_batch_scan_count_frozen", buf.getBatchScanCount() == 2);
+
+            // "Reboot": nova instância recupera o lote congelado do arquivo
+            BufferManager rec;
+            rec.beginBoot();
+            check("bt_load_recovers_frozen_batch", rec.load() && rec.isBatchFrozen());
+            bool stableAfterReboot = true;
+            for (uint16_t i = 0; i < total; i++) {
+                String frag;
+                if (!rec.serializeFragment(i, frag) || frag != parts[i].c_str()) {
+                    stableAfterReboot = false;
+                    break;
+                }
+            }
+            check("bt_parts_identical_after_reboot", stableAfterReboot);
+            char rebootHex[65];
+            rec.getBatchSha256Hex(rebootHex);
+            check("bt_hash_identical_after_reboot", strcmp(rebootHex, batchHex) == 0);
+
+            // Autorização inválida (hash errado) NUNCA limpa (PRD 5.3)
+            char wrong[65];
+            strcpy(wrong, batchHex);
+            wrong[0] = (wrong[0] == '0') ? '1' : '0';
+            check("bt_wrong_hash_auth_rejected",
+                  !rec.applyClearAuthorization(wrong, total, totalBytes));
+            check("bt_nothing_cleared_on_reject", rec.getCurrentSession().scan_count == 3);
+
+            // Autorização válida: persiste ANTES de limpar; limpeza cirúrgica
+            check("bt_valid_auth_accepted",
+                  rec.applyClearAuthorization(batchHex, total, totalBytes));
+            check("bt_clear_executes", rec.performClearIfAuthorized());
+            // T14: apenas o conjunto coberto (2 scans, 1 bateria) sai; a
+            // coleta pós-lote (1 scan, 1 bateria) permanece
+            result("bt_scans_after_clear", std::to_string(rec.getCurrentSession().scan_count));
+            check("bt_post_batch_collection_preserved",
+                  rec.getCurrentSession().scan_count == 1 &&
+                  rec.getCurrentSession().battery_count == 1);
+            check("bt_batch_reset_after_clear", !rec.isBatchFrozen());
+
+            // T12: memória do lote limpo — "apaguei" pode ser repetido
+            check("bt_cleared_batch_remembered",
+                  rec.isBatchCleared(rec.getSessionId(), rec.getSessionSalt(), batchHex));
+            check("bt_other_batch_not_remembered",
+                  !rec.isBatchCleared(rec.getSessionId(), rec.getSessionSalt(), wrong));
+
+            // T12 após reboot: a memória vem do arquivo
+            BufferManager rec2;
+            rec2.beginBoot();
+            rec2.load();
+            check("bt_cleared_memory_survives_reboot",
+                  rec2.isBatchCleared(rec.getSessionId(), rec.getSessionSalt(), batchHex));
+
+            LittleFS.remove("/session.bin");
+            LittleFS.remove("/session.tmp");
+            LittleFS.remove("/session.bak");
+            LittleFS.remove("/session.corrupt");
+        }
     }
 
     return 0;

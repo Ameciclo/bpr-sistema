@@ -31,6 +31,18 @@ test ! -s build/central_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat 
 # O08: valores impressos viram critério de reprovação — não só evidência
 ! grep -q "no(BUG)" central-checks-results.txt || { echo "CENTRAL CHECKS FAILED (no(BUG))"; exit 1; }
 
+echo "== batch_checks (PRD lotes/recibos — spool, recibos, capacidade) =="
+g++ $CXXFLAGS $STUBS $CENTRAL_INC -I"$AJ" \
+    batch_checks.cpp \
+    "$ROOT/firmware/central/src/batch_spool.cpp" \
+    "$ROOT/firmware/central/src/bpr_json_helper.cpp" \
+    "$ROOT/firmware/central/src/config_credentials.cpp" \
+    -o build/batch_checks 2> build/batch_checks-build.log || {
+      echo "BUILD FAILED"; cat build/batch_checks-build.log; exit 1; }
+./build/batch_checks 2> build/batch_checks-sanitizer.log | tee batch-checks-results.txt
+test ! -s build/batch_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat build/batch_checks-sanitizer.log; exit 1; }
+! grep -q "no(BUG)" batch-checks-results.txt || { echo "BATCH CHECKS FAILED (no(BUG))"; exit 1; }
+
 echo "== bici_checks =="
 g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
     bici_checks.cpp \
@@ -57,6 +69,16 @@ grep -q "sem BUG" item245-checks-results.txt || { echo "ITEM 2/4 CHECKS FAILED";
 echo "== item 5 checks (enriquecimento concorrente — assembly real das Functions) =="
 node verify-functions-assembly.js | tee item5-checks-results.txt
 grep -q "sem BUG" item5-checks-results.txt || { echo "ITEM 5 CHECKS FAILED"; exit 1; }
+
+echo "== batch backend checks (contrato BTP1 em TS — validação da nuvem) =="
+node verify-functions-batch.js | tee batch-backend-checks-results.txt
+grep -q "sem BUG" batch-backend-checks-results.txt || { echo "BATCH BACKEND CHECKS FAILED"; exit 1; }
+
+echo "== T17: concordância de bytes/hash entre firmware (C++) e backend (TS) =="
+sed 's/^t17_case_\([0-9]*\)[ :]*/t17_case_\1 /' batch-checks-results.txt | grep "^t17_case_" | sort > build/t17-cpp.txt
+sed 's/^t17_case_\([0-9]*\)[ :]*/t17_case_\1 /' batch-backend-checks-results.txt | grep "^t17_case_" | sort > build/t17-ts.txt
+diff build/t17-cpp.txt build/t17-ts.txt || { echo "T17 MISMATCH: firmware e backend divergem no contrato"; exit 1; }
+echo "T17: firmware e backend concordam nos vetores"
 
 echo
 echo "OK: todas as verificações rodaram sem achado de sanitizador"

@@ -65,6 +65,25 @@ String Endpoints::getPendingBikes() {
     return buildUrl("/bases/" + baseId + "/pending_bikes.json");
 }
 
+// PRD lotes/recibos: armazenamento remoto por ORIGEM (bike+lote) — a
+// conclusão canônica é consultada por bike, independente da estação (T18)
+String Endpoints::getBatchPartUrl(const String& bikeId, uint32_t sid, uint16_t salt,
+                                  uint16_t index) {
+    return buildUrl("/bikes/" + bikeId + "/batches/" + String(sid) + "-" +
+                    String(salt) + "/parts/" + String(index) + ".json");
+}
+
+String Endpoints::getBatchMetaUrl(const String& bikeId, uint32_t sid, uint16_t salt) {
+    return buildUrl("/bikes/" + bikeId + "/batches/" + String(sid) + "-" +
+                    String(salt) + "/meta.json");
+}
+
+String Endpoints::getBatchConfirmationUrl(const String& bikeId, uint32_t sid,
+                                          uint16_t salt) {
+    return buildUrl("/bikes/" + bikeId + "/batch_confirmations/" + String(sid) +
+                    "-" + String(salt) + ".json");
+}
+
 // X10: timeouts explícitos — conexão 8 s, leitura 15 s. Sem isso, WiFi fraco
 // podia travar cada chamada por dezenas de segundos no loop único do C3
 void Endpoints::setupHttp(HTTPClient& http) {
