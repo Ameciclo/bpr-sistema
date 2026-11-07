@@ -67,6 +67,14 @@ import {
   validateBatch,
 } from "./batchProto";
 
+// Patch de horários: reconstrução temporal (pura, testável)
+import {
+  TripRecord,
+  TimelineScan,
+  buildTimeline,
+  reconstructTrip,
+} from "./tripReconstruction";
+
 // Sessão tocada por um lote (aguarda completude)
 interface TouchedSession {
   bikeId: string;
@@ -319,11 +327,22 @@ async function assembleFromFragments(
   }
   const scans: AssembledScan[] = reassembleScans(chunksBySeq);
 
-  // A04: bateria como {ts_ms, percent} — sem ambiguidade de unidade
-  const battery = (finalFrag.battery ?? []).map((entry) => ({
-    ts_ms: Number(Array.isArray(entry) ? entry[0] : 0),
-    percent: Number(Array.isArray(entry) ? entry[1] : 0),
-  }));
+  // A04: bateria como {boot_id, ts_ms, percent} (patch de horários: o
+  // domínio do contador viaja com a leitura; legado 2 posições = sem trecho)
+  const battery = (finalFrag.battery ?? []).map((entry) => {
+    if (Array.isArray(entry) && entry.length >= 3) {
+      return {
+        boot_id: Number(entry[0]) || null,
+        ts_ms: Number(entry[1]) || 0,
+        percent: Number(entry[2]) || 0,
+      };
+    }
+    return {
+      boot_id: null,
+      ts_ms: Number(Array.isArray(entry) ? entry[0] : 0),
+      percent: Number(Array.isArray(entry) ? entry[1] : 0),
+    };
+  });
 
   const sessionRef =
     db.ref(`bikes/${bikeId}/sessions_v2/${sessionId}-${salt}`);
@@ -456,6 +475,62 @@ export const onBatchMetaUploaded = functions.database
     }
     await assembleFromFragments(bikeId, sessionId, salt, total, bySeq,
       `batch:${batchId}`);
+  });
+
+// === Patch de horários: reconstrução de viagens ============================
+// A central publica o registro factual (eventos imutáveis, referências,
+// sessões) em bikes/{bike}/trips/{seq}/trip. Este gatilho deriva — SEMPRE
+// separado dos fatos (§7) — a reconstrução da viagem (duração pelas horas
+// civis de saída/chegada) e a timeline das observações das sessões ligadas.
+export const onTripUploaded = functions.database
+  .ref("/bikes/{bikeId}/trips/{tripSeq}/trip")
+  .onWrite(async (change, context) => {
+    const bikeId = context.params.bikeId as string;
+    const tripSeq = context.params.tripSeq as string;
+    const trip = change.after.val() as TripRecord | null;
+    if (!trip) return;
+    if (trip.v !== 1 || trip.bike_id !== bikeId) {
+      console.log(`Registro de viagem ${bikeId}/${tripSeq} inválido/versão`);
+      return;
+    }
+
+    // Reconstrução da viagem: duração pelas horas civis (H01/H03/H04);
+    // pendência explícita quando faltar hora válida ou relógio divergir
+    const reconstruction = reconstructTrip(trip);
+    const tripRef = db.ref(`bikes/${bikeId}/trips/${tripSeq}`);
+    await tripRef.child("reconstruction").set(reconstruction);
+
+    // Timeline das observações de cada sessão ligada à viagem: hora
+    // reconstruída por referência DO PRÓPRIO TRECHO (H06/H08), separada
+    // dos fatos em sessions_v2/{sid}-{salt}/timeline
+    for (const s of trip.sessions ?? []) {
+      const sessionRef =
+        db.ref(`bikes/${bikeId}/sessions_v2/${s.session_id}-${s.session_salt}`);
+      const scansSnap = await sessionRef.child("scans").once("value");
+      const scans = scansSnap.val() as
+        (TimelineScan & {scan_key?: string; idx?: number; ts_ms?: number;
+          boot_id?: number})[] | null;
+      if (!Array.isArray(scans)) continue;
+
+      const timelineScans: TimelineScan[] = scans
+        .filter((sc) => sc && typeof sc === "object" && sc.scan_key)
+        .map((sc) => ({
+          scan_key: String(sc.scan_key),
+          boot_id: Number(sc.boot_id) || 0,
+          ts_ms: Number(sc.ts_ms) || 0,
+        }));
+      const points = buildTimeline(timelineScans, trip);
+      await sessionRef.child("timeline").set({
+        v: 1,
+        trip_seq: Number(trip.trip_seq),
+        method: "ref_forward_v1",
+        points,
+      });
+    }
+
+    console.log(`🧭 Viagem ${bikeId}/${tripSeq}: duração ` +
+      `${reconstruction.duration_s ?? "pendente"}s ` +
+      `(${reconstruction.pending_reason ?? "ok"})`);
   });
 
 // Notificação de sessão completa (projeção v2)

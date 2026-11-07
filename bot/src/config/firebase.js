@@ -20,6 +20,7 @@ class FirebaseService {
     this.db = null;
     this.sessionListeners = new Map(); // bikeId -> {key, ref}
     this.notifiedSessions = new Map(); // bikeId -> Set(sessionKey)
+    this.processedTrips = new Map(); // bikeId -> Set(tripSeq)
     this.init();
   }
 
@@ -87,6 +88,36 @@ class FirebaseService {
     const sessionRef = this.db.ref(`bikes/${bikeId}/sessions_v2/${sessionId}/scans`);
     sessionRef.on('child_added', callback);
     this.sessionListeners.set(bikeId, { key: `${bikeId}/${sessionId}`, ref: sessionRef });
+  }
+
+  // Patch de horários: chegadas de viagem — o trip com chegada civil válida
+  // conclui a viagem pela hora REAL do evento (não pela hora de upload)
+  listenToTripArrivals(callback) {
+    if (!this.db) return;
+
+    const bikesRef = this.db.ref('bikes');
+    bikesRef.on('child_changed', (snapshot) => {
+      const bikeId = snapshot.key;
+      const bikeData = snapshot.val();
+      if (!bikeData || !bikeData.trips) return;
+
+      const seen = this.processedTrips.get(bikeId) || new Set();
+      for (const [tripSeq, trip] of Object.entries(bikeData.trips)) {
+        if (!trip || seen.has(tripSeq)) continue;
+        seen.add(tripSeq);
+        const recon = trip.reconstruction;
+        const arrival = recon && recon.arrival;
+        // Só conclui com chegada civil VÁLIDA e duração consistente;
+        // pendências permanecem visíveis sem inventar conclusão (H10)
+        if (arrival && arrival.valid && Number.isFinite(Number(arrival.utc_ms)) &&
+            Number(arrival.utc_ms) > 0 && recon.quality === 'ok') {
+          const baseId = (trip.events || []).find((e) => e.kind === 'arrival');
+          callback(bikeId, Number(tripSeq), Number(arrival.utc_ms),
+            baseId ? baseId.base_id : 'unknown');
+        }
+      }
+      this.processedTrips.set(bikeId, seen);
+    });
   }
 
   // Buscar dados completos de uma bike

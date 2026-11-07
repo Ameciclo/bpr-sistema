@@ -23,7 +23,7 @@ r09_ram_unchaged_after_failure: 300
 r09_reboot_interval: 300
 o01_fragment_total: 3
 o01_all_fragments_serialized: yes
-o01_biggest_fragment_bytes: 223
+o01_biggest_fragment_bytes: 236
 n04_scan_idx_transmitted: yes
 n02_cycles_run: 12
 n02_scans_collected: 12
@@ -31,7 +31,7 @@ n02_battery_capped_at_max: 10
 n02_collection_continues_past_battery_cap: yes
 n06_worst_case_fragment_total: 501
 n06_all_worst_case_fragments_serialized: yes
-n06_biggest_fragment_bytes: 379
+n06_biggest_fragment_bytes: 392
 n03_recovered_from_staging: yes
 n03_staging_scan_count: 1
 n03_recovered_from_backup: yes
@@ -49,7 +49,7 @@ bt_freeze_closes_batch: yes
 bt_total_parts: 3
 bt_total_parts_nonzero: yes
 bt_hash_matches_serializations: yes
-bt_total_bytes: 652
+bt_total_bytes: 684
 bt_new_collection_outside_batch: yes
 bt_scan_count_grew: yes
 bt_batch_scan_count_frozen: yes

@@ -22,6 +22,7 @@ e devem ser normalizados pelos consumidores (`normalizeScan`, `normalizeNetwork`
 │   ├── raw_fragments/{sid}-{salt}/{seq}   # Fragmentos brutos (Functions)
 │   ├── batches/{sid}-{salt}/             # PRD lotes (BTP1): parts/{i} + meta
 │   ├── batch_confirmations/{sid}-{salt}  # Conclusão canônica por origem
+│   ├── trips/{trip_seq}/                 # Patch de horários: trip + reconstruction
 │   ├── sessions_v2/{sid}-{salt}            # Projeção canônica (Functions)
 │   ├── sessions/{sessionId}                # (legado, leitura histórica)
 │   └── metrics             # Agregados (km_total, rides_total, last_ride)

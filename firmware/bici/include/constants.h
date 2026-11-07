@@ -22,10 +22,21 @@
 
 // Session persistence (F08/R22: header com magic/versão/CRC do payload)
 #define SESSION_FILE_MAGIC 0x42505253   // "BPRS"
-// v4 (PRD lotes/recibos): campos do lote congelado + memória de limpeza.
-// v3 nunca foi gravado em placa em produção (criado nesta branch) — bump
+// v5 (patch de horários): cada observação/bateria carrega o boot/trecho do
+// seu contador (domínios explícitos — reboot não é deduzido por redução).
+// v4 nunca foi gravado em placa em produção (criado nesta branch) — bump
 // seguro, sem perda de dados reais (R21).
-#define SESSION_FILE_VERSION 4
+#define SESSION_FILE_VERSION 5
+
+// ---- Patch de horários: viagem (saída/chegada/referências) --------------
+// Saída confirmada por AUSÊNCIA persistente de contato com a base (queda
+// breve de BLE/silêncio de mensagem não abre viagem — H05/H11); tolerância
+// validada em bancada (5 min default)
+#define TRIP_DEPARTURE_CONFIRM_MS (5UL * 60UL * 1000UL)
+// Referências de hora guardadas por trecho (boot); trechos antigos
+// permanecem enquanto houver dados que dependam deles (H09)
+#define TRIP_MAX_REFS 8
+#define TRIP_MAX_SESSIONS 16
 
 // BLE transfer protocol (F04/F05: fragmentação com ACK por fragmento)
 // MTU negociado 512 -> payload de escrita ~509; orçamento total por mensagem 460
@@ -70,12 +81,14 @@ struct NetworkData {
 
 struct ScanData {
     uint32_t timestamp_millis;
+    uint16_t boot_id;           // patch de horários: domínio do contador
     uint8_t network_count;
     NetworkData networks[MAX_NETWORKS_PER_SCAN];
 } __attribute__((packed));
 
 struct BatteryData {
     uint32_t timestamp_millis;
+    uint16_t boot_id;           // patch de horários: domínio do contador
     uint8_t percent;
 } __attribute__((packed));
 

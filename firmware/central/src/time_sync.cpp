@@ -77,6 +77,11 @@ bool TimeSync::needsResync() {
     return (now - lastNtpSync) > 3600; // Resync every hour
 }
 
+// Patch de horários: idade da última sincronização (qualidade da referência)
+time_t TimeSync::lastNtpSyncTime() {
+    return lastNtpSync;
+}
+
 bool TimeSync::forceResync() {
     ntpInitialized = false;
     return init();

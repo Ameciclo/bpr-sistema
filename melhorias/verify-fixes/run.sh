@@ -50,6 +50,7 @@ g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
     "$ROOT/firmware/bici/src/config_manager.cpp" \
     "$ROOT/firmware/bici/src/power_manager.cpp" \
     "$ROOT/firmware/bici/src/scanning.cpp" \
+    "$ROOT/firmware/bici/src/trip_manager.cpp" \
     "$ROOT/firmware/bici/src/utils.cpp" \
     -o build/bici_checks 2> build/bici_checks-build.log || {
       echo "BUILD FAILED"; cat build/bici_checks-build.log; exit 1; }
@@ -57,6 +58,16 @@ g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
 test ! -s build/bici_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat build/bici_checks-sanitizer.log; exit 1; }
 # O08: idem — qualquer no(BUG) reprova o runner
 ! grep -q "no(BUG)" bici-checks-results.txt || { echo "BICI CHECKS FAILED (no(BUG))"; exit 1; }
+
+echo "== trip_checks (patch de horários — TripManager real da bike) =="
+g++ $CXXFLAGS $STUBS $BICI_INC -I"$AJ" \
+    trip_checks.cpp \
+    "$ROOT/firmware/bici/src/trip_manager.cpp" \
+    -o build/trip_checks 2> build/trip_checks-build.log || {
+      echo "BUILD FAILED"; cat build/trip_checks-build.log; exit 1; }
+./build/trip_checks 2> build/trip_checks-sanitizer.log | tee trip-checks-results.txt
+test ! -s build/trip_checks-sanitizer.log || { echo "SANITIZER OUTPUT:"; cat build/trip_checks-sanitizer.log; exit 1; }
+! grep -q "no(BUG)" trip-checks-results.txt || { echo "TRIP CHECKS FAILED (no(BUG))"; exit 1; }
 
 echo "== bot_checks (N11/N04 — rideCalculator real + RTDB transacional local) =="
 node verify-bot.js | tee bot-checks-results.txt
@@ -73,6 +84,10 @@ grep -q "sem BUG" item5-checks-results.txt || { echo "ITEM 5 CHECKS FAILED"; exi
 echo "== batch backend checks (contrato BTP1 em TS — validação da nuvem) =="
 node verify-functions-batch.js | tee batch-backend-checks-results.txt
 grep -q "sem BUG" batch-backend-checks-results.txt || { echo "BATCH BACKEND CHECKS FAILED"; exit 1; }
+
+echo "== trip backend checks (patch de horários — reconstrução + chegada real) =="
+node verify-trip.js | tee trip-backend-checks-results.txt
+grep -q "sem BUG" trip-backend-checks-results.txt || { echo "TRIP BACKEND CHECKS FAILED"; exit 1; }
 
 echo "== T17: concordância de bytes/hash entre firmware (C++) e backend (TS) =="
 sed 's/^t17_case_\([0-9]*\)[ :]*/t17_case_\1 /' batch-checks-results.txt | grep "^t17_case_" | sort > build/t17-cpp.txt

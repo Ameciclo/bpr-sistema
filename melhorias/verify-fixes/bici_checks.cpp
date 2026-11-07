@@ -11,12 +11,14 @@
 #include "buffer_manager.h"
 #include "power_manager.h"
 #include "scanning.h"
+#include "trip_manager.h"
 #include "constants.h"
 
 // Instâncias esperadas pelos fontes
 ConfigManager configManager;
 BufferManager bufferManager;
 PowerManager powerManager;
+TripManager tripManager; // hook de sessão do buffer_manager (patch de horários)
 
 void result(const std::string& name, const std::string& v) { std::cout << name << ": " << v << "\n"; }
 void check(const std::string& name, bool ok) { result(name, ok ? "yes" : "no(BUG)"); }

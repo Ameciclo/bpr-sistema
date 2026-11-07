@@ -37,6 +37,9 @@ static String redactUrl(const String& url)
 // das confirmações remotas; falha remota não derruba a sync (T09)
 static void uploadBatchSpools();
 
+// Patch de horários (definida ao final): publica os registros de viagem
+static void uploadTripRecords();
+
 SyncResult CloudSync::enter()
 {
     Serial.println("📡 Entering CLOUD_SYNC mode");
@@ -97,6 +100,11 @@ SyncResult CloudSync::update()
     // das confirmações remotas — falha remota NÃO falha a sync inteira (os
     // lotes ficam aguardando nuvem; a bike mantém a cópia — T09)
     uploadBatchSpools();
+
+    // Patch de horários: publica os registros de viagem (eventos/ref/sessões)
+    // — fatos imutáveis por event_id; o PUT é idempotente e o local sai só
+    // após confirmação remota
+    uploadTripRecords();
 
     // X10: heartbeat é OBSERVABILIDADE — falha dele não pode bloquear os
     // downloads de configuração/registry que corrigiriam o próprio sistema
@@ -801,5 +809,63 @@ static void uploadBatchSpools()
             Serial.printf("🚨 Confirmação com hash divergente para lote %lu-%d - mantido aguardando\n",
                           (unsigned long)h.session_id, h.session_salt);
         }
+    }
+}
+
+// ---- Patch de horários: publica registros de viagem na nuvem ------------
+// A central acumulou /trips/{bike}_{seq}.json (eventos imutáveis por
+// event_id + referências + sessões). A nuvem é o registro canônico por
+// bike+trip; o arquivo local sai somente após o PUT confirmar.
+static void uploadTripRecords()
+{
+    if (!LittleFS.exists("/trips")) return;
+    File root = LittleFS.open("/trips");
+    if (!root) return;
+
+    std::vector<String> files;
+    File f = root.openNextFile();
+    while (f) {
+        String name = f.name();
+        f.close();
+        if (name.endsWith(".json") && !name.endsWith(".tmp")) {
+            files.push_back(name);
+        }
+        f = root.openNextFile();
+    }
+    root.close();
+
+    for (const String& name : files) {
+        // nome: {bike}_{trip}.json
+        String base = name.substring(0, name.length() - 5);
+        int cut = base.lastIndexOf('_');
+        if (cut <= 4) continue;
+        String bikeId = base.substring(0, cut);
+        String tripSeq = base.substring(cut + 1);
+
+        String path = "/trips/" + name;
+        File in = LittleFS.open(path, "r");
+        if (!in) continue;
+        String body = in.readString();
+        in.close();
+
+        String url = String(configCredentials.getCredentials().firebase_database_url) +
+            "/bikes/" + bikeId + "/trips/" + tripSeq + "/trip.json" +
+            "?auth=" + configCredentials.getCredentials().firebase_api_key;
+        HTTPClient http;
+        http.begin(url);
+        Endpoints::setupHttp(http); // X10
+        http.addHeader("Content-Type", "application/json");
+        int code = http.PUT(body);
+        http.end();
+
+        if (code == HTTP_CODE_OK) {
+            LittleFS.remove(path);
+            Serial.printf("🧭 Viagem %s/%s publicada na nuvem\n",
+                          bikeId.c_str(), tripSeq.c_str());
+        } else {
+            Serial.printf("⚠️ Publicação da viagem %s/%s falhou (HTTP %d)\n",
+                          bikeId.c_str(), tripSeq.c_str(), code);
+        }
+        yield();
     }
 }

@@ -61,7 +61,8 @@ public:
     const SessionData& getCurrentSession() const { return currentSession; }
     uint32_t getSessionId() const;
     uint16_t getSessionSalt() const;
-    uint16_t getBootId() const;
+    uint16_t getBootId() const;          // boot de ORIGEM da sessão
+    uint16_t memberBootId() const { return bootId; } // trecho ATUAL (energização)
 
     // Fragmentação BLE (F04): mensagens <= MAX_BLE_FRAGMENT_BYTES com seq/total
     uint16_t fragmentCount() const;

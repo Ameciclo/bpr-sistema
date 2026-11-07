@@ -63,6 +63,9 @@ private:
     std::vector<uint16_t> pendingParts; // índices a enviar (ordem crescente)
     size_t pendingIdx;
 
+    // Patch de horários: metadados de viagem enviados nesta conexão
+    bool tripMetaSent;
+
     // X02: orçamento global da visita (idle/busy/rejeição têm prazo finito)
     uint32_t visitStart;
 

@@ -27,11 +27,13 @@
 #include "power_manager.h"
 #include "at_base.h"
 #include "scanning.h"
+#include "trip_manager.h"
 
 // Global managers
 ConfigManager configManager;
 BufferManager bufferManager;
 PowerManager powerManager;
+TripManager tripManager;
 
 // State handlers
 AtBaseState* atBaseState = nullptr;
@@ -104,12 +106,16 @@ void setup() {
 
     // R16: identidade de boot antes de qualquer sessão
     bufferManager.beginBoot();
+    tripManager.beginBoot(bufferManager.memberBootId());
+    tripManager.load();
 
     // F07: carregar config persistida ANTES de gerar identidade
     bool configLoaded = configManager.load();
     if (!configLoaded || strlen(configManager.getConfig().bike_id) == 0) {
         configManager.generateUniqueId();
     }
+    // Patch de horários: a viagem carrega a identidade canônica da bike
+    tripManager.setBikeId(configManager.getConfig().bike_id);
 
     // Initialize BLE with the bike_id (F02: nome do dispositivo identifica a bike)
     NimBLEDevice::init(configManager.getConfig().bike_id);
@@ -166,9 +172,18 @@ void loop() {
 
     // State transition (F01: atribuição única)
     if (nextState != currentState) {
+        // Patch de horários: a máquina de estados confirma a SAÍDA — a
+        // ausência da base inicia a tolerância; recontato cancela (§2.1)
+        if (currentState == STATE_AT_BASE && nextState == STATE_SCANNING) {
+            tripManager.noteLeftBase();
+        }
         Serial.printf("🔄 State transition: %d → %d\n", currentState, nextState);
         currentState = nextState;
     }
+
+    // Patch de horários: confirma saída por ausência persistente (fora da
+    // base); heartbeats na base NÃO abrem viagem (H05/H11)
+    tripManager.poll(millis());
 
     delay(100);
 }
@@ -220,6 +235,11 @@ void handleSleep() {
     static bool persisted = false;
     if (!persisted) {
         Serial.println("💤 Entering deep sleep");
+
+        // Patch de horários: sleep PLANEJADO registrado como evidência
+        // "solicitada" (não medição do tempo transcorrido — §6)
+        BikeConfig& sleepConfig = configManager.getConfig();
+        tripManager.notePlannedSleep(sleepConfig.power.deep_sleep_duration_sec);
 
         // F08/R04: persistir ANTES de encerrar a sessão; falha do checkpoint é
         // propagada e diagnosticada (última arquivo íntegra permanece no LittleFS)

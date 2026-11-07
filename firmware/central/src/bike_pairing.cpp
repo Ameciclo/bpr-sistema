@@ -1,4 +1,5 @@
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <queue>
@@ -9,10 +10,13 @@
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
 #include "batch_spool.h"
+#include "config_credentials.h"
 #include "config_manager.h"
 #include "constants.h"
+#include "time_sync.h"
 
 extern BufferManager bufferManager;
+extern ConfigCredentials configCredentials;
 extern SystemState currentState;
 extern uint32_t stateStartTime;
 extern ConfigManager configManager;
@@ -413,6 +417,140 @@ static bool parseShaHex(const String &hex, uint8_t out[32]) {
     return true;
 }
 
+static void processBatchAnnounce(const String &bikeId, const String &jsonData);
+
+// ---- Patch de horários: referência de hora e eventos de viagem ----------
+
+static uint32_t g_timeRefSeq = 0;
+
+// §5 do patch: a central responde CADA heartbeat com a hora CORRENTE da sua
+// sincronização NTP (não um número congelado), validade e idade do sync
+static void sendTimeRef(const String &bikeId) {
+    time_t now = time(nullptr);
+    bool valid = TimeSync::isTimeValid();
+    uint32_t refId = ++g_timeRefSeq;
+    if (refId == 0) refId = 1;
+
+    DynamicJsonDocument doc(320);
+    doc["type"] = "time_ref";
+    doc["v"] = 1;
+    doc["bike_id"] = bikeId;
+    doc["ref_id"] = refId;
+    doc["utc_s"] = valid ? (uint32_t)now : 0; // SEGUNDOS UTC (patch)
+    doc["valid"] = valid;
+    doc["base_id"] = configCredentials.getBaseId();
+    // Qualidade: idade aproximada da última sincronização NTP
+    doc["sync_age_sec"] = valid ? (uint32_t)(now - TimeSync::lastNtpSyncTime()) : 0;
+
+    String msg;
+    serializeJson(doc, msg);
+    BPRBLEServer::pushConfigToBike(bikeId, msg);
+}
+
+// Eventos/metadados de viagem (imutáveis por event_id): a central acumula
+// em /trips/{bike}_{seq}.json e o sync publica na nuvem
+static bool saveTripRecord(const String &bikeId, const String &jsonData,
+                           bool isMeta) {
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, jsonData) != DeserializationError::Ok) return false;
+
+    uint32_t tripSeq = doc["trip_seq"] | 0;
+    if (tripSeq == 0) return false;
+    String bikeIdField = doc["bike_id"] | "";
+    if (bikeIdField != bikeId) return false; // identidade da conexão
+
+    if (!LittleFS.exists("/trips")) {
+        LittleFS.mkdir("/trips");
+    }
+    String path = "/trips/" + bikeId + "_" + String(tripSeq) + ".json";
+
+    // Lê o existente e faz MERGE (eventos por event_id nunca sobrescritos)
+    DynamicJsonDocument merged(2048);
+    File existing = LittleFS.open(path, "r");
+    if (existing) {
+        deserializeJson(merged, existing);
+        existing.close();
+    }
+    merged["v"] = 1;
+    merged["bike_id"] = bikeId;
+    merged["trip_seq"] = tripSeq;
+    merged["updated_at"] = millis();
+
+    if (isMeta) {
+        // sessões e referências: união sem duplicar
+        JsonArray sessions = merged.createNestedArray("sessions");
+        for (JsonObject s : doc["sessions"].as<JsonArray>()) {
+            bool dup = false;
+            for (JsonObject m : merged["sessions"].as<JsonArray>()) {
+                if ((uint32_t)m["session_id"] == (uint32_t)s["session_id"] &&
+                    (uint16_t)m["session_salt"] == (uint16_t)s["session_salt"]) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                JsonObject o = sessions.createNestedObject();
+                o["session_id"] = s["session_id"];
+                o["session_salt"] = s["session_salt"];
+            }
+        }
+        JsonArray refs = merged.createNestedArray("time_refs");
+        for (JsonObject r : doc["time_refs"].as<JsonArray>()) {
+            bool dup = false;
+            for (JsonObject m : merged["time_refs"].as<JsonArray>()) {
+                if ((uint32_t)m["ref_id"] == (uint32_t)r["ref_id"] &&
+                    (uint16_t)m["boot_id"] == (uint16_t)r["boot_id"]) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                JsonObject o = refs.createNestedObject();
+                o["ref_id"] = r["ref_id"];
+                o["civil_s"] = r["civil_s"];
+                o["civil_valid"] = r["civil_valid"];
+                o["counter_ms"] = r["counter_ms"];
+                o["boot_id"] = r["boot_id"];
+            }
+        }
+        if (doc.containsKey("planned_sleep_sec")) {
+            merged["planned_sleep_sec"] = doc["planned_sleep_sec"];
+            merged["sleep_nature"] = doc["sleep_nature"] | "requested";
+        }
+    } else {
+        JsonArray events = merged.createNestedArray("events");
+        uint32_t eventId = doc["event_id"] | 0;
+        for (JsonObject m : merged["events"].as<JsonArray>()) {
+            if ((uint32_t)m["event_id"] == eventId) {
+                // Evento confirmado é IMUTÁVEL no reenvio (§4)
+                return true;
+            }
+        }
+        JsonObject o = events.createNestedObject();
+        o["event_id"] = eventId;
+        o["kind"] = doc["kind"] | "";
+        o["base_id"] = doc["base_id"] | "";
+        o["civil_s"] = doc["civil_s"] | 0;
+        o["civil_valid"] = doc["civil_valid"] | false;
+        o["counter_ms"] = doc["counter_ms"] | 0;
+        o["boot_id"] = doc["boot_id"] | 0;
+        o["method"] = doc["method"] | "";
+    }
+
+    // Gravação recuperável (tmp + rename)
+    String tmp = path + ".tmp";
+    File out = LittleFS.open(tmp, "w");
+    if (!out) return false;
+    serializeJson(merged, out);
+    out.close();
+    LittleFS.remove(path);
+    if (!LittleFS.rename(tmp, path)) {
+        LittleFS.remove(tmp);
+        return false;
+    }
+    return true;
+}
+
 static void processBatchAnnounce(const String &bikeId, const String &jsonData) {
     DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
     if (deserializeJson(doc, jsonData) != DeserializationError::Ok) return;
@@ -568,6 +706,22 @@ static void processBikeData(const String &bikeId, const String &jsonData)
 
     String type = doc["type"] | "data";
 
+    // ---- Patch de horários: eventos/metadados de viagem -------------------
+    if (type == "trip_event")
+    {
+        if (saveTripRecord(bikeId, jsonData, false)) {
+            Serial.printf("🧭 Evento de viagem de %s registrado\n", bikeId.c_str());
+        }
+        return;
+    }
+    if (type == "trip_meta")
+    {
+        if (saveTripRecord(bikeId, jsonData, true)) {
+            Serial.printf("🧭 Metadados de viagem de %s registrados\n", bikeId.c_str());
+        }
+        return;
+    }
+
     // ---- PRD lotes/recibos (BTP1): roteamento do protocolo de lotes ------
     if (type == "batch_announce")
     {
@@ -605,6 +759,10 @@ static void processBikeData(const String &bikeId, const String &jsonData)
         }
 
         BikeManager::updateHeartbeat(bikeId, batteryPercent, heap, sessions, bytes, oldestTs, bufferPercent);
+
+        // Patch de horários (§5): TODO heartbeat recebe a referência de hora
+        // CORRENTE da central — a bike guarda a associação contador/civil
+        sendTimeRef(bikeId);
 
         // Verificar se precisa atualizar config (versão por bike)
         if (BikeManager::needsConfigUpdate(bikeId, bikeConfigVersion))

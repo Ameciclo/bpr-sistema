@@ -147,10 +147,15 @@ class RideCalculator {
     const durationMin = Math.max(0, Math.round(spanMs / 60000));
 
     // MES-01: período atribuído NA PRIMEIRA persistência — data utilizada
-    // (âncora do servidor), sua origem e a regra/fuso ficam registrados na
-    // viagem. Enquanto o patch de tempo não existe, o basis declara que é o
-    // mês de REGISTRO/processamento, não mês comprovado da coleta.
-    const finishedAt = Date.now();
+    // (âncora), sua origem e a regra/fuso ficam registrados na viagem.
+    // Patch de horários (§7): a CHEGADA REAL (hora civil do evento) é a
+    // âncora quando existe — a hora de upload/replay NUNCA a substitui;
+    // sem evento válido, âncora de registro com base declarada.
+    const arrivalCivilMs = delivery && delivery.arrivalCivilMs
+      ? Number(delivery.arrivalCivilMs) : 0;
+    const finishedAt = arrivalCivilMs > 0 ? arrivalCivilMs : Date.now();
+    const periodBasis = arrivalCivilMs > 0
+      ? "arrival_event_clock" : "server_ingest_clock";
     const periodMonth = this.monthKeyFor(finishedAt);
 
     const rideData = {
@@ -159,10 +164,11 @@ class RideCalculator {
       origin: {bike_id: bikeId, ...ride.origin}, // ID-02: origem estável
       start_ts: ride.startTime,          // ms desde o boot da bike (domínio declarado)
       end_ts: ride.startTime + spanMs,   // MESMO domínio do start (fim real da coleta)
-      finished_at: finishedAt,           // âncora absoluta do servidor (ingest)
+      finished_at: finishedAt,           // âncora absoluta (chegada real quando há)
+      finished_basis: periodBasis,       // patch de horários: origem da âncora
       ts_domain: 'bike_boot_ms',         // N04: domínio explícito, sem heurística
       period_month: periodMonth,         // MES-01..03: período autoritativo
-      period_basis: 'server_ingest_clock',
+      period_basis: periodBasis,
       period_rule: 'registration_month_v1',
       period_ref_ms: finishedAt,
       km: Math.round(ride.totalDistance * 1000) / 1000, // 3 casas decimais

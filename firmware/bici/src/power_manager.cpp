@@ -131,7 +131,7 @@ void PowerManager::logBatteryStatus() {
                   charging ? "⚡CHARGING" : "");
 }
 
-String PowerManager::getHeartbeatReport(const BikeConfig& config, bool hasPendingData, uint16_t pendingScans, size_t pendingBytes) {
+String PowerManager::getHeartbeatReport(const BikeConfig& config, bool hasPendingData, uint16_t pendingScans, size_t pendingBytes, uint16_t bootId, uint32_t counterMs, uint32_t lastRefId) {
     DynamicJsonDocument doc(384);
     doc["type"] = "heartbeat";
     doc["bike_id"] = config.bike_id;
@@ -142,6 +142,12 @@ String PowerManager::getHeartbeatReport(const BikeConfig& config, bool hasPendin
     doc["is_charging"] = isBatteryCharging();
     doc["heap"] = ESP.getFreeHeap();
     doc["uptime_sec"] = millis() / 1000;
+
+    // Patch de horários: identificação do trecho + contador atual + a
+    // referência guardada (passo 4 do §5 — a central sabe o que a bike tem)
+    doc["boot_id"] = bootId;
+    doc["counter_ms"] = counterMs;
+    doc["last_ref_id"] = lastRefId;
 
     JsonObject pending = doc.createNestedObject("pending_data");
     pending["sessions_count"] = hasPendingData ? 1 : 0;

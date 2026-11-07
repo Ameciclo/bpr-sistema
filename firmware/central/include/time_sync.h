@@ -16,6 +16,8 @@ public:
     static String getCurrentTimeString();
     static bool isTimeValid();
     static bool needsResync();
+    // Patch de horários: idade da sincronização (qualidade da referência)
+    static time_t lastNtpSyncTime();
     
     // === BIKE SYNC ===
     static JsonObject getTimeSyncResponse(JsonDocument& doc);

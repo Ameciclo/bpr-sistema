@@ -2,9 +2,11 @@
 #include <ArduinoJson.h>
 #include "power_manager.h"
 #include "batch_proto.h"
+#include "trip_manager.h"
 
 extern PowerManager powerManager;
 extern AtBaseState* atBaseState;
+extern TripManager tripManager;
 
 AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr)
     : configManager(configMgr), bufferManager(bufferMgr),
@@ -15,7 +17,7 @@ AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr)
       transferDoneNoClear(false), configRequested(false), busyUntilMs(0),
       announced(false), announceRetries(0), announceSentAt(0),
       statusPagesMask(0), statusPagesTotal(0), statusComplete(false),
-      pendingIdx(0),
+      pendingIdx(0), tripMetaSent(false),
       visitStart(0), configReceived(false), configRequestTime(0),
       configRetries(0), configGaveUp(false), disconnectSignaled(false) {
     memset(statusBitmap, 0, sizeof(statusBitmap));
@@ -142,6 +144,7 @@ bool AtBaseState::connectToBase(NimBLEAdvertisedDevice* device) {
     transferActive = false;
     transferComplete = false;
     transferDoneNoClear = false;
+    tripMetaSent = false;
     return true;
 }
 
@@ -151,9 +154,11 @@ void AtBaseState::sendStatus() {
     BikeConfig& config = configManager.getConfig();
     bool hasData = !bufferManager.isEmpty();
     // N02: carga útil real pendente (não a capacidade constante da struct)
+    // Patch de horários (§5): trecho atual + contador + referência guardada
     String json = powerManager.getHeartbeatReport(
         config, hasData, bufferManager.getCurrentSession().scan_count,
-        bufferManager.getPendingDataBytes());
+        bufferManager.getPendingDataBytes(),
+        tripManager.currentBootId(), millis(), tripManager.lastRefId());
 
     if (pDataChar->writeValue(json.c_str())) {
         lastStatusSent = millis();
@@ -476,6 +481,32 @@ BikeState AtBaseState::update() {
         sendStatus();
     }
 
+    // ---- Patch de horários: eventos de viagem (imutáveis no reenvio) ----
+    // Saída/chegada acompanham a visita como metadados VINCULADOS — não
+    // tocam no lote congelado nem no seu hash (§5/§8 do patch)
+    if (pDataChar && bleConnected) {
+        String ev;
+        if (tripManager.departureUnsent() &&
+            tripManager.serializeEventJson(TRIP_KIND_DEPARTURE, ev) &&
+            pDataChar->writeValue(ev.c_str())) {
+            tripManager.markEventSent(TRIP_KIND_DEPARTURE);
+            Serial.println("📤 trip_event de saída enviado");
+        } else if (tripManager.arrivalUnsent() &&
+                   tripManager.serializeEventJson(TRIP_KIND_ARRIVAL, ev) &&
+                   pDataChar->writeValue(ev.c_str())) {
+            tripManager.markEventSent(TRIP_KIND_ARRIVAL);
+            Serial.println("📤 trip_event de chegada enviado");
+        } else if (!tripMetaSent && !tripManager.hasUnsentEvents()) {
+            // Metadados (referências/sessões da viagem) após os eventos
+            String meta;
+            if (tripManager.serializeMetaJson(meta) &&
+                pDataChar->writeValue(meta.c_str())) {
+                tripMetaSent = true;
+                Serial.println("📤 trip_meta enviado (refs/sessões da viagem)");
+            }
+        }
+    }
+
     // ---- PRD lotes/recibos: fluxo announce → pendências → partes → autorização
 
     // T16: o MTU negociado precisa comportar as partes (460+3) e o anúncio;
@@ -660,6 +691,20 @@ void AtBaseState::onNotification(const String& message) {
     }
 
     String type = doc["type"] | "";
+
+    // Patch de horários (§5): referência de hora da estação — a bike lê o
+    // contador AGORA e persiste a associação (trecho + civil + contador).
+    // Durante viagem ativa, o PRIMEIRO contato válido registra a CHEGADA.
+    if (type == "time_ref") {
+        uint32_t refId = doc["ref_id"] | 0;
+        uint32_t civilMs = doc["utc_s"] | 0; // SEGUNDOS UTC (patch)
+        uint8_t valid = doc["valid"] | false ? 1 : 0;
+        String baseId = doc["base_id"] | "";
+        if (refId != 0) {
+            tripManager.onTimeRef(refId, civilMs, valid, baseId.c_str());
+        }
+        return;
+    }
 
     if (type == "batch_status") {
         handleBatchStatus(doc.as<JsonObject>());

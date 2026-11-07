@@ -80,6 +80,7 @@ export interface ScanChunk {
   ts: number;
   net_offset: number;
   nets: unknown[];
+  boot?: number; // patch de horários: trecho/domínio do contador (§6)
 }
 
 /** Observação remontada da projeção v2 (base — sem enriquecimento) */
@@ -90,6 +91,7 @@ export interface AssembledScan {
   net_offset: number;
   networks: NetworkDto[];
   content_hash: string;
+  boot_id: number | null; // patch de horários: domínio do contador
 }
 
 /**
@@ -101,6 +103,7 @@ export interface AssembledScan {
  */
 export function reassembleScans(chunksBySeq: ScanChunk[][]): AssembledScan[] {
   const groups = new Map<string, {idx: number | null; ts: number;
+    boot: number | null;
     chunks: {off: number; nets: unknown[]}[]}>();
 
   for (const chunks of chunksBySeq) {
@@ -108,8 +111,18 @@ export function reassembleScans(chunksBySeq: ScanChunk[][]): AssembledScan[] {
       const key = scanKey(scan.idx, scan.ts);
       let group = groups.get(key);
       if (!group) {
-        group = {idx: scan.idx ?? null, ts: Number(scan.ts), chunks: []};
+        group = {
+          idx: scan.idx ?? null,
+          ts: Number(scan.ts),
+          boot: scan.boot !== undefined ? Number(scan.boot) : null,
+          chunks: [],
+        };
         groups.set(key, group);
+      }
+      // Patch de horários: trecho do PRIMEIRO chunk do grupo — chunks do
+      // mesmo scan partilham o domínio do contador (mesma coleta)
+      if (group.boot === null && scan.boot !== undefined) {
+        group.boot = Number(scan.boot);
       }
       group.chunks.push({
         off: Number(scan.net_offset) || 0,
@@ -130,6 +143,7 @@ export function reassembleScans(chunksBySeq: ScanChunk[][]): AssembledScan[] {
       net_offset: 0, // observação completa: todas as redes presentes
       networks,
       content_hash: hashNetworks(networks),
+      boot_id: group.boot, // patch de horários: domínio do contador
     });
   }
   // ordem estável pela identidade do produtor (fallback: ts)
@@ -241,7 +255,8 @@ export function mergeLegacyExtras(
     const extras: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(oldScan)) {
       if (k === "scan_key" || k === "idx" || k === "ts_ms" ||
-          k === "net_offset" || k === "networks" || k === "content_hash") {
+          k === "net_offset" || k === "networks" || k === "content_hash" ||
+          k === "boot_id") {
         continue;
       }
       extras[k] = v; // ex.: coordinates legado do conversor antigo

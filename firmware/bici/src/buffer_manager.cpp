@@ -3,6 +3,9 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include "batch_proto.h"
+#include "trip_manager.h"
+
+extern TripManager tripManager; // patch de horários: vínculo sessão→viagem
 
 // N03: caminhos canônicos da sessão — tmp (cópia nova), bak (cópía anterior
 // íntegra durante a troca), corrupt (quarentena)
@@ -58,6 +61,11 @@ void BufferManager::startSession(const char* bikeId) {
     Serial.printf("📊 Session started: %s at %lu (salt %04x, boot %04x)\n",
                   bikeId, currentSession.session_start_millis,
                   currentSession.session_salt, currentSession.boot_id);
+
+    // Patch de horários: a sessão (lote) pertence à viagem em curso — o
+    // vínculo viaja nos metadados de viagem (fora do lote congelado)
+    tripManager.onSessionStarted(currentSession.session_start_millis,
+                                 currentSession.session_salt);
 }
 
 void BufferManager::endSession() {
@@ -84,6 +92,7 @@ bool BufferManager::addScan(uint32_t timestamp, const NetworkData* networks, uin
 
     ScanData& scan = currentSession.scans[currentSession.scan_count];
     scan.timestamp_millis = timestamp;
+    scan.boot_id = bootId; // patch de horários: domínio do contador (§6)
     scan.network_count = min(count, (uint8_t)MAX_NETWORKS_PER_SCAN);
 
     for (int i = 0; i < scan.network_count; i++) {
@@ -109,6 +118,7 @@ void BufferManager::addBattery(uint32_t timestamp, uint8_t percent) {
 
     BatteryData& battery = currentSession.battery[currentSession.battery_count];
     battery.timestamp_millis = timestamp;
+    battery.boot_id = bootId; // patch de horários: domínio do contador (§6)
     battery.percent = percent;
 
     currentSession.battery_count++;
@@ -435,7 +445,10 @@ bool BufferManager::serializePartWithLimits(uint16_t index, uint16_t total,
 
         JsonArray battery = doc.createNestedArray("battery");
         for (int i = 0; i < batteryLimit; i++) {
+            // Patch de horários: [boot(=trecho), ts, percent] — o domínio do
+            // contador viaja com a leitura (legado 2 posições = sem trecho)
             JsonArray batArray = battery.createNestedArray();
+            batArray.add(currentSession.battery[i].boot_id);
             batArray.add(currentSession.battery[i].timestamp_millis);
             batArray.add(currentSession.battery[i].percent);
         }
@@ -458,6 +471,8 @@ bool BufferManager::serializePartWithLimits(uint16_t index, uint16_t total,
         // N04: identidade da observação transmitida — o consumidor remonta os
         // chunks de um mesmo scan por (idx) em vez de adivinhar por timestamp
         scanObj["idx"] = chunk.scan_idx;
+        // Patch de horários: domínio do contador desta observação (§6)
+        scanObj["boot"] = scan.boot_id;
         scanObj["ts"] = scan.timestamp_millis;
         scanObj["net_offset"] = chunk.net_start;
 

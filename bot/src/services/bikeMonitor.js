@@ -35,7 +35,19 @@ class BikeMonitorService {
       this.handleBatteryChange(bikeId, batteryData);
     });
 
+    // Patch de horários: a CHEGADA REAL (evento civil do trip) conclui a
+    // viagem ativa — a hora de upload/processamento não a substitui (§7)
+    firebaseService.listenToTripArrivals((bikeId, tripSeq, arrivalMs, baseId) => {
+      this.handleTripArrival(bikeId, tripSeq, arrivalMs, baseId);
+    });
+
     console.log('🚴 Monitor de bicicletas iniciado (modo trigger)');
+  }
+
+  // Chegada real do trip: finaliza a viagem pela hora civil do EVENTO
+  handleTripArrival(bikeId, tripSeq, arrivalMs, baseId) {
+    if (!rideCalculator.hasActiveRide(bikeId)) return; // sem viagem ativa
+    this.handleBikeArrival(bikeId, baseId || 'unknown', arrivalMs, true);
   }
 
   // Monitorar mudanças de bateria
@@ -354,15 +366,24 @@ class BikeMonitorService {
   }
 
   // Detectar chegada na base (quando sessão termina)
-  async handleBikeArrival(bikeId, stationId, arrivalMs = null) {
-    // N04: unidade única — chegada vem do relógio do servidor (ms absolutos)
-    const arrivalTime = arrivalMs !== null ? rideCalculator.fromV2Ms(arrivalMs) : Date.now();
+  // Patch de horários: arrivalMs pode ser a hora CIVIL REAL do evento de
+  // chegada (arrivalCivil=true) — nesse caso é a âncora da viagem (§7);
+  // sem evento, âncora de registro com base declarada
+  async handleBikeArrival(bikeId, stationId, arrivalMs = null, arrivalCivil = false) {
+    // N04: unidade única — chegada civil (UTC ms) ou relógio do servidor
+    const arrivalTime = arrivalMs !== null
+      ? (arrivalCivil ? Number(arrivalMs) : rideCalculator.fromV2Ms(arrivalMs))
+      : Date.now();
 
     // Finalizar viagem ativa.
     // Item 2 (ID-06): a estação entra como PROVENIÊNCIA da entrega
     // (delivery_bases na viagem) — a mesma viagem entregue por outra
     // estação continua sendo a MESMA viagem
-    const rideData = await rideCalculator.finishRide(bikeId, arrivalTime, { stationId });
+    const delivery = { stationId };
+    if (arrivalCivil && arrivalTime > 0) {
+      delivery.arrivalCivilMs = arrivalTime; // patch de horários: âncora real
+    }
+    const rideData = await rideCalculator.finishRide(bikeId, arrivalTime, delivery);
 
     // Publicar chegada no canal
     await this.channelPublisher.publishBikeArrival(bikeId, stationId, rideData);

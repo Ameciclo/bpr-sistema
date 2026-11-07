@@ -26,8 +26,12 @@ public:
     
     // Reporting
     void logBatteryStatus();
+    // Patch de horários (§5): o heartbeat carrega o trecho atual, o contador
+    // local e a última referência de hora efetivamente guardada
     String getHeartbeatReport(const BikeConfig& config, bool hasPendingData,
-                              uint16_t pendingScans = 0, size_t pendingBytes = 0);
+                              uint16_t pendingScans = 0, size_t pendingBytes = 0,
+                              uint16_t bootId = 0, uint32_t counterMs = 0,
+                              uint32_t lastRefId = 0);
     
 private:
     uint8_t lastBatteryPercent;

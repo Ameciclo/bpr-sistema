@@ -1,0 +1,32 @@
+✅ Firebase conectado com sucesso
+🚀 Nova viagem iniciada: bpr-440011 - ride_session_v1_bpr-440011_900-12
+✅ Viagem finalizada: ride_session_v1_bpr-440011_900-12 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-440011 - ride_session_v1_bpr-440011_900-12
+♻️ Viagem ride_session_v1_bpr-440011_900-12 já registrada - replay/concorrência ignorado
+h01_duration_s: 1800
+h01_civil_diff: yes
+h01_scan_at_1340: yes
+h01_last_scan_at_1355_not_arrival_time: yes
+h02_scan_not_shifted_to_contact: yes
+h02_total_is_30min: yes
+h03_duration_from_civil_not_counter: yes
+h03_counter_origin_used: yes
+h04_replay_keeps_identity_and_time: yes
+h04_upload_time_outside_duration: yes
+h06_total_30min_across_reboot: yes
+h06_pointA_uses_A_reference: yes
+h06_pointB_uses_B_reference: yes
+h06_no_cross_segment_application: yes
+h08_unknown_explicit: yes
+h08_arrival_ref_same_segment: yes
+h10_pending_without_invention: yes
+h10_non_monotonic_explicit: yes
+h12_both_bases_kept_same_trip: yes
+h14_same_counter_distinct_points: yes
+h16_legacy_trip_still_reconstructs: yes
+h16_legacy_scan_ref_explicit: yes
+patch7_finished_at_is_arrival_event: yes
+patch7_basis_arrival_event: yes
+patch7_period_from_arrival: yes
+h04_bot_replay_keeps_arrival: yes
+== trip backend checks: sem BUG ==
