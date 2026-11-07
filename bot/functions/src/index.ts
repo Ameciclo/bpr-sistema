@@ -41,13 +41,23 @@ console.log("🔧 Configurações carregadas:", {
 const bot = new Telegraf(BOT_TOKEN);
 
 // === Contratos de dados (A01/A02/A04) =====================================
-// DTO interno de rede WiFi — único formato aceito por produtores/consumidores
-interface NetworkDto {
-  ssid: string;
-  bssid: string;
-  rssi: number;
-  channel: number;
-}
+// DTO interno de rede WiFi: fonte única em ./dto (compartilhado com assembly)
+import {NetworkDto, normalizeNetwork} from "./dto";
+export {NetworkDto, normalizeNetwork};
+
+// Itens 2/4/5: montagem/enriquecimento — lógica pura testável em ./assembly
+import {
+  AssembledScan,
+  GeoEntry,
+  GeoResolution,
+  ScanChunk,
+  canInstallGeo,
+  hashNetworks,
+  mergeLegacyExtras,
+  reassembleScans,
+  resolveGeo,
+  scanKey,
+} from "./assembly";
 
 // Sessão tocada por um lote (aguarda completude)
 interface TouchedSession {
@@ -57,14 +67,6 @@ interface TouchedSession {
   total: number;
 }
 
-// Scan da projeção v2 (unidades explícitas: ts_ms)
-interface ScanV2 {
-  idx?: number; // N04: identidade do scan na sessão (índice do produtor)
-  ts_ms: number;
-  net_offset: number;
-  networks: NetworkDto[];
-}
-
 // Registro de fragmento bruto em /bikes/{id}/raw_fragments/{sid}-{salt}/{seq}
 interface FragmentRecord {
   crc32?: string;
@@ -72,33 +74,10 @@ interface FragmentRecord {
   payload?: Fragment;
 }
 
-// Sessão tocada por um lote (aguarda completude)
-interface TouchedSession {
-  bikeId: string;
-  sessionId: number;
-  salt: number;
-  total: number;
-}
-
-// Scan da projeção v2 (unidades explícitas: ts_ms)
-interface ScanV2 {
-  idx?: number; // N04: identidade do scan na sessão (índice do produtor)
-  ts_ms: number;
-  net_offset: number;
-  networks: NetworkDto[];
-}
-
-// Registro de fragmento bruto em /bikes/{id}/raw_fragments/{sid}-{salt}/{seq}
-interface FragmentRecord {
-  crc32?: string;
-  received_ts?: number;
-  payload?: Fragment;
-}
-
-// Scan de uma sessão v2 durante conversão de coordenadas
-interface V2ScanRow {
-  coordinates?: {lat: number; lng: number};
-  networks?: NetworkDto[];
+// Sessão v2 durante conversão/leitura de coordenadas (geo separado — item 5)
+interface V2GeoSessionRow {
+  scans?: (AssembledScan & {coordinates?: unknown})[];
+  geo?: Record<string, GeoEntry>;
 }
 
 // Sessão v2 resumida (comando /status)
@@ -106,6 +85,7 @@ interface V2StatusRow {
   session_start_ms?: number;
   scans?: unknown[];
   complete?: boolean;
+  ingest_ts?: number;
 }
 
 // Sessão v2 recém-montada (notificação)
@@ -136,27 +116,6 @@ function sessionKeyComparator(a: string, b: string): number {
  * @param {unknown} net Rede no formato array ou objeto
  * @return {NetworkDto} DTO normalizado
  */
-function normalizeNetwork(net: unknown): NetworkDto {
-  if (Array.isArray(net)) {
-    return {
-      ssid: String(net[0] ?? ""),
-      bssid: String(net[1] ?? ""),
-      rssi: Number(net[2] ?? 0),
-      channel: Number(net[3] ?? 0),
-    };
-  }
-  if (net && typeof net === "object") {
-    const o = net as Record<string, unknown>;
-    return {
-      ssid: String(o.ssid ?? ""),
-      bssid: String(o.bssid ?? ""),
-      rssi: Number(o.rssi ?? 0),
-      channel: Number(o.channel ?? 0),
-    };
-  }
-  return {ssid: "", bssid: "", rssi: 0, channel: 0};
-}
-
 // Fragmento BLE produzido pela bike (data_decoded do lote da central)
 interface Fragment {
   session_id: number;
@@ -168,7 +127,7 @@ interface Fragment {
   session_start_millis?: number;
   scan_count?: number;
   resumed?: boolean; // N04: sessão retomada entre boots
-  scans?: {idx?: number; ts: number; net_offset: number; nets: unknown[]}[];
+  scans?: ScanChunk[]; // chunks de observação (item 5: montagem em ./assembly)
   battery?: unknown[][];
 }
 
@@ -315,51 +274,18 @@ async function assembleSessionIfComplete(
   const finalFrag = bySeq.get(total - 1);
   if (!finalFrag) return;
 
-  // N05: os chunks de um MESMO scan são REUNIDOS em uma única observação —
-  // identidade = idx (índice do produtor) com fallback em ts; as redes dos
-  // chunks são ordenadas por net_offset e concatenadas. Antes, um scan
-  // denso dividido em N fragments virava N scans incompletos.
-  const groups = new Map<string, {
-    idx?: number;
-    ts: number;
-    chunks: {off: number; nets: unknown[]}[];
-  }>();
+  // N05/item 5: os chunks de um MESMO scan são REUNIDOS em uma única
+  // observação (agrupamento por scan_key = idx do produtor, fallback ts);
+  // redes ordenadas por net_offset e concatenadas. Antes, um scan denso
+  // dividido em N fragments virava N scans incompletos. A montagem vive em
+  // ./assembly (pura, testável) e grava scan_key + content_hash por scan.
+  const chunksBySeq: ScanChunk[][] = [];
   for (let s = 0; s < total - 1; s++) {
     const frag = bySeq.get(s);
     if (!frag) continue;
-    for (const scan of frag.scans ?? []) {
-      const key = scan.idx !== undefined ?
-        `i${scan.idx}` : `t${scan.ts}`;
-      let group = groups.get(key);
-      if (!group) {
-        group = {
-          idx: scan.idx,
-          ts: Number(scan.ts),
-          chunks: [],
-        };
-        groups.set(key, group);
-      }
-      group.chunks.push({
-        off: Number(scan.net_offset) || 0,
-        nets: scan.nets ?? [],
-      });
-    }
+    chunksBySeq.push(frag.scans ?? []);
   }
-
-  const scans: ScanV2[] = [];
-  for (const group of groups.values()) {
-    group.chunks.sort((a, b) => a.off - b.off);
-    const networks = group.chunks
-      .flatMap((chunk) => chunk.nets.map(normalizeNetwork));
-    scans.push({
-      idx: group.idx,
-      ts_ms: group.ts,
-      net_offset: 0, // observação completa: todas as redes presentes
-      networks,
-    });
-  }
-  // ordem estável pela identidade do produtor (fallback: ts)
-  scans.sort((a, b) => (a.idx ?? a.ts_ms) - (b.idx ?? b.ts_ms));
+  const scans: AssembledScan[] = reassembleScans(chunksBySeq);
 
   // A04: bateria como {ts_ms, percent} — sem ambiguidade de unidade
   const battery = (finalFrag.battery ?? []).map((entry) => ({
@@ -370,28 +296,14 @@ async function assembleSessionIfComplete(
   const sessionRef =
     db.ref(`bikes/${bikeId}/sessions_v2/${sessionId}-${salt}`);
 
-  // N05: replay NÃO destrói enriquecimento — coordenadas (e qualquer campo
-  // extra gravado por conversores) da projeção existente são preservadas
-  // por scan; apenas os campos-base são reescritos. O transporte de extras
-  // exige CONTEÚDO equivalente (mesma ts) — índice sozinho poderia levar
-  // coordenadas para o scan errado se a projeção anterior divergiu
+  // Item 5 (GEO-02): o normalizador escreve APENAS os campos-base em
+  // `scans`; o enriquecimento canônico vive em `geo/{scan_key}` (path do
+  // conversor) — escritores disjuntos não se sobrescrevem. Extras legado
+  // embutidos (ex.: `coordinates` do conversor antigo) são preservados por
+  // compat de leitura, com guarda de conteúdo (mesma ts), sem virar fonte
+  // de verdade editável.
   const existingSnap = await sessionRef.child("scans").once("value");
-  const existingScans = existingSnap.val() as ScanV2[] | null;
-  const mergedScans = Array.isArray(existingScans) && existingScans.length > 0 ?
-    scans.map((fresh, i) => {
-      const old = existingScans[i];
-      if (!old || typeof old !== "object") return fresh;
-      // mesmo índice, conteúdo divergente: extras não são herdados
-      if (Number(old.ts_ms) !== Number(fresh.ts_ms)) return fresh;
-      const extras: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(old)) {
-        if (k === "idx" || k === "ts_ms" || k === "net_offset" ||
-              k === "networks") continue;
-        extras[k] = v; // ex.: coordinates do conversor geográfico
-      }
-      return {...fresh, ...extras} as ScanV2;
-    }) :
-    scans;
+  const mergedScans = mergeLegacyExtras(scans, existingSnap.val());
 
   await sessionRef.update({
     schema_version: 2,
@@ -412,7 +324,7 @@ async function assembleSessionIfComplete(
 
   const nscans = scans.length;
   console.log(`✅ Sessão ${sessionId}-${salt} de ${bikeId} ` +
-    `(${nscans} scans, ${groups.size} observações reunidas)`);
+    `(${nscans} observações reunidas)`);
 }
 
 // Notificação de sessão completa (projeção v2)
@@ -501,7 +413,19 @@ async function convertWifiToCoordinates(networks: unknown[]) {
 }
 
 /**
- * Processa scans da projeção v2 e adiciona coordenadas (API paga).
+ * Processa observações da projeção v2 e grava o enriquecimento geográfico
+ * (API paga) no destino PRÓPRIO `geo/{scan_key}` (item 5/M06).
+ *
+ * GEO-02: escritores disjuntos — o normalizador escreve `scans` (base),
+ * este conversor escreve `geo/`; nenhuma lista é substituída por cópia antiga.
+ * GEO-03/04: o resultado é vinculado ao `content_hash` exato que foi
+ * geolocalizado; DEPOIS da consulta externa (demorada) o scan é RE-LIDO e o
+ * hash re-conferido antes de instalar — resultado de revisão antiga não é
+ * atribuído à observação nova (fica como "stale" e é recalculado).
+ * GEO-05: falha/indisponibilidade não apaga nada — a observação permanece
+ * com seus dados Wi-Fi e estado pendente (ausência explícita).
+ * A chamada paga acontece FORA de qualquer transação (o SDK pode repetir
+ * handlers de transação — nunca chamar serviços dentro deles).
  * @param {string} bikeId ID canônico da bike
  * @return {Promise<void>}
  */
@@ -509,7 +433,7 @@ async function processScansWithCoordinates(bikeId: string) {
   const sessionsRef = db.ref(`bikes/${bikeId}/sessions_v2`);
   const snapshot = await sessionsRef.once("value");
   const sessions = snapshot.val() as
-    {[key: string]: {scans?: V2ScanRow[]}} | null;
+    {[key: string]: V2GeoSessionRow} | null;
 
   if (!sessions) return;
 
@@ -517,34 +441,94 @@ async function processScansWithCoordinates(bikeId: string) {
     if (!session?.scans) continue;
 
     console.log(`Processando sessão ${sessionKey}...`);
+    const geoRef = sessionsRef.child(`${sessionKey}/geo`);
 
     for (let i = 0; i < session.scans.length; i++) {
       const scan = session.scans[i];
+      if (!scan || typeof scan !== "object") continue;
 
-      // Pula se já tem coordenadas
-      if (scan.coordinates) continue;
-
+      // Identidade estável da observação (GEO-01) — nunca o índice da lista
+      const key = scanKey(scan.idx, scan.ts_ms);
       const networks = scan.networks ?? [];
       if (networks.length === 0) continue;
 
-      console.log(`  Scan ${i} - ${networks.length} redes...`);
-
-      // Converte redes WiFi em coordenadas
-      const coordinates = await convertWifiToCoordinates(networks);
-
-      // Atualiza o scan com coordenadas
-      if (coordinates) {
-        const path = `${sessionKey}/scans/${i}/coordinates`;
-        await sessionsRef.child(path).set(coordinates);
-        console.log(`    ✅ ${coordinates.lat}, ${coordinates.lng}`);
-      } else {
-        console.log("    ❌ Não foi possível obter coordenadas");
+      // Já enriquecido e ATUAL (mesmo conteúdo)? Nada a fazer
+      const existingGeo = (session.geo ?? {})[key] ?? null;
+      const current = resolveGeo(scan, existingGeo);
+      if (current.status === "fresh") continue;
+      // 'stale' = geo de conteúdo antigo: recalcula (o novo substitui no
+      // path por scan_key, com o hash do conteúdo atual)
+      if (current.status === "stale") {
+        console.log(`  Scan ${key}: geo desatualizado - recalculando`);
       }
+
+      // Assinatura do conteúdo NO MOMENTO DA CONSULTA (GEO-03) —
+      // observações legado sem content_hash recebem o hash calculado agora
+      const hashAtRequest = scan.content_hash ?? hashNetworks(networks);
+
+      console.log(`  Scan ${key} - ${networks.length} redes...`);
+
+      // Consulta externa (paga) — fora de transação
+      const coordinates = await convertWifiToCoordinates(networks);
+      if (!coordinates) {
+        // GEO-05: falha mantém dados e pendência — nada é apagado
+        console.log(`    ❌ ${key}: geolocalização indisponível (pendente)`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      // RE-LEITURA após a consulta demorada: a observação pode ter sido
+      // remontada/corrigida nesse intervalo (C245-11/C245-12)
+      const scanNowSnap =
+        await sessionsRef.child(`${sessionKey}/scans`).once("value");
+      const scanNowList = scanNowSnap.val() as
+        AssembledScan[] | null;
+      const scanNow = findScanByKey(scanNowList, key);
+
+      if (!canInstallGeo(hashAtRequest, scanNow)) {
+        console.log(`    ⚠️ ${key}: conteúdo mudou durante a consulta - ` +
+            "resultado descartado (será recalculado)");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      const entry: GeoEntry = {
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        accuracy: coordinates.accuracy,
+        base_hash: hashAtRequest,
+        source: "google_geolocation_v1",
+        computed_at: Date.now(),
+      };
+      // Instalação em path ESPECÍFICO por identidade — nunca substitui a lista
+      await geoRef.child(key).set(entry);
+      console.log(`    ✅ ${key}: ${coordinates.lat}, ${coordinates.lng}`);
 
       // Delay para não sobrecarregar a API
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
+}
+
+/**
+ * Localiza uma observação pela chave estável (GEO-01) em uma lista —
+ * independe da posição ocasional dos itens.
+ * @param {AssembledScan[]|null} scans Lista de observações
+ * @param {string} key Chave estável (scan_key)
+ * @return {AssembledScan|null} Observação encontrada ou null
+ */
+function findScanByKey(
+  scans: AssembledScan[] | null,
+  key: string
+): AssembledScan | null {
+  if (!Array.isArray(scans)) return null;
+  for (const scan of scans) {
+    if (scan && typeof scan === "object" &&
+        scanKey(scan.idx, scan.ts_ms) === key) {
+      return scan;
+    }
+  }
+  return null;
 }
 
 /**
@@ -676,11 +660,12 @@ bot.command("rota", async (ctx) => {
   }
 
   try {
+    // Item 5 (GEO-06): leitor combina a base (`scans`) com o enriquecimento
+    // canônico (`geo/{scan_key}`); `coordinates` embutido é legado read-only
     const ref = db.ref(`bikes/${bikeId}/sessions_v2`);
     const sessionsSnapshot = await ref.once("value");
     const sessions = sessionsSnapshot.val() as
-      {[key: string]: {scans?: {coordinates?: {lat: number; lng: number};
-        networks?: NetworkDto[]; ts_ms?: number}[]}} | null;
+      {[key: string]: V2GeoSessionRow} | null;
 
     if (!sessions) {
       ctx.reply(`❌ Nenhuma sessão encontrada para ${bikeId}`);
@@ -699,19 +684,30 @@ bot.command("rota", async (ctx) => {
     }
 
     const scans = latestSession.scans;
+    const geoMap = latestSession.geo ?? {};
     let totalDistance = 0;
     let movementPoints = 0;
     let convertedScans = 0;
+    let staleScans = 0;
 
-    scans.forEach((scan) => {
-      if (scan.coordinates) convertedScans++;
+    // Resolve cada observação pela identidade estável (nunca pelo índice)
+    const resolved: (GeoResolution | null)[] = scans.map((scan) => {
+      if (!scan || typeof scan !== "object") return null;
+      const key = scanKey(scan.idx, scan.ts_ms);
+      return resolveGeo(scan, geoMap[key] ?? null);
     });
 
-    for (let i = 1; i < scans.length; i++) {
-      const prev = scans[i - 1];
-      const curr = scans[i];
+    resolved.forEach((res) => {
+      if (!res) return;
+      if (res.coordinates) convertedScans++;
+      if (res.status === "stale") staleScans++;
+    });
 
-      if (prev.coordinates && curr.coordinates) {
+    for (let i = 1; i < resolved.length; i++) {
+      const prev = resolved[i - 1];
+      const curr = resolved[i];
+
+      if (prev?.coordinates && curr?.coordinates) {
         const distance = calculateGPSDistance(
           prev.coordinates.lat, prev.coordinates.lng,
           curr.coordinates.lat, curr.coordinates.lng
@@ -743,6 +739,17 @@ bot.command("rota", async (ctx) => {
                  `📏 Distância: ${totalDistance.toFixed(0)}m (estimativa)\n` +
                  `⏱️ Duração: ${duration} min\n` +
                  `📡 Redes detectadas: ${allNetworks.size}\n\n`;
+
+    // C245-14/GEO-05: ausência EXPLÍCITA — leitura consistente com dados
+    // parcialmente enriquecidos (pendentes e desatualizados são visíveis)
+    if (staleScans > 0) {
+      message += `🔁 ${staleScans} observação(ões) com geo desatualizado ` +
+        "(aguardando recálculo)\n";
+    }
+    if (convertedScans < scans.length) {
+      message += `⏳ ${scans.length - convertedScans} sem coordenadas ` +
+        "(use /converter)\n";
+    }
 
     if (movementPoints > 0) {
       message += `✅ Movimento detectado em ${movementPoints} pontos`;

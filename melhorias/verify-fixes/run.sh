@@ -50,5 +50,13 @@ echo "== bot_checks (N11/N04 — rideCalculator real + RTDB transacional local) 
 node verify-bot.js | tee bot-checks-results.txt
 grep -q "sem BUG" bot-checks-results.txt || { echo "BOT CHECKS FAILED"; exit 1; }
 
+echo "== item 2/4 checks (identidade de viagem + período autoritativo — C245-01..09) =="
+node verify-item245.js | tee item245-checks-results.txt
+grep -q "sem BUG" item245-checks-results.txt || { echo "ITEM 2/4 CHECKS FAILED"; exit 1; }
+
+echo "== item 5 checks (enriquecimento concorrente — assembly real das Functions) =="
+node verify-functions-assembly.js | tee item5-checks-results.txt
+grep -q "sem BUG" item5-checks-results.txt || { echo "ITEM 5 CHECKS FAILED"; exit 1; }
+
 echo
 echo "OK: todas as verificações rodaram sem achado de sanitizador"

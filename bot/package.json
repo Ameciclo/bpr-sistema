@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "migrate": "node migrate-firebase-data.js"
+    "migrate": "node migrate-ride-identity.js",
+    "migrate:apply": "node migrate-ride-identity.js --apply"
   },
   "dependencies": {
     "telegraf": "^4.15.6",

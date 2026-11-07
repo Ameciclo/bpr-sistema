@@ -122,8 +122,24 @@ class BikeMonitorService {
       ? rideCalculator.fromV2Ms(sessionData.session_start_ms)
       : rideCalculator.fromLegacySec(sessionData.start);
 
-    // Iniciar nova viagem
-    const rideId = rideCalculator.startRide(bikeId, startMs);
+    // Item 2 (ID-01/ID-02/ID-07): identidade da viagem = bike do cadastro +
+    // origem estável (session_id + session_salt da sessão montada). O
+    // timestamp relativo NÃO é identidade; sem origem suficiente a viagem
+    // fica PENDENTE (explícita), nunca substituída por uptime.
+    const sessionIdNum = Number(sessionData.session_id);
+    const sessionSaltNum = Number(sessionData.session_salt);
+    const rideId = rideCalculator.startRide(bikeId, {
+      sessionId: sessionIdNum,
+      sessionSalt: sessionSaltNum,
+      startMs
+    });
+    if (!rideId) {
+      // ID-07: pendência visível — a sessão continua sendo notificada, mas
+      // sem viagem/agregação até a origem existir
+      this.sendNotification(`⚠️ Bike ${bikeId.toUpperCase()}: sessão ${sessionId} ` +
+        `sem origem suficiente (session_id/salt ausentes) — viagem NÃO derivada; ` +
+        `pendência registrada`);
+    }
 
     // Publicar saída no canal
     await this.channelPublisher.publishBikeDeparture(bikeId, stationId);
@@ -342,8 +358,11 @@ class BikeMonitorService {
     // N04: unidade única — chegada vem do relógio do servidor (ms absolutos)
     const arrivalTime = arrivalMs !== null ? rideCalculator.fromV2Ms(arrivalMs) : Date.now();
 
-    // Finalizar viagem ativa
-    const rideData = await rideCalculator.finishRide(bikeId, arrivalTime);
+    // Finalizar viagem ativa.
+    // Item 2 (ID-06): a estação entra como PROVENIÊNCIA da entrega
+    // (delivery_bases na viagem) — a mesma viagem entregue por outra
+    // estação continua sendo a MESMA viagem
+    const rideData = await rideCalculator.finishRide(bikeId, arrivalTime, { stationId });
 
     // Publicar chegada no canal
     await this.channelPublisher.publishBikeArrival(bikeId, stationId, rideData);
@@ -393,7 +412,9 @@ class BikeMonitorService {
               message += `📏 ${data.rideData.km} km\n`;
               message += `🌱 ${data.rideData.co2_saved_g}g CO₂ economizado\n`;
               message += `⏱️ ${data.rideData.duration_min} min\n`;
-              message += `\n🗺️ [Ver rota completa](https://prarodar.org/ride/${bikeId}/${data.rideData.start_ts})`;
+              // Item 2: referência estável da viagem (rideId canônico)
+              const ref = data.rideData.rideId || data.rideData.start_ts;
+              message += `\n🗺️ [Ver rota completa](https://prarodar.org/ride/${bikeId}/${ref})`;
             }
             break;
             

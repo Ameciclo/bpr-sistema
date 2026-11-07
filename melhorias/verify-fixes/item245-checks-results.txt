@@ -1,0 +1,55 @@
+✅ Firebase conectado com sucesso
+🚀 Nova viagem iniciada: bpr-0a0001 - ride_session_v1_bpr-0a0001_100-7
+✅ Viagem finalizada: ride_session_v1_bpr-0a0001_100-7 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0b0002 - ride_session_v1_bpr-0b0002_200-9
+✅ Viagem finalizada: ride_session_v1_bpr-0b0002_200-9 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0c0003 - ride_session_v1_bpr-0c0003_300-1
+✅ Viagem finalizada: ride_session_v1_bpr-0c0003_300-1 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0c0003 - ride_session_v1_bpr-0c0003_301-2
+✅ Viagem finalizada: ride_session_v1_bpr-0c0003_301-2 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0d0004 - ride_session_v1_bpr-0d0004_400-3
+✅ Viagem finalizada: ride_session_v1_bpr-0d0004_400-3 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0d0004 - ride_session_v1_bpr-0d0004_400-3
+♻️ Viagem ride_session_v1_bpr-0d0004_400-3 já registrada - replay/concorrência ignorado
+🚀 Nova viagem iniciada: bpr-0e0005 - ride_session_v1_bpr-0e0005_500-4
+♻️ Viagem ride_session_v1_bpr-0e0005_500-4 já registrada - replay/concorrência ignorado
+✅ Viagem finalizada: ride_session_v1_bpr-0e0005_500-4 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0f0006 - ride_session_v1_bpr-0f0006_600-5
+❌ Viagem cancelada: ride_session_v1_bpr-0f0006_600-5 - restart
+🚀 Nova viagem iniciada: bpr-0f0006 - ride_session_v1_bpr-0f0006_600-5
+♻️ Viagem ride_session_v1_bpr-0f0006_600-5 já registrada - replay/concorrência ignorado
+🚀 Nova viagem iniciada: bpr-110007 - ride_session_v1_bpr-110007_700-6
+✅ Viagem finalizada: ride_session_v1_bpr-110007_700-6 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-110007 - ride_session_v1_bpr-110007_700-6
+♻️ Viagem ride_session_v1_bpr-110007_700-6 já registrada - replay/concorrência ignorado
+c245_01_two_bikes_two_public_contributions: 2
+c245_01_monthly_january_rides: 2
+c245_01_distinct_histories_both_persisted: yes
+c245_02_same_start_distinct_identities: yes
+c245_02_bike_metrics_rides_total: 2
+c245_02_public_total: 4
+c245_03_same_ride_single_history: yes
+c245_03_delivery_provenance_kept: yes
+c245_03_single_public_contribution: 1
+c245_03_station_not_in_identity: yes
+c245_04_single_canonical_entity: yes
+c245_04_metrics_counted_once: 1
+c245_05_repair_completes_once: 1
+c245_05_public_contribution_once: 1
+c245_06_january_rides: 1
+c245_06_february_rides: 0
+c245_06_general_total: 1
+c245_08_canonical_km_used: 1.565
+c245_08_attempt_values_not_applied: yes
+c245_07_repair_completed_buckets: yes
+c245_06_mirror_reflects_january_bucket: yes
+id07_missing_origin_rejected: yes
+id07_no_ride_created: yes
+c245_09_dryrun_reports_both: yes
+c245_09_dryrun_no_writes: yes
+c245_09_both_preserved_canonical: yes
+c245_09_legacy_kept_as_alias: yes
+c245_09_rebuilt_total_rides: 2
+c245_09_rebuilt_january: 2
+c245_09_tokens_canonical: yes
+== item 2/4 checks: sem BUG ==

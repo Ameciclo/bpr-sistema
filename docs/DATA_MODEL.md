@@ -83,16 +83,27 @@ Caminho: `/bikes/{bike_id}/sessions_v2/{session_id}-{salt}`
   "scan_count": 12,
   "scans": [
     {
+      "scan_key": "i3",
       "idx": 3,
       "ts_ms": 47000,
       "net_offset": 0,
+      "content_hash": "1a2b3c4d",
       "networks": [
         { "ssid": "NET_5G", "bssid": "AA:BB:CC:11:22:33", "rssi": -70, "channel": 6 },
         { "ssid": "NET_2G", "bssid": "AA:BB:CC:11:22:99", "rssi": -74, "channel": 11 }
-      ],
-      "coordinates": { "lat": -8.064, "lng": -34.882, "accuracy": 50 }
+      ]
     }
   ],
+  "geo": {
+    "i3": {
+      "lat": -8.064,
+      "lng": -34.882,
+      "accuracy": 50,
+      "base_hash": "1a2b3c4d",
+      "source": "google_geolocation_v1",
+      "computed_at": 1733460800000
+    }
+  },
   "battery": [ { "ts_ms": 47000, "percent": 85 } ],
   "complete": true,
   "ingest_ts": 1733459800,
@@ -111,10 +122,20 @@ Caminho: `/bikes/{bike_id}/sessions_v2/{session_id}-{salt}`
   **millis desde o boot da bike**, não datas Unix — exibições usam rótulo
   relativo (`boot+X ms`) ou a âncora do servidor (`ingest_ts`); `resumed:
   true` marca sessão retomada entre boots (origens temporais mistas).
-- `coordinates` é escrito sob demanda (`processScansWithCoordinates`,
-  comando `/converter` com cooldown 60 s) — bot polling não o exige para votar viagem.
+- **Base e enriquecimento separados (item 5/M06):** o normalizador escreve
+  APENAS os campos-base em `scans` (com `scan_key` — identidade estável da
+  observação — e `content_hash` — revisão do conteúdo das redes); o
+  conversor geográfico grava o resultado em `geo/{scan_key}`, vinculado ao
+  `base_hash` do conteúdo exato que foi geolocalizado. Escritores disjuntos
+  nunca se sobrescrevem; resultado de conteúdo antigo fica `stale`
+  (re-calculado), nunca atribuído à observação nova. `coordinates`
+  embutido em `scans` é legado read-only (compat de leitura durante a
+  transição).
+- Falha de geolocalização mantém a observação e seus dados Wi-Fi; a
+  ausência é explícita (`/rota` mostra pendentes/desatualizados).
 - **Replay preserva enriquecimento (N05):** reprocessar o mesmo lote não
-  apaga `coordinates` (ou qualquer campo extra) de scans com o mesmo `ts_ms`.
+  apaga `geo/` (path distinto) nem extras legado de scans com o mesmo
+  conteúdo.
 - Retry/replay idempotente: mesma `(bike, session_id, salt)` gera a mesma projeção;
   `source_batches/{batchId}` audita cada origem sem sobrescrever.
 
@@ -254,31 +275,67 @@ automaticamente (`BikePairing::onHeartbeat`).
 
 ### 7.1 Viagens — `/rides/{bike_id}/{rideId}`
 
+`rideId` é **canônico e determinístico da origem** (itens 2/4 — M03/M04):
+`ride_session_v1_{bikeId}_{sessionId}-{sessionSalt}`. Distingue bikes
+diferentes e sessões diferentes da mesma bike (o legado `ride_{startMs}`
+colidia nos dois casos e travava a contribuição pública da segunda bike);
+permanece igual no reenvio, reinício do consumidor e reprocessamento. A
+**estação não entra na identidade** — é proveniência (`delivery_bases`).
+
 ```json
 {
-  "start_ts": 1733459200000,
-  "end_ts": 1733460500000,
+  "rideId": "ride_session_v1_bpr-000123_45000-2",
+  "ride_rule": "session_v1",
+  "origin": { "bike_id": "bpr-000123", "session_id": 45000, "session_salt": 2 },
+  "start_ts": 45000,
+  "end_ts": 47200,
+  "finished_at": 1733460500000,
+  "ts_domain": "bike_boot_ms",
+  "period_month": "2026-01",
+  "period_basis": "server_ingest_clock",
+  "period_rule": "registration_month_v1",
+  "period_ref_ms": 1733460500000,
   "km": 2.8,
   "co2_saved_g": 406,
   "co2_method": "estimate_car_substitution",
   "route": [{"lat": -8.064, "lng": -34.882}],
   "points_count": 12,
-  "duration_min": 22
+  "duration_min": 22,
+  "delivery_bases": { "base01": true }
 }
 ```
 
 - `km` arredondado a 3 casas. Filtro <80 m descarta a viagem sem persistir.
 - CO₂ = 0.145 kg/km (hipótese de substituição por carro **declarada**,
   não medição) — mudar o fator exige revalidar indicadores públicos.
-- Publicação **idempotente** por `rideId` (= `ride_{startMs}`): replay não duplica
-  nem métricas (ver `RideCalculator::startRide/finishRide` com `toMs`).
+- **Idempotente por transação** (create-if-absent sobre o rideId canônico);
+  tokens `contributed_rides` por viagem em cada agregador.
+- **Período autoritativo (MES-01..03):** `period_month` é fixado na
+  PRIMEIRA persistência — `period_basis` declara a data utilizada (enquanto
+  o patch de tempo não existe: **mês de registro/processamento**, não mês
+  comprovado da coleta). Reprocessamento/reparo reutiliza os valores
+  PERSISTIDOS (km, CO₂, período); divergências são diagnosticadas e a
+  versão canônica prevalece (revisão deliberada é fluxo auditável à parte).
+- `start_ts`/`end_ts` em ms do boot da bike (`ts_domain`); `finished_at` é
+  a âncora absoluta do servidor.
+- `delivery_bases`: proveniência das entregas (ID-06) — reprocessar por
+  outra estação acrescenta a base, não cria outra viagem.
+- Legado `ride_{startMs}`: migrado por `bot/migrate-ride-identity.js`
+  (dry-run default; ambíguos viram pendência em `migrations/pending/`).
 
 ### 7.2 Métricas e estatísticas
 
-- `/bikes/{bike_id}/metrics`: `{km_total, rides_total, last_ride}` via transação atômica.
-- `/public_stats/monthly/{YYYY-MM}`: `{total_rides, km, co2_saved_g, last_update}` (período explícito).
-- `/public_stats` (raiz, legado): `{total_rides_month, km_month, co2_saved_month_g, current_month}` —
-  mantido por compatibilidade, mas o canônico é o mensal.
+- `/bikes/{bike_id}/metrics`: `{km_total, rides_total, last_ride,
+  contributed_rides}` via transação atômica — token por rideId canônico.
+- `/public_stats/monthly/{YYYY-MM}` (canônico mensal): `{total_rides, km,
+  co2_saved_g, contributed_rides, last_update}` — um bucket por mês.
+- `/public_stats` (raiz) — **totais gerais**: `{total_rides, km_total,
+  co2_saved_g, contributed_rides, current_month}`; os campos legado
+  `total_rides_month/km_month/co2_saved_month_g` são **espelho do bucket**
+  de `current_month` (compat de leitura — não acumulam meses diferentes).
+- Cada viagem contribui **no máximo uma vez por agregador** (token dentro
+  da mesma transação do contador); reparo de agregação interrompida
+  completa só o que falta, no período ORIGINAL da viagem.
 
 ### 7.3 Assinaturas — `/subscriptions/{userId}`
 

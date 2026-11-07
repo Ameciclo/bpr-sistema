@@ -1,0 +1,18 @@
+n05_observations: 2
+n05_dense_scan_reassembled: yes
+geo01_scan_key_from_producer_idx: yes
+geo03_content_hash_present: yes
+c245_13_legacy_observations: 2
+c245_13_no_undefined_keys: yes
+c245_13_nothing_discarded: yes
+c245_10_legacy_enrichment_survives: yes
+geo04_divergent_content_no_inheritance: yes
+c245_12_stale_result_not_installed: yes
+c245_12_fresh_result_installed: yes
+c245_12_missing_scan_not_installed: yes
+geo04_stale_not_silently_assigned: yes
+geo03_fresh_matches_content: yes
+geo05_missing_is_explicit: yes
+c245_14_legacy_readable: yes
+c245_11_out_of_order_converges: yes
+== item 5 checks: sem BUG ==

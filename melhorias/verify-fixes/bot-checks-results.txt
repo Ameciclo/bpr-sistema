@@ -1,21 +1,22 @@
 ✅ Firebase conectado com sucesso
-🚀 Nova viagem iniciada: bpr-0a1111 - ride_10000
-♻️ Viagem ride_10000 já registrada - replay/concorrência ignorado
-✅ Viagem finalizada: ride_10000 - 1.5647956639071074km
-🚀 Nova viagem iniciada: bpr-0b2222 - ride_20000
-✅ Viagem finalizada: ride_20000 - 3.129572182077915km
-🚀 Nova viagem iniciada: bpr-0c3333 - ride_30000
-✅ Viagem finalizada: ride_30000 - 1.5647956639071074km
-🚀 Nova viagem iniciada: bpr-0c3333 - ride_30000
-♻️ Viagem ride_30000 já registrada - replay/concorrência ignorado
-🚀 Nova viagem iniciada: bpr-0c3333 - ride_30000
-♻️ Viagem ride_30000 já registrada - replay/concorrência ignorado
+🚀 Nova viagem iniciada: bpr-0a1111 - ride_session_v1_bpr-0a1111_1000-11
+♻️ Viagem ride_session_v1_bpr-0a1111_1000-11 já registrada - replay/concorrência ignorado
+✅ Viagem finalizada: ride_session_v1_bpr-0a1111_1000-11 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0b2222 - ride_session_v1_bpr-0b2222_2000-22
+✅ Viagem finalizada: ride_session_v1_bpr-0b2222_2000-22 - 3.129572182077915km
+🚀 Nova viagem iniciada: bpr-0c3333 - ride_session_v1_bpr-0c3333_3000-33
+✅ Viagem finalizada: ride_session_v1_bpr-0c3333_3000-33 - 1.5647956639071074km
+🚀 Nova viagem iniciada: bpr-0c3333 - ride_session_v1_bpr-0c3333_3000-33
+♻️ Viagem ride_session_v1_bpr-0c3333_3000-33 já registrada - replay/concorrência ignorado
+🚀 Nova viagem iniciada: bpr-0c3333 - ride_session_v1_bpr-0c3333_3000-33
+♻️ Viagem ride_session_v1_bpr-0c3333_3000-33 já registrada - replay/concorrência ignorado
 n11_ride_saved_once: yes
 n11_bike_rides_total: 1
-n11_public_total_rides_month: 1
+n11_public_total_rides: 1
 n11_month_total_rides: 1
 n04_duration_min_single_domain: 1
 n04_month_bucket_from_server_anchor: yes
+mes01_period_recorded: yes
 n11_first_summary_no_nan: yes
 n11_general_counters_after_first_summary: 2
 n11_repair_rides_total_once: yes

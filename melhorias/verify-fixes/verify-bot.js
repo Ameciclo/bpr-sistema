@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /*
- * Verificação nativa (host) — correções do BOT (N11, N04) da revalidação.
- * Executa o rideCalculator REAL (bot/src/services/rideCalculator.js) com um
- * adaptador local de RTDB que implementa a semântica de transação do
- * Firebase (abort = return undefined; reexecução sobre o valor atual).
+ * Verificação nativa (host) — correções do BOT (N11, N04) da revalidação +
+ * item 2/4 (M03/M04): rideCalculator REAL com adaptador local de RTDB que
+ * implementa a semântica de transação do Firebase (abort = return undefined).
  * Nenhum Firebase/Telegram real é contatado. Não substitui homologação.
  */
 const path = require("path");
@@ -85,13 +84,17 @@ const results = [];
 function result(name, v) { results.push(`${name}: ${v}`); }
 function check(name, ok) { result(name, ok ? "yes" : "no(BUG)"); }
 
+const PA = { latitude: -8.05, longitude: -34.88, accuracy: 20 };
+const PB = { latitude: -8.06, longitude: -34.89, accuracy: 20 }; // ~1,5 km
+
 (async () => {
   // ---------- N11/E07: duas finalizações concorrentes = UMA contribuição --
   {
     const bike = "bpr-0a1111";
-    rideCalculator.startRide(bike, 10000);
-    await rideCalculator.addPointToRide(bike, { latitude: -8.05, longitude: -34.88, accuracy: 20 }, 1000);
-    await rideCalculator.addPointToRide(bike, { latitude: -8.06, longitude: -34.89, accuracy: 20 }, 61000);
+    const origin = { sessionId: 1000, sessionSalt: 11, startMs: 10000 };
+    const rideId = rideCalculator.startRide(bike, origin);
+    await rideCalculator.addPointToRide(bike, PA, 1000);
+    await rideCalculator.addPointToRide(bike, PB, 61000);
 
     // Duas finalizações da MESMA viagem em concorrência (E07 da revalidação:
     // o par exists+set observava ausência nas duas e somava o contador 2×)
@@ -100,12 +103,12 @@ function check(name, ok) { result(name, ok ? "yes" : "no(BUG)"); }
       rideCalculator.finishRide(bike, Date.now()),
     ]);
 
-    const ride = mockDb._read(`rides/${bike}/ride_10000`);
+    const ride = mockDb._read(`rides/${bike}/${rideId}`);
     result("n11_ride_saved_once", ride !== null ? "yes" : "no(BUG)");
     const metrics = mockDb._read(`bikes/${bike}/metrics`) || {};
     result("n11_bike_rides_total", String(metrics.rides_total)); // esperado 1
     const stats = mockDb._read("public_stats") || {};
-    result("n11_public_total_rides_month", String(stats.total_rides_month)); // esperado 1
+    result("n11_public_total_rides", String(stats.total_rides)); // esperado 1
     const month = mockDb._read("public_stats/monthly") || {};
     const anyMonth = Object.values(month)[0] || {};
     result("n11_month_total_rides", String(anyMonth.total_rides)); // esperado 1
@@ -115,14 +118,19 @@ function check(name, ok) { result(name, ok ? "yes" : "no(BUG)"); }
     result("n04_month_bucket_from_server_anchor",
       Object.keys(month).length === 1 && !Object.keys(month)[0].startsWith("1970")
         ? "yes" : "no(BUG)");
+    // Item 4 (MES-01): período registrado na primeira persistência
+    check("mes01_period_recorded",
+      typeof ride.period_month === "string" && /^\d{4}-\d{2}$/.test(ride.period_month));
   }
 
   // ---------- N11/E08: primeiro resumo não gera NaN -----------------------
   {
     const bike = "bpr-0b2222";
-    rideCalculator.startRide(bike, 20000);
-    await rideCalculator.addPointToRide(bike, { latitude: -8.05, longitude: -34.88, accuracy: 20 }, 1000);
-    await rideCalculator.addPointToRide(bike, { latitude: -8.07, longitude: -34.90, accuracy: 20 }, 121000);
+    const origin = { sessionId: 2000, sessionSalt: 22, startMs: 20000 };
+    rideCalculator.startRide(bike, origin);
+    await rideCalculator.addPointToRide(bike, PA, 1000);
+    await rideCalculator.addPointToRide(bike,
+      { latitude: -8.07, longitude: -34.90, accuracy: 20 }, 121000);
 
     // Simula o banco com o pai public_stats JÁ existente (ramo monthly de
     // outro dado) mas SEM contadores gerais — o caso que gravava NaN
@@ -132,25 +140,26 @@ function check(name, ok) { result(name, ok ? "yes" : "no(BUG)"); }
 
     await rideCalculator.finishRide(bike, Date.now());
     const stats = mockDb._read("public_stats") || {};
-    const noNaN = Number.isFinite(stats.total_rides_month) &&
-      Number.isFinite(stats.km_month) &&
-      Number.isFinite(stats.co2_saved_month_g);
+    const noNaN = Number.isFinite(stats.total_rides) &&
+      Number.isFinite(stats.km_total) &&
+      Number.isFinite(stats.co2_saved_g);
     check("n11_first_summary_no_nan", noNaN);
-    result("n11_general_counters_after_first_summary", String(stats.total_rides_month));
+    result("n11_general_counters_after_first_summary", String(stats.total_rides));
   }
 
   // ---------- N11: agregação interrompida é reconciliável -----------------
   {
     const bike = "bpr-0c3333";
-    const pointA = { latitude: -8.05, longitude: -34.88, accuracy: 20 };
-    const pointB = { latitude: -8.06, longitude: -34.89, accuracy: 20 }; // ~1,5 km
+    const origin = { sessionId: 3000, sessionSalt: 33, startMs: 30000 };
     const rideStart = async () => {
-      rideCalculator.startRide(bike, 30000);
-      await rideCalculator.addPointToRide(bike, pointA, 1000);
-      await rideCalculator.addPointToRide(bike, pointB, 181000);
+      const rideId = rideCalculator.startRide(bike, origin);
+      if (!rideId) throw new Error("cenário de reparo: sem origem");
+      await rideCalculator.addPointToRide(bike, PA, 1000);
+      await rideCalculator.addPointToRide(bike, PB, 181000);
+      return rideId;
     };
 
-    await rideStart();
+    const rideId = await rideStart();
     const first = await rideCalculator.finishRide(bike, Date.now());
     if (!first) throw new Error("cenário de reparo: viagem inicial descartada");
 
@@ -167,7 +176,7 @@ function check(name, ok) { result(name, ok ? "yes" : "no(BUG)"); }
     check("n11_repair_rides_total_once",
       metrics.rides_total === 1); // nem 0 (esquecido) nem 2 (duplicado)
     check("n11_repair_public_total_once",
-      stats.total_rides_month === 1);
+      stats.total_rides === 1);
 
     // Replay adicional: nada duplica (token por viagem)
     await rideStart();
