@@ -13,7 +13,6 @@ private:
     unsigned long lastScan;
     
     void performWiFiScan();
-    float getBatteryVoltage();
 
 public:
     ScanningState(ConfigManager& configMgr, BufferManager& bufferMgr);

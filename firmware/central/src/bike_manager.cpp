@@ -7,6 +7,7 @@
 #include "buffer_manager.h"
 #include "config_credentials.h"
 #include "constants.h"
+#include "time_sync.h"
 
 extern BufferManager bufferManager;
 extern ConfigCredentials configCredentials;
@@ -15,23 +16,50 @@ extern ConfigCredentials configCredentials;
 static BikeStatusData bikeStatus;
 static BikeConfigData bikeConfigs;
 static std::map<String, bool> configChanged;
+static std::map<String, uint32_t> configAckedVersion;
 static bool dataLoaded = false;
 static bool configsLoaded = false;
+
+static int findBikeSlot(const BikeStatusData& data, const String& bikeId) {
+    uint32_t id = bikeIdToInt(bikeId);
+    if (id == 0) return -1;
+    for (int i = 0; i < data.bike_count; i++) {
+        if (data.bike_ids[i] == id) return i;
+    }
+    return -1;
+}
+
+static int findConfigSlot(const BikeConfigData& data, const String& bikeId) {
+    uint32_t id = bikeIdToInt(bikeId);
+    if (id == 0) return -1;
+    for (int i = 0; i < data.bike_count; i++) {
+        if (data.bike_ids[i] == id) return i; // F13: compara pelo ID canônico, não String(número)
+    }
+    return -1;
+}
 
 bool BikeManager::init()
 {
     Serial.println("💾 BikeManager::init() - Loading bike data and configs");
-    
+
     if (!loadData()) {
         Serial.println("⚠️ Failed to load bike data, using defaults");
     }
-    
+
     if (!loadBikeConfigs()) {
         Serial.println("⚠️ Failed to load bike configs, using defaults");
     }
-    
+
+    // F03: cadastro baixado do Firebase é a fonte de verdade de autorização
+    mergeFromRegistry();
+
     dataLoaded = true;
     return true;
+}
+
+bool BikeManager::isLoaded()
+{
+    return dataLoaded;
 }
 
 bool BikeManager::loadData()
@@ -54,16 +82,16 @@ bool BikeManager::loadData()
     size_t bytesRead = file.readBytes((char*)&bikeStatus, sizeof(BikeStatusData));
     file.close();
 
-    if (bytesRead != sizeof(BikeStatusData))
+    if (bytesRead != sizeof(BikeStatusData) || bikeStatus.bike_count > 10)
     {
-        Serial.printf("❌ Data size mismatch: %d != %d\n", bytesRead, sizeof(BikeStatusData));
+        Serial.printf("❌ Data size/count invalid: %d bytes, %d bikes\n", bytesRead, bikeStatus.bike_count);
+        memset(&bikeStatus, 0, sizeof(bikeStatus));
         return false;
     }
 
     dataLoaded = true;
     Serial.printf("✅ Bike data loaded: %d bikes\n", bikeStatus.bike_count);
 
-    // Log bikes por status
     int allowed = 0, pending = 0, blocked = 0, unknown = 0;
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
@@ -98,7 +126,74 @@ bool BikeManager::saveData()
         return false;
     }
 
-    Serial.println("💾 Bike data saved");
+    return true;
+}
+
+// F03: converte o cadastro baixado (bike_registry.bin) na lista operacional,
+// preservando telemetria local (bateria, últimos contatos)
+bool BikeManager::mergeFromRegistry()
+{
+    if (!LittleFS.exists(BIKE_REGISTRY_FILE))
+    {
+        return false;
+    }
+
+    File file = LittleFS.open(BIKE_REGISTRY_FILE, "r");
+    if (!file) return false;
+
+    BikeRegistryData registry;
+    size_t bytesRead = file.readBytes((char*)&registry, sizeof(registry));
+    file.close();
+
+    if (bytesRead != sizeof(registry) || registry.bike_count > 10)
+    {
+        Serial.println("❌ Bike registry invalid - not merging");
+        return false;
+    }
+
+    bool changed = false;
+    for (int r = 0; r < registry.bike_count; r++)
+    {
+        uint32_t id = registry.bikes[r];
+        if (id == 0) continue;
+
+        int slot = -1;
+        for (int i = 0; i < bikeStatus.bike_count; i++)
+        {
+            if (bikeStatus.bike_ids[i] == id) { slot = i; break; }
+        }
+
+        if (slot == -1)
+        {
+            if (bikeStatus.bike_count >= 10) break;
+            slot = bikeStatus.bike_count;
+            bikeStatus.bike_ids[slot] = id;
+            bikeStatus.created_at[slot] = registry.created_at[r];
+            bikeStatus.last_contacts[slot] = registry.last_seen[r];
+            bikeStatus.battery_levels[slot] = 0;
+            bikeStatus.bike_count++;
+        }
+        else
+        {
+            if (bikeStatus.created_at[slot] == 0) {
+                bikeStatus.created_at[slot] = registry.created_at[r];
+            }
+        }
+
+        uint8_t newStatus = registry.statuses[r];
+        if (bikeStatus.statuses[slot] != newStatus) {
+            bikeStatus.statuses[slot] = newStatus;
+        }
+        changed = true;
+    }
+
+    bikeStatus.last_update = registry.last_update;
+
+    if (changed) {
+        saveData();
+        Serial.printf("✅ Registry merged: %d bikes (%d in operational list)\n",
+                      registry.bike_count, bikeStatus.bike_count);
+    }
     return true;
 }
 
@@ -107,32 +202,26 @@ bool BikeManager::canConnect(const String &bikeId)
     if (!dataLoaded)
         return false;
 
-    // Verificar se é formato válido BPR
-    if (!bikeId.startsWith("bpr-") && !bikeId.startsWith("bike") && !bikeId.startsWith("intenso"))
+    if (!isValidBikeIdFormat(bikeId))
     {
         Serial.printf("❌ Invalid bike ID format: %s\n", bikeId.c_str());
         return false;
     }
 
-    // Procurar bike na struct (só bikes aprovadas estão aqui)
-    uint32_t bikeIntId = bikeIdToInt(bikeId);
-    for (int i = 0; i < bikeStatus.bike_count; i++)
+    int slot = findBikeSlot(bikeStatus, bikeId);
+    if (slot == -1)
     {
-        if (bikeStatus.bike_ids[i] == bikeIntId)
-        {
-            BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-            bool canConnect = (status == STATUS_ALLOWED);
-            
-            Serial.printf("🔍 Bike %s found in registry: %s\n",
-                          bikeId.c_str(), canConnect ? "✅ Can connect" : "❌ Blocked");
-            
-            return canConnect;
-        }
+        // F03: desconhecida entra no fluxo pending, não é autorizada a enviar
+        Serial.printf("❌ Bike %s not in registry - connection rejected\n", bikeId.c_str());
+        return false;
     }
 
-    // Bike não está no registry - rejeitar
-    Serial.printf("❌ Bike %s not in registry - connection rejected\n", bikeId.c_str());
-    return false;
+    BikeStatus status = (BikeStatus)bikeStatus.statuses[slot];
+    bool allowed = (status == STATUS_ALLOWED);
+
+    Serial.printf("🔍 Bike %s in registry: %s\n",
+                  bikeId.c_str(), allowed ? "✅ Can connect" : "❌ Not allowed");
+    return allowed;
 }
 
 bool BikeManager::isAllowed(const String &bikeId)
@@ -140,39 +229,39 @@ bool BikeManager::isAllowed(const String &bikeId)
     if (!dataLoaded)
         return false;
 
-    // Verificar se é formato válido
-    if (!bikeId.startsWith("bpr-") && !bikeId.startsWith("bike") && !bikeId.startsWith("intenso"))
-    {
+    if (!isValidBikeIdFormat(bikeId))
         return false;
-    }
 
-    // Procurar bike na struct (só bikes aprovadas)
-    uint32_t bikeIntId = bikeIdToInt(bikeId);
-    for (int i = 0; i < bikeStatus.bike_count; i++)
-    {
-        if (bikeStatus.bike_ids[i] == bikeIntId)
-        {
-            BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-            return (status == STATUS_ALLOWED);
-        }
-    }
+    int slot = findBikeSlot(bikeStatus, bikeId);
+    if (slot == -1)
+        return false;
 
-    return false; // Bike não está no registry
+    return (BikeStatus)bikeStatus.statuses[slot] == STATUS_ALLOWED;
+}
+
+bool BikeManager::isKnownBike(const String &bikeId)
+{
+    if (!dataLoaded)
+        return false;
+    return findBikeSlot(bikeStatus, bikeId) != -1;
 }
 
 void BikeManager::addPendingBike(const String &bikeId)
 {
+    if (!isValidBikeIdFormat(bikeId)) {
+        Serial.printf("❌ Cannot add pending bike with invalid id: %s\n", bikeId.c_str());
+        return;
+    }
+    if (findBikeSlot(bikeStatus, bikeId) != -1) {
+        return; // já conhecida
+    }
     if (bikeStatus.bike_count >= 10) {
         Serial.println("❌ Max bikes reached, cannot add new bike");
         return;
     }
 
     time_t now = time(nullptr);
-    struct tm timeinfo;
-    getLocalTime(&timeinfo);
-
-    char dateStr[64];
-    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+    if (now < 1000000000L) now = 0; // F20: sem horário válido, registra 0
 
     int index = bikeStatus.bike_count;
     bikeStatus.bike_ids[index] = bikeIdToInt(bikeId);
@@ -183,33 +272,31 @@ void BikeManager::addPendingBike(const String &bikeId)
     bikeStatus.bike_count++;
 
     saveData();
-    Serial.printf("📝 Bike %s added as pending (first seen: %s)\n", bikeId.c_str(), dateStr);
+    Serial.printf("📝 Bike %s added as pending\n", bikeId.c_str());
 }
 
-void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap, 
+void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap,
                                    uint16_t sessions, uint32_t bytes, uint32_t oldestTs, uint8_t bufferPercent)
 {
     if (!dataLoaded)
         return;
 
-    // Encontrar bike na struct
-    int bikeIndex = -1;
-    uint32_t bikeIntId = bikeIdToInt(bikeId);
-    for (int i = 0; i < bikeStatus.bike_count; i++)
-    {
-        if (bikeStatus.bike_ids[i] == bikeIntId)
-        {
-            bikeIndex = i;
-            break;
-        }
-    }
-
+    int bikeIndex = findBikeSlot(bikeStatus, bikeId);
     if (bikeIndex == -1)
         return;
 
     time_t now = time(nullptr);
+    if (now < 1000000000L) now = 0;
+
     bikeStatus.last_contacts[bikeIndex] = now;
     bikeStatus.battery_levels[bikeIndex] = battery;
+
+    // §6.6: persiste a cada 12 heartbeats para não perder contatos em reboot
+    static int persistCounter = 0;
+    if (++persistCounter >= 12) {
+        persistCounter = 0;
+        saveData();
+    }
 
     Serial.printf("💓 Heartbeat updated: %s (bat:%d%%, heap:%d, pending:%d sessions/%d bytes)\n",
                   bikeId.c_str(), battery, heap, sessions, bytes);
@@ -222,19 +309,19 @@ bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
 
     doc.clear();
 
-    // Só incluir bikes NOVAS (pending recentes)
+    time_t now = time(nullptr);
+    if (now < 1000000000L) return false;
+
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
         BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
         if (status == STATUS_PENDING && bikeStatus.created_at[i] > 0)
         {
             uint32_t firstSeen = bikeStatus.created_at[i];
-            uint32_t now = time(nullptr);
 
-            // Só incluir se foi vista há menos de 5 minutos
             if ((now - firstSeen) < 300)
             {
-                String bikeId = String(bikeStatus.bike_ids[i]);
+                String bikeId = intToBikeId(bikeStatus.bike_ids[i]);
                 JsonObject bikeObj = doc.createNestedObject(bikeId);
                 bikeObj["status"] = status;
                 bikeObj["first_seen"] = firstSeen;
@@ -254,8 +341,7 @@ int BikeManager::getAllowedCount()
     int count = 0;
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
-        BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-        if (status == STATUS_ALLOWED)
+        if ((BikeStatus)bikeStatus.statuses[i] == STATUS_ALLOWED)
             count++;
     }
     return count;
@@ -266,24 +352,14 @@ void BikeManager::recordPendingVisit(const String &bikeId)
     if (!dataLoaded)
         return;
 
-    // Encontrar bike na struct
-    int bikeIndex = -1;
-    uint32_t bikeIntId = bikeIdToInt(bikeId);
-    for (int i = 0; i < bikeStatus.bike_count; i++)
-    {
-        if (bikeStatus.bike_ids[i] == bikeIntId)
-        {
-            bikeIndex = i;
-            break;
-        }
-    }
-
-    if (bikeIndex == -1 || bikeStatus.statuses[bikeIndex] != STATUS_PENDING)
+    int bikeIndex = findBikeSlot(bikeStatus, bikeId);
+    if (bikeIndex == -1 || (BikeStatus)bikeStatus.statuses[bikeIndex] != STATUS_PENDING)
         return;
 
     time_t now = time(nullptr);
+    if (now < 1000000000L) now = 0;
     bikeStatus.last_contacts[bikeIndex] = now;
-    
+
     saveData();
     Serial.printf("📝 Pending bike %s visited\n", bikeId.c_str());
 }
@@ -296,8 +372,7 @@ int BikeManager::getPendingCount()
     int count = 0;
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
-        BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
-        if (status == STATUS_PENDING)
+        if ((BikeStatus)bikeStatus.statuses[i] == STATUS_PENDING)
             count++;
     }
     return count;
@@ -314,14 +389,13 @@ int BikeManager::getConnectedCount()
     if (!dataLoaded)
         return 0;
 
-    int count = 0;
     time_t now = time(nullptr);
+    if (now < 1000000000L) return 0; // F20: sem relógio válido não há como medir recência
 
+    int count = 0;
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
-        uint32_t lastSeen = bikeStatus.last_contacts[i];
-        // Considerar conectada se heartbeat foi há menos de 2 minutos
-        if ((now - lastSeen) < 120)
+        if ((now - bikeStatus.last_contacts[i]) < 120)
         {
             count++;
         }
@@ -347,10 +421,9 @@ void BikeManager::populateHeartbeatData(JsonArray &bikes_array)
         bikeData["battery_last"] = bikeStatus.battery_levels[i];
         bikeData["first_seen"] = bikeStatus.created_at[i];
 
-        uint32_t lastSeen = bikeStatus.last_contacts[i];
-        uint32_t timeSince = now - lastSeen;
+        uint32_t timeSince = (now > bikeStatus.last_contacts[i]) ? (now - bikeStatus.last_contacts[i]) : 0;
         bikeData["seconds_since_contact"] = timeSince;
-        bikeData["is_recent"] = (timeSince < 300); // < 5min
+        bikeData["is_recent"] = (timeSince < 300);
     }
 }
 
@@ -361,8 +434,22 @@ bool BikeManager::hasConfigUpdate(const String &bikeId)
 
 void BikeManager::markConfigSent(const String &bikeId)
 {
+    // F06: enviado ≠ confirmado; pendência só sai com ACK da bike
+    configChanged[bikeId] = true;
+    Serial.printf("📤 Config sent to %s - waiting for ACK\n", bikeId.c_str());
+}
+
+void BikeManager::markConfigAcked(const String &bikeId, uint32_t appliedVersion)
+{
     configChanged[bikeId] = false;
-    Serial.printf("✅ Config marked as sent for %s\n", bikeId.c_str());
+    configAckedVersion[bikeId] = appliedVersion;
+    Serial.printf("✅ Config ACK from %s (applied version %lu)\n", bikeId.c_str(), (unsigned long)appliedVersion);
+}
+
+uint32_t BikeManager::getAckedConfigVersion(const String &bikeId)
+{
+    auto it = configAckedVersion.find(bikeId);
+    return (it != configAckedVersion.end()) ? it->second : 0;
 }
 
 String BikeManager::getConfigForBike(const String &bikeId)
@@ -371,51 +458,52 @@ String BikeManager::getConfigForBike(const String &bikeId)
         Serial.printf("⚠️ Configs not loaded for %s\n", bikeId.c_str());
         return "";
     }
-    
-    // Encontrar bike nas configurações
-    for (int i = 0; i < bikeConfigs.bike_count; i++) {
-        if (bikeConfigs.bike_ids[i] == bikeIdToInt(bikeId)) {
-            DynamicJsonDocument doc(512);
-            doc["wifi"]["scan_interval_sec"] = bikeConfigs.scan_intervals[i];
-            doc["wifi"]["scan_timeout_ms"] = bikeConfigs.scan_timeouts[i];
-            doc["wifi"]["max_networks"] = bikeConfigs.max_networks[i];
-            doc["wifi"]["rssi_threshold"] = bikeConfigs.rssi_thresholds[i];
-            doc["power"]["deep_sleep_duration_sec"] = bikeConfigs.sleep_durations[i];
-            doc["ble"]["scan_time_sec"] = bikeConfigs.ble_scan_times[i];
-            doc["dev_mode"] = (bikeConfigs.dev_modes[i] == 1);
-            
-            String result;
-            serializeJson(doc, result);
-            return result;
-        }
+
+    int i = findConfigSlot(bikeConfigs, bikeId);
+    if (i == -1) {
+        Serial.printf("⚠️ No config found for %s\n", bikeId.c_str());
+        return "";
     }
-    
-    Serial.printf("⚠️ No config found for %s\n", bikeId.c_str());
-    return "";
+
+    // F06: envelope versionado com destinatário e versão por bike
+    DynamicJsonDocument doc(512);
+    doc["type"] = "config_push";
+    doc["bike_id"] = bikeId;
+    doc["config_version"] = bikeConfigs.config_versions[i];
+
+    JsonObject cfg = doc.createNestedObject("config");
+    cfg["wifi"]["scan_interval_sec"] = bikeConfigs.scan_intervals[i];
+    cfg["wifi"]["scan_timeout_ms"] = bikeConfigs.scan_timeouts[i];
+    cfg["wifi"]["max_networks"] = bikeConfigs.max_networks[i];
+    cfg["wifi"]["rssi_threshold"] = bikeConfigs.rssi_thresholds[i];
+    cfg["power"]["deep_sleep_duration_sec"] = bikeConfigs.sleep_durations[i];
+    cfg["ble"]["scan_time_sec"] = bikeConfigs.ble_scan_times[i];
+    cfg["dev_mode"] = (bikeConfigs.dev_modes[i] == 1);
+
+    String result;
+    serializeJson(doc, result);
+    return result;
 }
 
 String BikeManager::generateSystemHeartbeat()
 {
     if (!dataLoaded)
         return "";
-        
+
     DynamicJsonDocument heartbeat(CENTRAL_HEARTBEAT_BUFFER);
-    
-    uint32_t currentTime = millis() / 1000;
-    heartbeat["timestamp"] = currentTime;
-    heartbeat["uptime_sec"] = currentTime;
+
+    heartbeat["timestamp"] = time(nullptr);
+    heartbeat["uptime_sec"] = millis() / 1000;
     heartbeat["heap_free"] = ESP.getFreeHeap();
-    
-    // Popular dados das bikes
+
     JsonArray bikes_array = heartbeat.createNestedArray("bikes");
     populateHeartbeatData(bikes_array);
-    
-    // Estatísticas calculadas
+
     heartbeat["total_bikes"] = bikes_array.size();
     heartbeat["bikes_allowed"] = getAllowedCount();
     heartbeat["bikes_pending"] = getPendingCount();
     heartbeat["bikes_with_recent_contact"] = getConnectedCount();
-    
+
     String result;
     serializeJson(heartbeat, result);
     return result;
@@ -424,10 +512,10 @@ String BikeManager::generateSystemHeartbeat()
 void BikeManager::saveSystemHeartbeat()
 {
     String heartbeatData = generateSystemHeartbeat();
-    
+
     if (!heartbeatData.isEmpty()) {
         bufferManager.addConfigData("system_heartbeat", heartbeatData);
-        Serial.printf("💓 System heartbeat saved: %d allowed, %d pending, %d connected\n", 
+        Serial.printf("💓 System heartbeat saved: %d allowed, %d pending, %d connected\n",
                       getAllowedCount(), getPendingCount(), getConnectedCount());
     }
 }
@@ -435,48 +523,50 @@ void BikeManager::saveSystemHeartbeat()
 bool BikeManager::needsConfigUpdate(const String &bikeId, uint32_t bikeLastUpdate)
 {
     if (!configsLoaded) return false;
-    
-    // Compara com last_update geral das configs
-    return bikeConfigs.last_update > bikeLastUpdate;
+
+    int i = findConfigSlot(bikeConfigs, bikeId);
+    if (i == -1) return false;
+
+    // F13/F20: versão por bike, não um timestamp global
+    return bikeConfigs.config_versions[i] > bikeLastUpdate;
 }
 
-String BikeManager::confirmDataUpload(const String &bikeId)
+std::vector<String> BikeManager::getBikesWithUpdates()
 {
-    String result = BPRJsonHelper::createProceedResponse();
-    Serial.printf("✅ Data upload confirmed for %s - can clear buffer\n", bikeId.c_str());
-    return result;
+    std::vector<String> bikes;
+    for (auto& pair : configChanged) {
+        if (pair.second) {
+            bikes.push_back(pair.first);
+        }
+    }
+    return bikes;
 }
+
 // Getters simplificados para BikePairing
 uint32_t BikeManager::getPendingBytes(const String &bikeId)
 {
-    return 0; // Simplificado - não implementado
+    return 0;
 }
 
 uint16_t BikeManager::getPendingSessions(const String &bikeId)
 {
-    return 0; // Simplificado - não implementado
+    return 0;
 }
 
 uint8_t BikeManager::getBufferUsage(const String &bikeId)
 {
-    return 0; // Simplificado - não implementado
+    return 0;
 }
 
 bool BikeManager::isBatteryLow(const String &bikeId)
 {
     if (!dataLoaded)
         return false;
-    
-    // Encontrar bike na struct
-    for (int i = 0; i < bikeStatus.bike_count; i++)
-    {
-        if (bikeStatus.bike_ids[i] == bikeIdToInt(bikeId))
-        {
-            return bikeStatus.battery_levels[i] <= 25; // Bateria crítica <= 25%
-        }
-    }
-    
-    return false;
+
+    int i = findBikeSlot(bikeStatus, bikeId);
+    if (i == -1) return false;
+
+    return bikeStatus.battery_levels[i] <= 25;
 }
 
 bool BikeManager::loadBikeConfigs()
@@ -485,7 +575,7 @@ bool BikeManager::loadBikeConfigs()
     {
         Serial.println("📄 Bike configs not found, creating defaults");
         memset(&bikeConfigs, 0, sizeof(bikeConfigs));
-        bikeConfigs.last_update = time(nullptr);
+        bikeConfigs.last_update = 0;
         bikeConfigs.bike_count = 0;
         configsLoaded = true;
         return saveBikeConfigs();
@@ -501,9 +591,10 @@ bool BikeManager::loadBikeConfigs()
     size_t bytesRead = file.readBytes((char*)&bikeConfigs, sizeof(BikeConfigData));
     file.close();
 
-    if (bytesRead != sizeof(BikeConfigData))
+    if (bytesRead != sizeof(BikeConfigData) || bikeConfigs.bike_count > 10)
     {
-        Serial.printf("❌ Config size mismatch: %d != %d\n", bytesRead, sizeof(BikeConfigData));
+        Serial.printf("❌ Config size/count invalid: %d bytes, %d bikes\n", bytesRead, bikeConfigs.bike_count);
+        memset(&bikeConfigs, 0, sizeof(bikeConfigs));
         return false;
     }
 
@@ -530,102 +621,114 @@ bool BikeManager::saveBikeConfigs()
         return false;
     }
 
-    Serial.println("💾 Bike configs saved");
     return true;
+}
+
+// F13: lista real de bikes autorizadas (não IDs de exemplo)
+std::vector<String> BikeManager::getAllowedBikeIds()
+{
+    std::vector<String> ids;
+    if (!dataLoaded) return ids;
+
+    for (int i = 0; i < bikeStatus.bike_count; i++)
+    {
+        if ((BikeStatus)bikeStatus.statuses[i] == STATUS_ALLOWED)
+        {
+            ids.push_back(intToBikeId(bikeStatus.bike_ids[i]));
+        }
+    }
+    return ids;
 }
 
 bool BikeManager::downloadSingleBikeConfig(const String& bikeId)
 {
     HTTPClient http;
-    
-    // 1. Verificar se precisa atualizar
+
+    int slot = findConfigSlot(bikeConfigs, bikeId);
+    uint32_t localVersion = (slot != -1) ? bikeConfigs.config_versions[slot] : 0;
+
+    // 1. Verificar versão remota desta bike
     String timestampUrl = "/bases/" + configCredentials.getBaseId() + "/bike_configs/last_update/" + bikeId + ".json?auth=" + configCredentials.getFirebaseKey();
     String fullTimestampUrl = configCredentials.getFirebaseURL() + timestampUrl;
-    
+
     http.begin(fullTimestampUrl);
     int timestampCode = http.GET();
-    
+
     if (timestampCode == HTTP_CODE_OK) {
-        uint32_t remoteTimestamp = http.getString().toInt();
+        uint32_t remoteVersion = (uint32_t)http.getString().toInt();
         http.end();
-        
-        // Se já está atualizado, não baixar
-        if (remoteTimestamp <= bikeConfigs.last_update) {
-            Serial.printf("⏭️ Config %s already up to date\n", bikeId.c_str());
+
+        if (remoteVersion <= localVersion) {
+            Serial.printf("⏭️ Config %s already up to date (local %lu, remote %lu)\n",
+                          bikeId.c_str(), (unsigned long)localVersion, (unsigned long)remoteVersion);
             return true;
         }
     } else {
         http.end();
-        Serial.printf("⚠️ No timestamp for %s, downloading anyway\n", bikeId.c_str());
+        Serial.printf("⚠️ No version for %s, downloading anyway\n", bikeId.c_str());
     }
-    
+
     // 2. Baixar configuração
     String configUrl = "/bases/" + configCredentials.getBaseId() + "/bike_configs/" + bikeId + ".json?auth=" + configCredentials.getFirebaseKey();
     String fullConfigUrl = configCredentials.getFirebaseURL() + configUrl;
-    
+
     http.begin(fullConfigUrl);
     int configCode = http.GET();
-    
+
     if (configCode != HTTP_CODE_OK) {
         Serial.printf("❌ Failed to download config for %s: HTTP %d\n", bikeId.c_str(), configCode);
         http.end();
         return false;
     }
-    
+
     String arrayData = http.getString();
     http.end();
-    
-    // 3. Converter array JSON para CSV
-    // "[300,5000,20,-85,3600,5,0]" → "300,5000,20,-85,3600,5,0"
+
+    // 3. Converter array JSON para CSV: "[300,5000,20,-85,3600,5,0]"
     arrayData.replace("[", "");
     arrayData.replace("]", "");
-    
+
     // 4. Aplicar configuração
     bool success = updateBikeConfigFromCSV(bikeId, arrayData);
-    
+
     if (success) {
         Serial.printf("✅ Config downloaded for %s: %s\n", bikeId.c_str(), arrayData.c_str());
     }
-    
+
     return success;
 }
 
-bool BikeManager::updateBikeConfigFromCSV(const String& bikeId, const String& csvData)
+bool BikeManager::updateBikeConfigFromCSV(const String& bikeId, const String& csvData, uint32_t remoteVersion)
 {
     if (!configsLoaded) {
         Serial.println("⚠️ Configs not loaded, cannot update");
         return false;
     }
-    
-    // Encontrar slot para a bike ou criar novo
-    int bikeIndex = -1;
-    for (int i = 0; i < bikeConfigs.bike_count; i++) {
-        if (String(bikeConfigs.bike_ids[i]) == bikeId) {
-            bikeIndex = i;
-            break;
-        }
-    }
-    
-    // Se não encontrou e tem espaço, criar novo slot
+
+    // F13: slot pelo ID canônico (String(numérico) nunca dava match)
+    int bikeIndex = findConfigSlot(bikeConfigs, bikeId);
+
     if (bikeIndex == -1 && bikeConfigs.bike_count < 10) {
         bikeIndex = bikeConfigs.bike_count;
         bikeConfigs.bike_ids[bikeIndex] = bikeIdToInt(bikeId);
         bikeConfigs.bike_count++;
     }
-    
+
     if (bikeIndex == -1) {
         Serial.printf("❌ No space for bike %s\n", bikeId.c_str());
         return false;
     }
-    
+
+    BikeConfigData before = bikeConfigs;
+
     // Parse CSV: "300,5000,20,-85,3600,5,0"
     int index = 0;
     int startPos = 0;
-    
+
     while (startPos < csvData.length() && index < 7) {
         int commaPos = csvData.indexOf(',', startPos);
         String value = (commaPos == -1) ? csvData.substring(startPos) : csvData.substring(startPos, commaPos);
-        
+
         switch (index) {
             case 0: bikeConfigs.scan_intervals[bikeIndex] = value.toInt(); break;
             case 1: bikeConfigs.scan_timeouts[bikeIndex] = value.toInt(); break;
@@ -635,15 +738,27 @@ bool BikeManager::updateBikeConfigFromCSV(const String& bikeId, const String& cs
             case 5: bikeConfigs.ble_scan_times[bikeIndex] = value.toInt(); break;
             case 6: bikeConfigs.dev_modes[bikeIndex] = value.toInt(); break;
         }
-        
+
         if (commaPos == -1) break;
         startPos = commaPos + 1;
         index++;
     }
-    
-    // Atualizar timestamp
-    bikeConfigs.last_update = time(nullptr);
-    
-    Serial.printf("✅ Config updated for %s from CSV\n", bikeId.c_str());
-    return saveBikeConfigs();
+
+    // F20: versão remota por bike, não hora local
+    bikeConfigs.config_versions[bikeIndex] = remoteVersion;
+    bikeConfigs.last_update = remoteVersion;
+
+    bool valuesChanged = (memcmp(&before, &bikeConfigs, sizeof(BikeConfigData)) != 0);
+    if (valuesChanged) {
+        // F13: só há pendência real quando os valores mudaram
+        configChanged[bikeId] = true;
+    }
+
+    if (!saveBikeConfigs()) {
+        return false;
+    }
+
+    Serial.printf("✅ Config updated for %s from CSV (version %lu)\n",
+                  bikeId.c_str(), (unsigned long)remoteVersion);
+    return true;
 }

@@ -28,13 +28,13 @@ bool TimeSync::init() {
     if (now > 1000000000L) {
         ntpInitialized = true;
         lastNtpSync = now;
-        
+
         struct tm timeinfo;
-        getLocalTime(&timeinfo);
-        char timeStr[64];
-        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-        
-        Serial.printf("✅ NTP sync successful: %s\n", timeStr);
+        if (getLocalTime(&timeinfo, 100)) {
+            char timeStr[64];
+            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
+            Serial.printf("✅ NTP sync successful: %s\n", timeStr);
+        }
         return true;
     } else {
         Serial.println("❌ NTP sync failed");
@@ -48,12 +48,20 @@ time_t TimeSync::getCurrentTimestamp() {
 
 String TimeSync::getCurrentTimeString() {
     time_t now = time(nullptr);
+
+    // F20: sem NTP não existe tm válido para formatar
+    if (now < 1000000000L) {
+        return "NTP não sincronizado";
+    }
+
     struct tm timeinfo;
-    getLocalTime(&timeinfo);
-    
+    if (!getLocalTime(&timeinfo, 100)) {
+        return "NTP não sincronizado";
+    }
+
     char timeStr[64];
     strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S UTC-3", &timeinfo);
-    
+
     return String(timeStr);
 }
 

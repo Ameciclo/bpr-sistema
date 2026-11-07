@@ -1,6 +1,7 @@
-# Name,   Type, SubType, Offset,  Size, Flags
+# Layout 4 MiB (XIAO ESP32C3): app factory de 3 MiB + LittleFS de 960 KiB
+# F25: o binário da central (~1,9 MiB) não cabe no app default de 1,25 MiB.
+# Sem OTA: dois slots de 1,9+ MiB não caberiam em 4 MiB.
+# Name,   Type, SubType, Offset,  Size,     Flags
 nvs,      data, nvs,     0x9000,  0x5000,
-otadata,  data, ota,     0xe000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x300000,
-app1,     app,  ota_1,   0x310000,0x300000,
-spiffs,   data, spiffs,  0x610000,0x1F0000,
+app0,     app,  factory, 0x10000, 0x300000,
+spiffs,   data, spiffs,  0x310000,0xF0000,

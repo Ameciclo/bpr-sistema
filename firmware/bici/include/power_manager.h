@@ -25,7 +25,8 @@ public:
     
     // Reporting
     void logBatteryStatus();
-    String getBatteryReport(const BikeConfig& config);
+    String getHeartbeatReport(const BikeConfig& config, bool hasPendingData,
+                              uint16_t pendingScans = 0, size_t pendingBytes = 0);
     
 private:
     uint8_t lastBatteryPercent;

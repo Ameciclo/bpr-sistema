@@ -1,8 +1,23 @@
 #include <ArduinoJson.h>
 #include <NimBLEDevice.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include "bike_manager.h"
 #include "ble_server.h"
 #include "constants.h"
+
+// F11: fila de pushes — NimBLE 1.4.3 só notifica TODOS os assinantes; a entrega
+// direcionada é feita com envelope (bike_id) filtrado pela bike + pushes
+// serializados exclusivamente no contexto do loop (sem interleave setValue/notify)
+struct ConfigPushRequest {
+    char bikeId[16];
+    char payload[MAX_BLE_MESSAGE_SIZE + 8];
+};
+
+static QueueHandle_t pushQueue = nullptr;
+
+// F10: sentinela real — zero É um handle válido
+static const uint16_t INVALID_HANDLE = 0xFFFF;
 
 // Static members
 NimBLEServer *BPRBLEServer::pServer = nullptr;
@@ -25,8 +40,11 @@ BPRBLEServer::ConfigCallback BPRBLEServer::configCallback = nullptr;
 
 class ServerCallbacks : public NimBLEServerCallbacks
 {
+public:
+    // F12: instância única/reusada — não vaza a cada ciclo stop/start
     void onConnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
     {
+        // F10: handle 0 é válido; mapas aceitam qualquer handle
         uint16_t conn_handle = desc->conn_handle;
         NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
 
@@ -38,7 +56,6 @@ class ServerCallbacks : public NimBLEServerCallbacks
         // Store as unidentified with 10s timeout
         BPRBLEServer::connectedDevices[conn_handle] = "";
         BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000; // 10s timeout
-        Serial.printf("📝 Device connected: %s (10s to identify as BPR bike)\n", addr.toString().c_str());
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
@@ -48,11 +65,12 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
         uint16_t conn_handle = desc->conn_handle;
         String bikeId = "";
-        if (BPRBLEServer::connectedDevices.find(conn_handle) != BPRBLEServer::connectedDevices.end())
+        auto it = BPRBLEServer::connectedDevices.find(conn_handle);
+        if (it != BPRBLEServer::connectedDevices.end())
         {
-            bikeId = BPRBLEServer::connectedDevices[conn_handle];
-            BPRBLEServer::connectedDevices.erase(conn_handle);
-            BPRBLEServer::connectionTimeouts.erase(conn_handle); // Remove timeout
+            bikeId = it->second;
+            BPRBLEServer::connectedDevices.erase(it);
+            BPRBLEServer::connectionTimeouts.erase(conn_handle);
             Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), BPRBLEServer::connectedBikes);
         }
         else
@@ -62,7 +80,6 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
         NimBLEDevice::startAdvertising();
 
-        // Notificar via callback se registrado
         if (BPRBLEServer::disconnectCallback) {
             BPRBLEServer::disconnectCallback(bikeId);
         }
@@ -71,48 +88,48 @@ class ServerCallbacks : public NimBLEServerCallbacks
 
 class DataCallbacks : public NimBLECharacteristicCallbacks
 {
-    void onWrite(NimBLECharacteristic *pChar)
+public:
+    // F10: overload com descritor da conexão — sabe QUEM escreveu
+    void onWrite(NimBLECharacteristic *pChar, ble_gap_conn_desc *desc)
     {
         std::string value = pChar->getValue();
-        if (value.length() == 0 || value.length() > 2048) {
+        if (value.length() == 0 || value.length() > MAX_BLE_MESSAGE_SIZE) {
             Serial.printf("⚠️ Invalid data length: %d\n", value.length());
             return;
         }
-        
+
+        uint16_t conn_handle = desc->conn_handle;
+        if (BPRBLEServer::connectedDevices.find(conn_handle) == BPRBLEServer::connectedDevices.end())
+        {
+            // Escrita de conexão não registrada (ex.: após onConnect perdido)
+            BPRBLEServer::connectedDevices[conn_handle] = "";
+            BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000;
+        }
+
         DynamicJsonDocument doc(BIKE_DATA_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
 
         if (!error && doc["bike_id"])
         {
             String bikeId = doc["bike_id"];
-            
-            // Only accept devices with valid BPR bike_id format
+
             if (!bikeId.startsWith("bpr-")) {
                 Serial.printf("❌ Invalid device - not a BPR bike: %s\n", bikeId.c_str());
                 return;
             }
-            
-            // Find first available handle (simpler approach)
-            uint16_t conn_handle = 0;
-            for (auto &pair : BPRBLEServer::connectedDevices) {
-                if (pair.second.isEmpty() || pair.second == bikeId) {
-                    conn_handle = pair.first;
-                    break;
-                }
-            }
-            
-            if (conn_handle != 0) {
-                // Map bike to this connection handle and clear timeout
-                BPRBLEServer::connectedDevices[conn_handle] = bikeId;
-                BPRBLEServer::connectionTimeouts.erase(conn_handle); // Valid bike, remove timeout
-                Serial.printf("📝 Bike %s mapped to handle %d\n", bikeId.c_str(), conn_handle);
 
-                // Notificar via callback se registrado
+            // F10: mapeia o EMISSOR (handle do descritor), não um handle "vazio"
+            String previousId = BPRBLEServer::connectedDevices[conn_handle];
+            BPRBLEServer::connectedDevices[conn_handle] = bikeId;
+            BPRBLEServer::connectionTimeouts.erase(conn_handle); // identificada: sem timeout
+
+            if (previousId.isEmpty())
+            {
+                Serial.printf("📝 Bike %s identified on handle %d\n", bikeId.c_str(), conn_handle);
+                // F10: evento de chegada apenas UMA vez por conexão
                 if (BPRBLEServer::connectCallback) {
                     BPRBLEServer::connectCallback(bikeId);
                 }
-            } else {
-                Serial.printf("⚠️ Could not find handle for bike %s\n", bikeId.c_str());
             }
 
             // Delegate processing to callback
@@ -129,14 +146,15 @@ class DataCallbacks : public NimBLECharacteristicCallbacks
 
 class ConfigCallbacks : public NimBLECharacteristicCallbacks
 {
-    void onWrite(NimBLECharacteristic *pChar)
+public:
+    void onWrite(NimBLECharacteristic *pChar, ble_gap_conn_desc *desc)
     {
         std::string value = pChar->getValue();
-        if (value.length() == 0 || value.length() > 512) {
+        if (value.length() == 0 || value.length() > MAX_BLE_MESSAGE_SIZE) {
             Serial.printf("⚠️ Invalid config request length: %d\n", value.length());
             return;
         }
-        
+
         DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
 
@@ -156,12 +174,25 @@ class ConfigCallbacks : public NimBLECharacteristicCallbacks
 
 bool BPRBLEServer::start()
 {
+    // F12: idempotente — não recria serviço/características a cada ciclo pairing/sync
+    if (pServer)
+    {
+        Serial.println("🔵 BLE Server already running - ensuring advertising");
+        NimBLEDevice::startAdvertising();
+        return true;
+    }
+
     Serial.println("🔵 Starting BLE Server");
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);
     pServer = NimBLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks());
+    static ServerCallbacks serverCallbacksInstance;
+    pServer->setCallbacks(&serverCallbacksInstance);
+
+    if (!pushQueue) {
+        pushQueue = xQueueCreate(8, sizeof(ConfigPushRequest));
+    }
 
     pService = pServer->createService(BLE_SERVICE_UUID);
 
@@ -169,13 +200,15 @@ bool BPRBLEServer::start()
     pDataChar = pService->createCharacteristic(
         BLE_CHAR_DATA_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-    pDataChar->setCallbacks(new DataCallbacks());
+    static DataCallbacks dataCallbacksInstance;
+    pDataChar->setCallbacks(&dataCallbacksInstance);
 
     // Config characteristic
     pConfigChar = pService->createCharacteristic(
         BLE_CHAR_CONFIG_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
-    pConfigChar->setCallbacks(new ConfigCallbacks());
+    static ConfigCallbacks configCallbacksInstance;
+    pConfigChar->setCallbacks(&configCallbacksInstance);
 
     pService->start();
 
@@ -192,14 +225,20 @@ void BPRBLEServer::stop()
 {
     if (pServer)
     {
+        if (pushQueue) {
+            xQueueReset(pushQueue);
+        }
         pServer->getAdvertising()->stop();
-        NimBLEDevice::deinit(false);
+        // F12: cleanup COMPLETO — a 1.4.3 reusa o servidor interno se clearAll=false
+        // e createService() duplicaria o UUID; deinit(true) libera servidor/serviços
+        NimBLEDevice::deinit(true);
         pServer = nullptr;
         pService = nullptr;
         pDataChar = nullptr;
         pConfigChar = nullptr;
         connectedBikes = 0;
         connectedDevices.clear();
+        connectionTimeouts.clear();
         isBusy = false;
         busyUntil = 0;
     }
@@ -211,86 +250,103 @@ uint8_t BPRBLEServer::getConnectedBikes()
     return connectedBikes;
 }
 
-bool BPRBLEServer::isBikeConnected(const String &bikeId)
+uint16_t BPRBLEServer::getHandleForBike(const String& bikeId)
 {
-    for (auto &pair : connectedDevices) {
+    for (auto& pair : connectedDevices) {
         if (pair.second == bikeId) {
-            return true;
+            return pair.first;
         }
     }
-    return false;
+    return INVALID_HANDLE;
 }
 
-void BPRBLEServer::pushConfigToBike(const String &bikeId, const String &config)
+bool BPRBLEServer::isBikeConnected(const String& bikeId)
+{
+    return getHandleForBike(bikeId) != INVALID_HANDLE;
+}
+
+void BPRBLEServer::pushConfigToBike(const String& bikeId, const String& config)
 {
     if (!pConfigChar) return;
-    
-    // Encontrar handle da bike específica
-    uint16_t targetHandle = 0;
-    for (auto &pair : connectedDevices) {
-        if (pair.second == bikeId) {
-            targetHandle = pair.first;
-            break;
-        }
-    }
-    
-    if (targetHandle == 0) {
-        Serial.printf("❌ Bike %s not connected, cannot send config\n", bikeId.c_str());
+
+    if (config.length() > MAX_BLE_MESSAGE_SIZE) {
+        Serial.printf("⚠️ Payload too large for %s: %d bytes\n", bikeId.c_str(), config.length());
         return;
     }
-    
-    // Enviar config direcionada
-    sendConfigToHandle(targetHandle, bikeId, config);
+
+    ConfigPushRequest req;
+    strncpy(req.bikeId, bikeId.c_str(), sizeof(req.bikeId) - 1);
+    req.bikeId[sizeof(req.bikeId) - 1] = '\0';
+    strncpy(req.payload, config.c_str(), sizeof(req.payload) - 1);
+    req.payload[sizeof(req.payload) - 1] = '\0';
+
+    if (pushQueue && xQueueSend(pushQueue, &req, 0) != pdTRUE) {
+        Serial.printf("⚠️ Push queue full - dropping message for %s\n", bikeId.c_str());
+    }
 }
 
-void BPRBLEServer::sendConfigToHandle(uint16_t handle, const String &bikeId, const String &config)
+void BPRBLEServer::processPushQueue()
 {
-    if (!pConfigChar || handle == 0) {
+    if (!pConfigChar || !pushQueue) return;
+
+    ConfigPushRequest req;
+    while (xQueueReceive(pushQueue, &req, 0) == pdTRUE)
+    {
+        String bikeId = String(req.bikeId);
+        String payload = String(req.payload);
+
+        uint16_t handle = getHandleForBike(bikeId);
+        if (handle == INVALID_HANDLE)
+        {
+            // bike saiu entre o pedido e o envio: dados/ACK serão re-pedidos pela bike
+            Serial.printf("⚠️ %s no longer connected - dropping push\n", bikeId.c_str());
+            continue;
+        }
+
+        sendConfigToHandle(handle, bikeId, payload);
+    }
+}
+
+void BPRBLEServer::sendConfigToHandle(uint16_t handle, const String& bikeId, const String& config)
+{
+    if (!pConfigChar || handle == INVALID_HANDLE) {
         Serial.printf("❌ Invalid config char or handle for %s\n", bikeId.c_str());
         return;
     }
-    
+
     // Validate config size
-    if (config.length() > 800) {
+    if (config.length() > MAX_BLE_MESSAGE_SIZE) {
         Serial.printf("⚠️ Config too large for %s: %d bytes\n", bikeId.c_str(), config.length());
         return;
     }
-    
-    // Send config directly without wrapper to avoid corruption
+
+    // F11: notificação da 1.4.3 alcança todos os assinantes; o envelope bike_id
+    // permite à bike certa aplicar e às outras rejeitar
     pConfigChar->setValue(config.c_str());
-    pConfigChar->notify();
-    
+    pConfigChar->notify(true);
+
     Serial.printf("📤 Config sent to %s (handle %d): %d bytes\n", bikeId.c_str(), handle, config.length());
 }
 
-void BPRBLEServer::checkAndSendPendingConfig(const String &bikeId, uint16_t handle)
+void BPRBLEServer::checkAndSendPendingConfig(const String& bikeId, uint16_t handle)
 {
-    // Verificar se tem config pendente via bike_pairing
     if (BikeManager::hasConfigUpdate(bikeId)) {
         String config = BikeManager::getConfigForBike(bikeId);
         sendConfigToHandle(handle, bikeId, config);
         BikeManager::markConfigSent(bikeId);
-        
+
         Serial.printf("⚡ Immediate config sent to %s on connection\n", bikeId.c_str());
     } else {
         Serial.printf("📝 No pending config for %s\n", bikeId.c_str());
     }
 }
 
-void BPRBLEServer::forceDisconnectBike(const String &bikeId)
+void BPRBLEServer::forceDisconnectBike(const String& bikeId)
 {
     if (!pServer) return;
-    
-    // Encontrar handle da bike específica
-    uint16_t targetHandle = 0;
-    for (auto &pair : connectedDevices) {
-        if (pair.second == bikeId) {
-            targetHandle = pair.first;
-            break;
-        }
-    }
-    
-    if (targetHandle != 0) {
+
+    uint16_t targetHandle = getHandleForBike(bikeId);
+    if (targetHandle != INVALID_HANDLE) {
         pServer->disconnect(targetHandle);
         Serial.printf("🚫 Forced disconnect of bike %s (handle %d)\n", bikeId.c_str(), targetHandle);
     } else {
@@ -313,54 +369,47 @@ void BPRBLEServer::setBusyStatus(bool busy, uint32_t durationSeconds) {
         Serial.println("🔵 BLE Status: READY");
     }
     updateAdvertisingStatus();
-    
-    // Imprimir info do BLE após atualizar status
+
     printBLEInfo();
 }
 
 void BPRBLEServer::updateAdvertisingStatus() {
     if (!pServer) return;
-    
+
     // Check if busy period expired (but not if permanent)
     if (isBusy && busyUntil != UINT32_MAX && millis() > busyUntil) {
         isBusy = false;
         Serial.println("🔵 BLE BUSY period expired - back to READY");
     }
-    
-    // Only update advertising if status actually changed
+
     static bool lastBusyState = false;
     static uint32_t lastBusyUntil = 0;
-    
+
     if (isBusy == lastBusyState && busyUntil == lastBusyUntil) {
-        return; // No change, skip update
+        return;
     }
-    
+
     lastBusyState = isBusy;
     lastBusyUntil = busyUntil;
-    
+
     // Update device name based on status
     String deviceName;
     if (busyUntil == UINT32_MAX) {
-        deviceName = "BPR Central OFF";  // Permanent OFF mode
+        deviceName = "BPR Central OFF";
     } else if (isBusy) {
-        deviceName = "BPR Central BUSY"; // Temporary busy
+        deviceName = "BPR Central BUSY";
     } else {
-        deviceName = "BPR Central";      // Ready
+        deviceName = "BPR Central";
     }
-    
-    // Stop current advertising
-    pServer->getAdvertising()->stop();
-    
-    // Simpler approach: just restart advertising with setName
+
     NimBLEAdvertising *pAdvertising = pServer->getAdvertising();
-    
-    // Clear existing data and set new name
+    pAdvertising->stop();
     pAdvertising->reset();
     pAdvertising->setName(deviceName.c_str());
     pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
     pAdvertising->start();
-    
+
     Serial.printf("📡 BLE Advertising updated: %s\n", deviceName.c_str());
 }
 
@@ -390,7 +439,7 @@ bool BPRBLEServer::isCentralBusy() {
 void BPRBLEServer::printBLEInfo() {
     if (NimBLEDevice::getInitialized()) {
         Serial.printf("📱 BLE MAC Address: %s\n", NimBLEDevice::getAddress().toString().c_str());
-        
+
         if (NimBLEDevice::getAdvertising()->isAdvertising()) {
             Serial.println("✅ BLE Advertising is ACTIVE");
         } else {
@@ -403,30 +452,27 @@ void BPRBLEServer::printBLEInfo() {
 
 void BPRBLEServer::checkAdvertisingStatus() {
     if (!pServer) return;
-    
+
     if (NimBLEDevice::getAdvertising() && NimBLEDevice::getAdvertising()->isAdvertising()) {
         Serial.println("✅ BLE Advertising is still ACTIVE");
     } else {
         Serial.println("❌ BLE Advertising STOPPED! Restarting...");
-        setBusyStatus(true, 0); // Force restart
+        setBusyStatus(true, 0);
     }
 }
 
 void BPRBLEServer::checkConnectionTimeouts() {
     if (!pServer) return;
-    
+
     uint32_t now = millis();
     std::vector<uint16_t> toDisconnect;
-    
-    // Find expired connections
-    for (auto &pair : connectionTimeouts) {
+
+    for (auto& pair : connectionTimeouts) {
         if (now > pair.second) {
-            uint16_t handle = pair.first;
-            toDisconnect.push_back(handle);
+            toDisconnect.push_back(pair.first);
         }
     }
-    
-    // Disconnect expired devices
+
     for (uint16_t handle : toDisconnect) {
         Serial.printf("⏰ Disconnecting unidentified device (handle %d) - timeout\n", handle);
         pServer->disconnect(handle);

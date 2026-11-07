@@ -11,7 +11,8 @@ String bssidToString(const uint8_t* bssid) {
 String generateBikeId() {
     uint64_t chipId = ESP.getEfuseMac();
     uint32_t id = (uint32_t)(chipId & 0xFFFFFF);
+    // Hex cobre todo o espaço de 24 bits sem truncar (padrão do firmware/common/bpr_types.h)
     char buffer[12];
-    snprintf(buffer, sizeof(buffer), "bpr-%06u", id);
+    snprintf(buffer, sizeof(buffer), "bpr-%06x", id);
     return String(buffer);
 }

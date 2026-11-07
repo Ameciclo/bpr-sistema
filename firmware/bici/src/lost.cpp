@@ -16,23 +16,27 @@ BikeState LostState::update() {
         return STATE_SLEEP;
     }
     
-    // Try to find base every 5 seconds
-    static unsigned long lastSearch = 0;
-    if (millis() - lastSearch > 5000) {
-        // Simple BLE scan for base
-        NimBLEScan* pScan = NimBLEDevice::getScan();
-        pScan->setActiveScan(true);
-        NimBLEScanResults results = pScan->start(2, false);
-        
-        for (int i = 0; i < results.getCount(); i++) {
-            NimBLEAdvertisedDevice device = results.getDevice(i);
-            if (device.getName().find("BPR Central") != std::string::npos) {
-                Serial.println("✅ Found central - transitioning to AT_BASE");
-                pScan->clearResults();
-                searchStartTime = 0;
-                return STATE_AT_BASE;
+        // Try to find base every 5 seconds
+        static unsigned long lastSearch = 0;
+        if (millis() - lastSearch > 5000) {
+            // Simple BLE scan for base
+            NimBLEScan* pScan = NimBLEDevice::getScan();
+            pScan->setActiveScan(true);
+            NimBLEScanResults results = pScan->start(2, false);
+
+            for (int i = 0; i < results.getCount(); i++) {
+                NimBLEAdvertisedDevice device = results.getDevice(i);
+                const std::string name = device.getName();
+                // F24: só centrais prontas; BUSY/OFF não são alvo
+                if (name.find(configManager.getConfig().ble.base_name) == 0 &&
+                    name.find("BUSY") == std::string::npos &&
+                    name.find("OFF") == std::string::npos) {
+                    Serial.println("✅ Found central - transitioning to AT_BASE");
+                    pScan->clearResults();
+                    searchStartTime = 0;
+                    return STATE_AT_BASE;
+                }
             }
-        }
         
         pScan->clearResults();
         lastSearch = millis();

@@ -1,0 +1,6 @@
+# Layout 4 MiB (XIAO ESP32C3): app factory de 3 MiB + LittleFS de 960 KiB
+# F25: margem de crescimento (o app default de 1,25 MiB estava em ~93%).
+# Name,   Type, SubType, Offset,  Size,     Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+app0,     app,  factory, 0x10000, 0x300000,
+spiffs,   data, spiffs,  0x310000,0xF0000,

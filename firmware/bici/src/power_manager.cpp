@@ -2,8 +2,8 @@
 #include "constants.h"
 #include <esp_sleep.h>
 
-PowerManager::PowerManager() : lastBatteryPercent(100), lastBatteryRead(0), 
-                               emergencyMode(false), emergencyModeStart(0) {}
+PowerManager::PowerManager() : lastBatteryPercent(100), lastBatteryRead(0),
+                               lastVoltage(4.0), emergencyMode(false), emergencyModeStart(0) {}
 
 uint8_t PowerManager::getBatteryPercent() {
     float voltage = getBatteryVoltage();
@@ -86,13 +86,23 @@ void PowerManager::logBatteryStatus() {
                   charging ? "⚡CHARGING" : "");
 }
 
-String PowerManager::getBatteryReport(const BikeConfig& config) {
-    DynamicJsonDocument doc(256);
+String PowerManager::getHeartbeatReport(const BikeConfig& config, bool hasPendingData, uint16_t pendingScans, size_t pendingBytes) {
+    DynamicJsonDocument doc(384);
+    doc["type"] = "heartbeat";
+    doc["bike_id"] = config.bike_id;
+    doc["config_version"] = config.version;
+    doc["last_update"] = config.version;
     doc["battery_percent"] = getBatteryPercent();
     doc["battery_voltage"] = getBatteryVoltage();
     doc["is_charging"] = isBatteryCharging();
     doc["heap"] = ESP.getFreeHeap();
-    
+    doc["uptime_sec"] = millis() / 1000;
+
+    JsonObject pending = doc.createNestedObject("pending_data");
+    pending["sessions_count"] = hasPendingData ? 1 : 0;
+    pending["scans_count"] = pendingScans;
+    pending["total_bytes"] = (uint32_t)pendingBytes;
+
     String result;
     serializeJson(doc, result);
     return result;

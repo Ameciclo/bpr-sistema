@@ -17,6 +17,7 @@ public:
     // Data endpoints
     static String getHeartbeat();
     static String getBufferData();
+    static String getBufferDataBatch(const String& batchKey);
     
 private:
     static String buildUrl(const String& path);

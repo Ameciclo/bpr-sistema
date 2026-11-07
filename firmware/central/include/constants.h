@@ -18,12 +18,16 @@
 // Small buffers for minimal operations
 #define BLE_COMMAND_BUFFER 256         // Simple BLE commands
 #define HEARTBEAT_BUFFER 512           // Heartbeat responses
-#define BIKE_DATA_BUFFER 1024          // Bike data parsing
+#define BIKE_DATA_BUFFER 1024          // Bike data parsing (fragmento <= 512)
 #define CONFIG_VERSION_BUFFER 256      // Version checking
 #define BIKE_REGISTRY_BUFFER 2048      // Bike registry data
 #define CENTRAL_HEARTBEAT_BUFFER 512   // Central heartbeat
 #define BUFFER_PERSISTENCE_BUFFER 4096 // Buffer persistence
 #define STATUS_RESPONSE_BUFFER 512     // Status response buffer
+
+// BLE transfer (F04): limites alinhados com a bike e com o GATT (512)
+#define MAX_BLE_MESSAGE_SIZE 512
+#define MAX_ITEM_DATA_SIZE 512
 
 // Timing constants (ms)
 #define WIFI_TIMEOUT_DEFAULT 30000
@@ -38,10 +42,15 @@
 #define LED_COUNT_INTERVAL 300
 #define LED_COUNT_PAUSE 2000
 
-// Buffer limits
-#define MAX_BUFFER_SIZE 8000
+// Buffer limits — derivados da capacidade real: 10 bikes x 10 itens (F17)
 #define MAX_BIKES 10
+#define MAX_ITEMS_PER_BIKE 10
+#define MAX_TOTAL_ITEMS (MAX_BIKES * MAX_ITEMS_PER_BIKE)
+#define MAX_BUFFER_SIZE MAX_TOTAL_ITEMS // compat: capacidade total de itens
 #define MINIMAL_FREE_FS_SPACE 20480
+
+// Upload batching (F18/F19)
+#define UPLOAD_BATCH_MAX_ITEMS 4
 
 // Buffer sync thresholds
 #define BUFFER_SYNC_THRESHOLD_PERCENT 80

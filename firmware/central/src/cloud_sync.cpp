@@ -1,4 +1,5 @@
 #include <ArduinoJson.h>
+#include <CRC32.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -28,13 +29,21 @@ SyncResult CloudSync::enter()
     Serial.println("📡 Entering CLOUD_SYNC mode");
     syncStartTime = millis();
 
-    // BLE já está marcado como BUSY pelo bike_pairing::exit()
-    // Não precisamos parar o BLE
-
     syncInProgress = true;
     currentResult = SyncResult::IN_PROGRESS;
 
     return currentResult;
+}
+
+// F14: reinicia a operação de sync explicitamente (changeState no-op não reinicia)
+void CloudSync::retry()
+{
+    if (!syncInProgress)
+    {
+        Serial.println("🔄 CloudSync retry armed");
+        syncInProgress = true;
+        currentResult = SyncResult::IN_PROGRESS;
+    }
 }
 
 SyncResult CloudSync::update()
@@ -51,12 +60,15 @@ SyncResult CloudSync::update()
         WiFi.disconnect(true);
         syncInProgress = false;
         currentResult = SyncResult::FAILURE;
-        Serial.println("❌ Sync failed");
         return currentResult;
     }
 
-    // Sync horário
-    TimeSync::init();
+    // F20: resultado do NTP é verificado; sem relógio os timestamps saem como 0/flag
+    bool timeOk = TimeSync::init();
+    if (!timeOk)
+    {
+        Serial.println("⚠️ NTP indisponível - dados serão carimbados com flag timestamp_valid=false");
+    }
 
     // UPLOADS (dados locais -> Firebase)
     if (!uploadBufferData())
@@ -113,7 +125,6 @@ SyncResult CloudSync::update()
         Serial.println("✅ First sync completed - flag updated");
     }
 
-    // Sucesso - finalizar sync (WiFi será desconectado no exit())
     syncInProgress = false;
     currentResult = SyncResult::SUCCESS;
     Serial.println("✅ Sync complete");
@@ -158,7 +169,8 @@ bool CloudSync::connectWiFi()
     return true;
 }
 
-bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate, const String &componentName)
+// F20: retorna a versão remota para o chamador guardar (não a hora local)
+static bool fetchRemoteVersion(const String &url, uint32_t &remoteVersion)
 {
     HTTPClient http;
     http.begin(url);
@@ -166,36 +178,50 @@ bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate,
 
     if (httpCode != HTTP_CODE_OK)
     {
-        Serial.printf("⚠️ %s last_update check failed: HTTP %d\n", componentName.c_str(), httpCode);
         http.end();
-        return true; // Se falhar, baixa por segurança
+        return false;
     }
 
     String response = http.getString();
     http.end();
 
-    uint32_t remoteLastUpdate = response.toInt();
+    remoteVersion = (uint32_t)response.toInt();
+    return true;
+}
+
+bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate,
+                                    const String &componentName, uint32_t *remoteOut)
+{
+    uint32_t remoteLastUpdate = 0;
+    if (!fetchRemoteVersion(url, remoteLastUpdate))
+    {
+        Serial.printf("⚠️ %s last_update check failed - downloading for safety\n", componentName.c_str());
+        if (remoteOut) *remoteOut = 0;
+        return true; // Se falhar, baixa por segurança
+    }
+
     bool needsUpdate = (remoteLastUpdate > localLastUpdate);
 
-    Serial.printf("📋 %s last_update check: local=%d, remote=%d -> %s\n",
-                  componentName.c_str(), localLastUpdate, remoteLastUpdate,
-                  needsUpdate ? "UPDATE NEEDED" : "UP TO DATE");
+    Serial.printf("📋 %s version check: local=%lu, remote=%lu -> %s\n",
+                  componentName.c_str(), (unsigned long)localLastUpdate,
+                  (unsigned long)remoteLastUpdate, needsUpdate ? "UPDATE NEEDED" : "UP TO DATE");
 
+    if (remoteOut) *remoteOut = remoteLastUpdate;
     return needsUpdate;
 }
 
-bool CloudSync::needsConfigUpdate()
+bool CloudSync::needsConfigUpdate(uint32_t *remoteVersion)
 {
     const CentralConfig &config = configManager.getConfig();
-    return checkLastUpdateTime(Endpoints::getConfigVersion(), config.last_update, "Config");
+    return checkLastUpdateTime(Endpoints::getConfigVersion(), config.last_update, "Config", remoteVersion);
 }
 
-bool CloudSync::needsBikeRegistryUpdate()
+bool CloudSync::needsBikeRegistryUpdate(uint32_t *remoteVersion)
 {
-    // Ler last_update do arquivo local bike_registry.bin
     if (!LittleFS.exists(BIKE_REGISTRY_FILE))
     {
         Serial.println("📋 No local bike registry - needs download");
+        if (remoteVersion) *remoteVersion = 0;
         return true;
     }
 
@@ -214,21 +240,14 @@ bool CloudSync::needsBikeRegistryUpdate()
         return true;
     }
 
-    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), registry.last_update, "Bike registry");
+    return checkLastUpdateTime(Endpoints::getBikeRegistryVersion(), registry.last_update, "Bike registry", remoteVersion);
 }
 
-bool CloudSync::needsBikeConfigsUpdate()
-{
-    // Com download individual, sempre verificar se há bikes para atualizar
-    return (BikeManager::getConnectedCount() > 0);
-}
-
-void CloudSync::updateConfigFromFirebase(const String &csvData)
+void CloudSync::updateConfigFromFirebase(const String &csvData, uint32_t remoteVersion)
 {
     Serial.println("🔄 Updating config from Firebase CSV...");
 
-    // Usar updateFromCSV que já existe no ConfigManager
-    if (configManager.updateFromCSV(csvData))
+    if (configManager.updateFromCSV(csvData, remoteVersion))
     {
         Serial.println("✅ Config updated from Firebase CSV and saved locally");
     }
@@ -240,8 +259,10 @@ void CloudSync::updateConfigFromFirebase(const String &csvData)
 
 bool CloudSync::downloadCentralConfig()
 {
+    uint32_t remoteVersion = 0;
+
     // Verificar se precisa atualizar antes de baixar
-    if (!needsConfigUpdate())
+    if (!needsConfigUpdate(&remoteVersion))
     {
         Serial.println("📋 Config already up to date - skipping download");
         return true;
@@ -250,12 +271,11 @@ bool CloudSync::downloadCentralConfig()
     HTTPClient http;
     String url = Endpoints::getCentralConfig();
 
-    Serial.printf("🔄 Downloading central config from Firebase...\n");
+    Serial.println("🔄 Downloading central config from Firebase...");
 
     http.begin(url);
     int httpCode = http.GET();
 
-    // Early return se HTTP falhar
     if (httpCode != HTTP_CODE_OK)
     {
         Serial.printf("🚨 Central config download failed: HTTP %d\n", httpCode);
@@ -263,28 +283,30 @@ bool CloudSync::downloadCentralConfig()
         return false;
     }
 
-    // HTTP OK - processar resposta JSON array
     String jsonArray = http.getString();
     http.end();
 
     // Converter JSON array para CSV: [90,60,15,...] -> 90,60,15,...
     jsonArray.replace("[", "");
     jsonArray.replace("]", "");
-    
-    // Aplicar configuração válida
-    updateConfigFromFirebase(jsonArray);
 
-    // Sucesso
-    Serial.printf("✅ Central config downloaded successfully\n");
+    // F20: guarda a VERSÃO REMOTA, não millis()/1000
+    updateConfigFromFirebase(jsonArray, remoteVersion);
+
+    Serial.printf("✅ Central config downloaded (version %lu)\n", (unsigned long)remoteVersion);
     Serial.printf("   Sync interval: %d seconds\n", configManager.getConfig().intervals.sync_sec);
     return true;
 }
 
 bool CloudSync::downloadBikeRegistryData()
 {
-    if (!needsBikeRegistryUpdate())
+    uint32_t remoteVersion = 0;
+
+    if (!needsBikeRegistryUpdate(&remoteVersion))
     {
         Serial.println("🚲 Bike registry already up to date - skipping download");
+        // F03: merge também no caminho "atualizado" (reboot precisa aplicar o arquivo local)
+        BikeManager::mergeFromRegistry();
         return true;
     }
 
@@ -306,26 +328,28 @@ bool CloudSync::downloadBikeRegistryData()
     String csvData = http.getString();
     http.end();
 
-    // Parse JSON array: ["bike01",2,"AA:BB:CC:DD:EE:01",1733400000,1733459000,"bike02",2,"AA:BB:CC:DD:EE:02",1733400000,1733458000]
     BikeRegistryData registry;
     memset(&registry, 0, sizeof(registry));
-    registry.last_update = time(nullptr);
-    
-    // Remove brackets and quotes
+
+    // F20: versão remota como last_update (era hora local do download)
+    registry.last_update = remoteVersion;
+
+    // Parse JSON array: ["bpr-XXXXXX",2,"AA:BB:CC:DD:EE:01",ts1,ts2, ...]
     csvData.replace("[", "");
     csvData.replace("]", "");
-    csvData.replace("\"", ""); // Remove quotes
-    
+    csvData.replace("\"", "");
+    csvData.replace(" ", "");
+
     int bikeIndex = 0;
     int startPos = 0;
     int fieldIndex = 0;
-    
-    while (startPos < csvData.length() && bikeIndex < 10) {
+
+    while (startPos < (int)csvData.length() && bikeIndex < 10) {
         int commaPos = csvData.indexOf(',', startPos);
         String value = (commaPos == -1) ? csvData.substring(startPos) : csvData.substring(startPos, commaPos);
-        
+
         switch (fieldIndex % 5) {
-            case 0: // bike_id
+            case 0: // bike_id (formato bpr-XXXXXX hex)
                 registry.bikes[bikeIndex] = bikeIdToInt(value);
                 break;
             case 1: // status
@@ -339,25 +363,33 @@ bool CloudSync::downloadBikeRegistryData()
                 break;
             case 4: // last_seen
                 registry.last_seen[bikeIndex] = value.toInt();
-                bikeIndex++; // Próxima bike
+                bikeIndex++;
                 break;
         }
-        
+
         if (commaPos == -1) break;
         startPos = commaPos + 1;
         fieldIndex++;
     }
-    
+
     registry.bike_count = bikeIndex;
 
-    // Save binary struct
     File file = LittleFS.open(BIKE_REGISTRY_FILE, "w");
     if (file)
     {
-        file.write((uint8_t*)&registry, sizeof(registry));
+        size_t written = file.write((uint8_t*)&registry, sizeof(registry));
         file.close();
+        if (written != sizeof(registry))
+        {
+            Serial.println("❌ Bike registry write failed");
+            LittleFS.remove(BIKE_REGISTRY_FILE);
+            return false;
+        }
         Serial.println("💾 Bike registry saved locally");
     }
+
+    // F03: cadastro baixado alimenta a autorização operacional imediatamente
+    BikeManager::mergeFromRegistry();
 
     Serial.printf("✅ Bike registry downloaded: %d bikes\n", bikeIndex);
     return true;
@@ -365,69 +397,109 @@ bool CloudSync::downloadBikeRegistryData()
 
 bool CloudSync::downloadBikeConfigs()
 {
-    // Download individual otimizado para ESP32C3
     Serial.println("🔄 Downloading bike configs individually...");
-    
-    // Baixar apenas para bikes conectadas (economia de RAM)
-    int connectedCount = BikeManager::getConnectedCount();
-    if (connectedCount == 0) {
-        Serial.println("📝 No bikes connected - skipping config download");
+
+    // F03/F13: lista REAL de bikes autorizadas (registry já mesclado acima)
+    if (!BikeManager::isLoaded())
+    {
+        // primeiro sync ocorre antes do pairing: carrega status/configs/registry agora
+        BikeManager::init();
+    }
+
+    std::vector<String> allowedBikes = BikeManager::getAllowedBikeIds();
+    if (allowedBikes.empty())
+    {
+        Serial.println("📝 No allowed bikes in registry - skipping config download");
         return true;
     }
-    
-    // TODO: Implementar lista de bikes conectadas
-    // Por enquanto, tentar baixar configs de exemplo
-    String testBikes[] = {"bpr-012345", "bpr-123456", "bpr-234567"};
+
     int successCount = 0;
-    
-    for (int i = 0; i < 3; i++) {
-        if (BikeManager::downloadSingleBikeConfig(testBikes[i])) {
+    for (const String& bikeId : allowedBikes)
+    {
+        if (BikeManager::downloadSingleBikeConfig(bikeId)) {
             successCount++;
         }
-        
-        // Pequeno delay para não sobrecarregar
         delay(100);
     }
-    
-    Serial.printf("✅ Downloaded configs for %d/%d bikes\n", successCount, 3);
-    return (successCount > 0); // Sucesso se pelo menos 1 config foi baixada
+
+    Serial.printf("✅ Downloaded/checked configs for %d/%d allowed bikes\n",
+                  successCount, (int)allowedBikes.size());
+    return true; // sem configs para uma bike não derruba o sync inteiro
+}
+
+// F19: lotes imutáveis com chave estável — retries não duplicam histórico
+static String computeBatchKey(const String &jsonString)
+{
+    CRC32 crc;
+    crc.update((uint8_t*)jsonString.c_str(), jsonString.length());
+    uint32_t checksum = crc.finalize();
+
+    time_t now = time(nullptr);
+    if (now < 1000000000L) now = millis() / 1000;
+
+    char key[32];
+    snprintf(key, sizeof(key), "%lu-%08lx", (unsigned long)now, (unsigned long)checksum);
+    return String(key);
 }
 
 bool CloudSync::uploadBufferData()
 {
-    DynamicJsonDocument doc(4096);
+    int totalBatches = 0;
+    const int maxBatches = MAX_TOTAL_ITEMS + 8; // guard contra loop se persistência falhar
 
-    // Early return se não há dados
-    if (!bufferManager.getDataForUpload(doc))
+    // F18: sobe em lotes medidos; só confirma o que efetivamente subiu
+    while (totalBatches < maxBatches)
+    {
+        DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
+        int items = bufferManager.getDataForUpload(doc, UPLOAD_BATCH_MAX_ITEMS);
+        if (items == 0)
+        {
+            break;
+        }
+
+        String jsonString;
+        serializeJson(doc, jsonString);
+
+        String batchKey = computeBatchKey(jsonString);
+        String url = Endpoints::getBufferDataBatch(batchKey);
+
+        HTTPClient http;
+        http.begin(url);
+        http.addHeader("Content-Type", "application/json");
+
+        int httpCode = http.PATCH(jsonString);
+        http.end();
+
+        if (httpCode != HTTP_CODE_OK)
+        {
+            Serial.printf("❌ Buffer upload failed: HTTP %d (batch %s)\n", httpCode, batchKey.c_str());
+            Serial.printf("   URL: %s\n", url.c_str());
+            bufferManager.rollbackUpload();
+            return false;
+        }
+
+        Serial.printf("📤 Batch %s uploaded: %d items, %d bytes\n",
+                      batchKey.c_str(), items, jsonString.length());
+        totalBatches++;
+    }
+
+    if (totalBatches == 0)
     {
         Serial.println("📝 No buffer data to upload");
-        return true; // Não ter dados não é erro
+        return true;
     }
 
-    HTTPClient http;
-    String url = Endpoints::getBufferData();
-
-    http.begin(url);
-    http.addHeader("Content-Type", "application/json");
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    int httpCode = http.PATCH(jsonString);
-
-    // Early return se falhar
-    if (httpCode != HTTP_CODE_OK)
+    if (totalBatches >= maxBatches)
     {
-        Serial.printf("❌ Buffer upload failed: HTTP %d\n", httpCode);
-        Serial.printf("   URL: %s\n", url.c_str());
-        http.end();
-        return false;
+        // Persistência da marcação uploaded não avançou — não confirma, tenta no próximo sync
+        Serial.println("⚠️ Batch limit reached - not confirming this round");
+        bufferManager.rollbackUpload();
+        return true;
     }
 
-    // Sucesso
+    // Só agora, com TODOS os lotes confirmados, limpa o que foi enviado
     bufferManager.markAsConfirmed();
-    Serial.printf("📤 Buffer data uploaded: %d bytes\n", jsonString.length());
-    http.end();
+    Serial.printf("📤 Upload complete: %d batches\n", totalBatches);
     return true;
 }
 
@@ -437,8 +509,12 @@ bool CloudSync::uploadHeartbeat()
 
     String url = Endpoints::getHeartbeat();
 
+    time_t now = time(nullptr);
+    if (now < 1000000000L) now = 0; // F20: sem NTP, não inventa Unix time
+
     DynamicJsonDocument doc(HEARTBEAT_BUFFER);
-    doc["timestamp"] = time(nullptr);
+    doc["timestamp"] = now;
+    doc["timestamp_valid"] = (now > 0);
     doc["bikes_connected"] = BikeManager::getConnectedCount();
     doc["heap"] = ESP.getFreeHeap();
     doc["uptime"] = millis() / 1000;
@@ -462,7 +538,6 @@ bool CloudSync::uploadHeartbeat()
     {
         Serial.printf("❌ Heartbeat falhou: HTTP %d\n", httpCode);
         Serial.printf("   URL: %s\n", url.c_str());
-        Serial.printf("   Payload: %s\n", jsonString.c_str());
     }
 
     http.end();

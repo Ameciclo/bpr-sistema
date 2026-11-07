@@ -94,55 +94,59 @@ bool ConfigManager::saveConfig()
 bool ConfigManager::isConfigValid()
 {
     bool valid = true;
-    
-    if (config.intervals.sync_sec == 0) valid = false;
-    if (config.timeouts.wifi_sec == 0) valid = false;
-    if (config.limits.max_bikes == 0) valid = false;
-    
+
+    if (config.intervals.sync_sec == 0 || config.intervals.sync_sec > 86400) valid = false;
+    if (config.timeouts.wifi_sec == 0 || config.timeouts.wifi_sec > 600) valid = false;
+    if (config.limits.max_bikes == 0 || config.limits.max_bikes > 10) valid = false;
+    // §6.3: durações de LED zero entram em módulo/divisão — rejeitar
+    if (config.led.count_pause_ms == 0) valid = false;
+    if (config.fallback.max_failures == 0) valid = false;
+    if (config.timeouts.pairing_busy_ms == 0) valid = false;
+
     if (valid) {
         Serial.println("✅ Config válida");
     } else {
         Serial.println("❌ Config inválida");
     }
-    
+
     return valid;
 }
 
-bool ConfigManager::updateFromCSV(const String& csvData)
+bool ConfigManager::updateFromCSV(const String& csvData, uint32_t remoteVersion)
 {
     // Parse CSV: "90,60,15,30,60,10000,15,100,2000,500,50,300,1500,150,800,10,8000,5,30,3,300,50,80,5,256,1,64,20,10,0.5,1,24"
-    
+
     // Backup config atual
     CentralConfig backup = config;
-    
+
     // Parse CSV values
     int index = 0;
     int startPos = 0;
     int commaPos = 0;
-    
+
     while ((commaPos = csvData.indexOf(',', startPos)) != -1 && index < 32) {
         String value = csvData.substring(startPos, commaPos);
         setConfigValue(index, value);
         startPos = commaPos + 1;
         index++;
     }
-    
+
     // Last value (no comma)
     if (index < 32) {
         String value = csvData.substring(startPos);
         setConfigValue(index, value);
     }
-    
-    // Update timestamp
-    config.last_update = millis() / 1000;
-    
+
+    // F20: guarda a versão REMOTA para comparação futura (era millis()/1000)
+    config.last_update = (remoteVersion > 0) ? remoteVersion : millis() / 1000;
+
     // Validate
     if (!isConfigValid()) {
         Serial.println("🚨 CSV config invalid - restoring backup");
         config = backup;
         return false;
     }
-    
+
     // Save
     saveConfig();
     Serial.println("✅ CSV config applied and saved");

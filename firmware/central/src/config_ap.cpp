@@ -20,6 +20,54 @@ static WebServer server(80);
 static uint32_t apStartTime = 0;
 static bool isInitialConfigMode = false;
 
+// F23: cópia com limite — entrada longa é rejeitada, não estoura a struct
+static bool safeCopy(char* dst, size_t dstSize, const String& src) {
+    if (src.length() >= dstSize) {
+        Serial.printf("❌ Campo muito longo (%d >= %d bytes) - rejeitado\n",
+                      src.length(), (int)dstSize);
+        return false;
+    }
+    strncpy(dst, src.c_str(), dstSize - 1);
+    dst[dstSize - 1] = '\0';
+    return true;
+}
+
+// F23: escape de HTML para valores pré-preenchidos
+static String htmlEscape(const String& value) {
+    String out;
+    out.reserve(value.length());
+    for (unsigned int i = 0; i < value.length(); i++) {
+        char c = value.charAt(i);
+        switch (c) {
+            case '&':  out += "&amp;"; break;
+            case '<':  out += "&lt;"; break;
+            case '>':  out += "&gt;"; break;
+            case '\"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
+            default:   out += c; break;
+        }
+    }
+    return out;
+}
+
+static void sendErrorPage(const String& title, const String& detail) {
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>" + title + "</title>";
+    html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+    html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
+    html += "<div class='error'><h1>❌ " + title + "</h1><p>" + detail + "</p>";
+    html += "<a href='/'>Voltar</a></div></body></html>";
+    server.send(400, "text/html", html);
+}
+
+static void sendSuccessPage() {
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
+    html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
+    html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
+    html += "<div class='success'><h1>✅ Credenciais Salvas!</h1><p>🔄 A Central está reiniciando...</p>";
+    html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
+    server.send(200, "text/html", html);
+}
+
 void ConfigAP::enter(bool isInitialMode)
 {
     isInitialConfigMode = isInitialMode;
@@ -27,24 +75,23 @@ void ConfigAP::enter(bool isInitialMode)
     if (isInitialMode)
     {
         Serial.println("🔧 Config inválida, entrando no modo AP");
-        Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha: botaprarodar)");
-        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
     }
     else
     {
         Serial.println("🔧 Modo AP por falha de sync");
-        Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha: botaprarodar)");
-        Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
     }
+    Serial.println("📱 Conecte-se ao WiFi: BPR Central (senha padrão do projeto)");
+    Serial.println("🌐 Acesse: http://192.168.4.1 para configurar");
 
-    // Simplified WiFi AP initialization
+    // §6.5: BLE é PARADO de fato no modo AP (antes só dizia que estava)
+    BPRBLEServer::stop();
+
     Serial.println("🔧 Inicializando WiFi AP...");
-    
+
     WiFi.mode(WIFI_AP);
-    
-    // Configurar IP customizado para o AP
+
     WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
-    
+
     if (!WiFi.softAP(AP_SSID, AP_PASSWORD)) {
         Serial.println("❌ Falha ao iniciar AP");
         apStartTime = millis();
@@ -52,9 +99,6 @@ void ConfigAP::enter(bool isInitialMode)
     }
     Serial.printf("AP: %s IP: %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-    // BLE desabilitado durante CONFIG_AP para evitar crashes
-    Serial.println("🔵 BLE desabilitado durante CONFIG_AP para evitar crashes");
-    Serial.println("⚠️ Use apenas WiFi AP para configuração");
     Serial.printf("💾 Free heap: %d bytes\n", ESP.getFreeHeap());
 
     setupWebServer();
@@ -66,13 +110,10 @@ void ConfigAP::update()
 {
     server.handleClient();
 
-    // Imprimir status a cada 30 segundos para debug
     static uint32_t lastDebugPrint = 0;
     if (millis() - lastDebugPrint > 30000) {
-        Serial.printf("📱 ConfigAP ativo há %lus - Heap: %d\n", 
+        Serial.printf("📱 ConfigAP ativo há %lus - Heap: %d\n",
                       (millis() - apStartTime) / 1000, ESP.getFreeHeap());
-        Serial.println("🔵 BLE desabilitado durante CONFIG_AP");
-        
         lastDebugPrint = millis();
     }
 
@@ -81,9 +122,9 @@ void ConfigAP::update()
         static uint32_t lastTimeoutWarning = 0;
         uint32_t elapsed = millis() - apStartTime;
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
-        
+
         if (millis() - lastTimeoutWarning > 60000)
-        { // A cada minuto
+        {
             uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
             Serial.printf("⏰ Modo CONFIG_AP (fallback) - Tempo restante: %lu min\n", remaining / 60000);
             lastTimeoutWarning = millis();
@@ -91,9 +132,7 @@ void ConfigAP::update()
 
         if (elapsed > timeoutMs)
         {
-            // Fallback - voltar para operação normal
             Serial.println("⏰ Timeout CONFIG_AP (fallback) - Voltando para BIKE_PAIRING");
-            // main.cpp vai detectar e mudar estado
             return;
         }
     }
@@ -101,22 +140,17 @@ void ConfigAP::update()
 
 void ConfigAP::exit()
 {
-    // BLE já está desabilitado durante CONFIG_AP
-    Serial.println("🔵 BLE não precisa ser parado (já desabilitado)");
-    
     server.stop();
     WiFi.softAPdisconnect(true);
-    Serial.println("🔚 ConfigAP: Saindo do modo AP");
+    Serial.println("🔚 ConfigAP: Saindo do modo AP (BLE será reiniciado no pairing)");
 }
 
 void ConfigAP::printStatus()
 {
     Serial.println("📱 Modo Configuração Ativo:");
-    Serial.println("   WiFi: BPR Central (senha: botaprarodar)");
+    Serial.println("   WiFi: BPR Central");
     Serial.println("   URL: http://192.168.4.1");
 }
-
-
 
 void ConfigAP::setupWebServer()
 {
@@ -130,47 +164,47 @@ void ConfigAP::setupWebServer()
         html += "button:hover{background:#2980b9}.info{background:#e8f4fd;padding:15px;border-radius:4px;margin-bottom:20px;border-left:4px solid #3498db}";
         html += ".warning{background:#fff3cd;padding:10px;border-radius:4px;margin-top:15px;border-left:4px solid #ffc107}</style></head><body>";
         html += "<div class='container'><h1>🏢 BPR Central - Configuração</h1>";
-        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR Central<br>Senha: botaprarodar<br>Acesse: 192.168.4.1</div>";
-        
+        html += "<div class='info'><strong>📶 Conecte-se ao WiFi:</strong><br>SSID: BPR Central<br>Acesse: 192.168.4.1</div>";
+
         // Tabs para alternar entre formulário e JSON
         html += "<div style='margin-bottom:20px'><button onclick='showForm()' id='formBtn' style='margin-right:10px;background:#3498db;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>Formulário</button>";
         html += "<button onclick='showJson()' id='jsonBtn' style='background:#95a5a6;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer'>JSON</button></div>";
-        
-        // Obter configurações atuais para pré-preenchimento
+
         const CredentialsConfig& currentCreds = configCredentials.getCredentials();
-        
-        // Formulário tradicional com valores pré-preenchidos
+
+        // Formulário tradicional — F23: valores escapados; segredo fica vazio para não vazar no HTML
         html += "<div id='formDiv'><form action='/save' method='post'>";
-        html += "<label>ID da Base:</label><input name='base_id' value='" + String(currentCreds.base_id) + "' placeholder='Ex: base01, ameciclo, cepas' required><br>";
-        html += "<label>WiFi SSID:</label><input name='ssid' value='" + String(currentCreds.wifi_ssid) + "' placeholder='Nome da rede WiFi' required><br>";
-        html += "<label>WiFi Senha:</label><input name='pass' type='password' value='" + String(currentCreds.wifi_password) + "' placeholder='Senha do WiFi' required><br>";
-        html += "<label>Firebase Database URL:</label><input name='url' value='" + String(currentCreds.firebase_database_url) + "' placeholder='https://projeto.firebaseio.com' required><br>";
-        html += "<label>Firebase API Key:</label><input name='key' value='" + String(currentCreds.firebase_api_key) + "' placeholder='AIza...' required><br>";
+        html += "<label>ID da Base:</label><input name='base_id' value='" + htmlEscape(String(currentCreds.base_id)) + "' placeholder='Ex: base01, ameciclo, cepas' required><br>";
+        html += "<label>WiFi SSID:</label><input name='ssid' value='" + htmlEscape(String(currentCreds.wifi_ssid)) + "' placeholder='Nome da rede WiFi' required><br>";
+        html += "<label>WiFi Senha:</label><input name='pass' type='password' placeholder='deixe vazio para manter a salva'><br>";
+        html += "<label>Firebase Database URL:</label><input name='url' value='" + htmlEscape(String(currentCreds.firebase_database_url)) + "' placeholder='https://projeto.firebaseio.com' required><br>";
+        // F21: rótulo honesto — ?auth= espera token/secret, não Web API Key
+        html += "<label>Firebase Auth Token (Database Secret):</label><input name='key' type='password' placeholder='deixe vazio para manter o salvo'><br>";
         html += "<button type='submit'>💾 Salvar Configuração</button></form></div>";
-        
-        // Gerar JSON atual para pré-preenchimento
+
+        // F22: JSON atual pré-preenchido na textarea (era construído e descartado)
         String currentJson = "{\n";
         currentJson += "  \"base_id\": \"" + String(currentCreds.base_id) + "\",\n";
         currentJson += "  \"wifi_ssid\": \"" + String(currentCreds.wifi_ssid) + "\",\n";
-        currentJson += "  \"wifi_password\": \"" + String(currentCreds.wifi_password) + "\",\n";
+        currentJson += "  \"wifi_password\": \"\",\n";
         currentJson += "  \"firebase_database_url\": \"" + String(currentCreds.firebase_database_url) + "\",\n";
-        currentJson += "  \"firebase_api_key\": \"" + String(currentCreds.firebase_api_key) + "\"\n";
+        currentJson += "  \"firebase_api_key\": \"\"\n";
         currentJson += "}";
-        
-        // Configuração via JSON
+
         html += "<div id='jsonDiv' style='display:none'><form action='/save-json' method='post'>";
         html += "<label>Cole o JSON de configuração:</label><br>";
         html += "<button type='button' onclick='clearJson()' style='background:#e74c3c;color:white;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;margin-bottom:10px'>🗑️ Limpar</button><br>";
-        html += "<textarea name='config_json' id='jsonTextarea' rows='8' style='width:100%;font-family:monospace;font-size:12px' placeholder='{\n  \"base_id\": \"base01\",\n  \"wifi\": {\n    \"ssid\": \"MinhaRede\",\n    \"password\": \"senha123\"\n  },\n  \"firebase\": {\n    \"database_url\": \"https://projeto.firebaseio.com\",\n    \"api_key\": \"AIza...\"\n  }\n}' required></textarea><br>";
+        html += "<textarea name='config_json' id='jsonTextarea' rows='10' style='width:100%;font-family:monospace;font-size:12px' required>";
+        html += currentJson;
+        html += "</textarea><br>";
         html += "<button type='submit'>💾 Salvar JSON</button></form></div>";
-        
+
         if (isInitialConfigMode) {
             html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Sem limite de tempo.</div>";
         } else {
             html += "<div class='warning'>⚠️ A Central reiniciará após salvar. Tempo limite: " + String(configManager.getConfig().timeouts.config_ap_min) + " minutos.</div>";
         }
-        
-        // JavaScript para alternar tabs
+
         html += "<script>function showForm(){document.getElementById('formDiv').style.display='block';document.getElementById('jsonDiv').style.display='none';document.getElementById('formBtn').style.background='#3498db';document.getElementById('jsonBtn').style.background='#95a5a6';}";
         html += "function showJson(){document.getElementById('formDiv').style.display='none';document.getElementById('jsonDiv').style.display='block';document.getElementById('formBtn').style.background='#95a5a6';document.getElementById('jsonBtn').style.background='#3498db';}";
         html += "function clearJson(){document.getElementById('jsonTextarea').value='';}</script>";
@@ -180,30 +214,30 @@ void ConfigAP::setupWebServer()
     server.on("/save", HTTP_POST, []()
               {
         CredentialsConfig& creds = configCredentials.getCredentials();
-        
-        Serial.println("📝 Dados recebidos do formulário:");
-        
+        bool ok = true;
+
         if (server.hasArg("base_id")) {
-            strcpy(creds.base_id, server.arg("base_id").c_str());
-            Serial.printf("   Base ID: %s\n", creds.base_id);
+            ok = ok && safeCopy(creds.base_id, sizeof(creds.base_id), server.arg("base_id"));
         }
         if (server.hasArg("ssid")) {
-            strcpy(creds.wifi_ssid, server.arg("ssid").c_str());
-            Serial.printf("   WiFi SSID: %s\n", creds.wifi_ssid);
+            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), server.arg("ssid"));
         }
-        if (server.hasArg("pass")) {
-            strcpy(creds.wifi_password, server.arg("pass").c_str());
-            Serial.printf("   WiFi Password: %s\n", creds.wifi_password);
+        // F23: vazio mantém o segredo salvo (não vaza no HTML)
+        if (server.hasArg("pass") && server.arg("pass").length() > 0) {
+            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), server.arg("pass"));
         }
         if (server.hasArg("url")) {
-            strcpy(creds.firebase_database_url, server.arg("url").c_str());
-            Serial.printf("   Firebase URL: %s\n", creds.firebase_database_url);
+            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), server.arg("url"));
         }
-        if (server.hasArg("key")) {
-            strcpy(creds.firebase_api_key, server.arg("key").c_str());
-            Serial.printf("   Firebase Key: %s\n", creds.firebase_api_key);
+        if (server.hasArg("key") && server.arg("key").length() > 0) {
+            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), server.arg("key"));
         }
-        
+
+        if (!ok) {
+            sendErrorPage("Dados Inválidos", "Um ou mais campos excedem o tamanho permitido.");
+            return;
+        }
+
         // Extrair project_id da URL automaticamente
         String url = creds.firebase_database_url;
         if (url.indexOf("://") > 0) {
@@ -211,59 +245,44 @@ void ConfigAP::setupWebServer()
             int end = url.indexOf(".", start);
             if (end > start) {
                 String projectId = url.substring(start, end);
-                strcpy(creds.firebase_project_id, projectId.c_str());
-                Serial.printf("   Firebase Project (auto): %s\n", creds.firebase_project_id);
+                safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), projectId);
             }
         }
-        
-        // Set timestamp and first_sync flag
+
         creds.created_timestamp = millis() / 1000;
         creds.first_sync = true;
-        
-        Serial.println("💾 Salvando credenciais...");
-        
+
+        // F22: confirmação só depois de validar E salvar
+        if (!configCredentials.isCredentialsValid()) {
+            sendErrorPage("Credenciais Incompletas", "Verifique base_id, ssid, senha WiFi, URL e token Firebase.");
+            return;
+        }
+
         if (configCredentials.saveCredentials()) {
-            Serial.println("✅ Credenciais salvas com sucesso!");
-            
-            // WiFi será sincronizado no próximo cloud sync
-            Serial.println("💾 Credenciais salvas - WiFi será sincronizado automaticamente");
-            
-            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Configuração Salva</title>";
-            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
-            html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
-            html += "<div class='success'><h1>✅ Credenciais Salvas!</h1><p>🔄 A Central está reiniciando...</p>";
-            html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
-            server.send(200, "text/html", html);
-            
-            // Usar flag para restart seguro
+            Serial.println("✅ Credenciais salvas (segredos não são impressos no serial)");
+            sendSuccessPage();
+
             pendingRestart = true;
             restartRequestTime = millis();
             Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
-            Serial.println("❌ Erro ao salvar credenciais!");
-            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
-            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
-            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
-            html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
-            html += "<a href='/'>Voltar</a></div></body></html>";
-            server.send(500, "text/html", html);
+            sendErrorPage("Erro ao Salvar", "Falha de gravação no LittleFS. Tente novamente.");
         } });
 
     server.on("/status", HTTP_GET, []()
               {
         uint32_t elapsed = millis() - apStartTime;
-        
-        // Usar o mesmo timeout do update() para consistência
+
         uint32_t timeoutMs = configManager.getConfig().timeouts.config_ap_min * 60000;
         uint32_t remaining = (elapsed < timeoutMs) ? (timeoutMs - elapsed) : 0;
-        
+
         DynamicJsonDocument doc(STATUS_RESPONSE_BUFFER);
         doc["status"] = "config_mode";
         doc["uptime_ms"] = millis();
         doc["config_time_remaining_ms"] = remaining;
         doc["heap_free"] = ESP.getFreeHeap();
         doc["base_id"] = configCredentials.getCredentials().base_id;
-        
+
         String response;
         serializeJson(doc, response);
         server.send(200, "application/json", response); });
@@ -271,108 +290,93 @@ void ConfigAP::setupWebServer()
     server.on("/save-json", HTTP_POST, []()
               {
         if (!server.hasArg("config_json")) {
-            server.send(400, "text/html", "<html><body><h1>❌ JSON não fornecido</h1></body></html>");
+            sendErrorPage("JSON não fornecido", "Envie o campo config_json.");
             return;
         }
-        
+
         String jsonStr = server.arg("config_json");
-        Serial.println("📝 JSON recebido via formulário:");
-        Serial.println(jsonStr);
-        Serial.println("---");
-        
+        Serial.println("📝 JSON recebido via formulário (conteúdo não é impresso)");
+
         StaticJsonDocument<512> doc;
         DeserializationError error = deserializeJson(doc, jsonStr);
-        
+
         if (error) {
-            Serial.printf("❌ Erro ao parsear JSON: %s\n", error.c_str());
-            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro JSON</title>";
-            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
-            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
-            html += "<div class='error'><h1>❌ JSON Inválido</h1><p>Erro: " + String(error.c_str()) + "</p>";
-            html += "<a href='/'>Voltar</a></div></body></html>";
-            server.send(400, "text/html", html);
+            sendErrorPage("JSON Inválido", String("Erro: ") + error.c_str());
             return;
         }
-        
+
         CredentialsConfig& creds = configCredentials.getCredentials();
-        
-        // Processar campos do JSON
-        if (doc["base_id"]) {
-            strcpy(creds.base_id, doc["base_id"]);
-            Serial.printf("   Base ID: %s\n", creds.base_id);
+        bool ok = true;
+
+        // F22: schema único — plano E aninhado, incluindo firebase_api_key no nível plano
+        if (!doc["base_id"].isNull()) {
+            ok = ok && safeCopy(creds.base_id, sizeof(creds.base_id), doc["base_id"].as<String>());
         }
-        if (doc["wifi_ssid"]) {
-            strcpy(creds.wifi_ssid, doc["wifi_ssid"]);
-            Serial.printf("   WiFi SSID: %s\n", creds.wifi_ssid);
+        if (!doc["wifi_ssid"].isNull()) {
+            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), doc["wifi_ssid"].as<String>());
         }
-        if (doc["wifi_password"]) {
-            strcpy(creds.wifi_password, doc["wifi_password"]);
-            Serial.printf("   WiFi Password: %s\n", creds.wifi_password);
+        if (!doc["wifi_password"].isNull() && doc["wifi_password"].as<String>().length() > 0) {
+            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), doc["wifi_password"].as<String>());
         }
-        if (doc["firebase_database_url"]) {
-            strcpy(creds.firebase_database_url, doc["firebase_database_url"]);
-            Serial.printf("   Firebase URL: %s\n", creds.firebase_database_url);
+        if (!doc["firebase_database_url"].isNull()) {
+            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), doc["firebase_database_url"].as<String>());
         }
-        // Suporte para formato aninhado
-        if (doc["wifi"]["ssid"]) {
-            strcpy(creds.wifi_ssid, doc["wifi"]["ssid"]);
-            Serial.printf("   WiFi SSID (nested): %s\n", creds.wifi_ssid);
+        if (!doc["firebase_api_key"].isNull() && doc["firebase_api_key"].as<String>().length() > 0) {
+            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), doc["firebase_api_key"].as<String>());
         }
-        if (doc["wifi"]["password"]) {
-            strcpy(creds.wifi_password, doc["wifi"]["password"]);
-            Serial.printf("   WiFi Password (nested): %s\n", creds.wifi_password);
+        if (!doc["firebase_project_id"].isNull()) {
+            ok = ok && safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), doc["firebase_project_id"].as<String>());
         }
-        if (doc["firebase"]["database_url"]) {
-            strcpy(creds.firebase_database_url, doc["firebase"]["database_url"]);
-            Serial.printf("   Firebase URL (nested): %s\n", creds.firebase_database_url);
+
+        // Formato aninhado
+        if (!doc["wifi"]["ssid"].isNull()) {
+            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), doc["wifi"]["ssid"].as<String>());
         }
-        if (doc["firebase"]["api_key"]) {
-            strcpy(creds.firebase_api_key, doc["firebase"]["api_key"]);
-            Serial.printf("   Firebase Key (nested): %s\n", creds.firebase_api_key);
+        if (!doc["wifi"]["password"].isNull() && doc["wifi"]["password"].as<String>().length() > 0) {
+            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), doc["wifi"]["password"].as<String>());
         }
-        
-        // Extrair project_id da URL automaticamente
+        if (!doc["firebase"]["database_url"].isNull()) {
+            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), doc["firebase"]["database_url"].as<String>());
+        }
+        if (!doc["firebase"]["api_key"].isNull() && doc["firebase"]["api_key"].as<String>().length() > 0) {
+            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), doc["firebase"]["api_key"].as<String>());
+        }
+        if (!doc["firebase"]["project_id"].isNull()) {
+            ok = ok && safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), doc["firebase"]["project_id"].as<String>());
+        }
+
+        if (!ok) {
+            sendErrorPage("Dados Inválidos", "Um ou mais campos excedem o tamanho permitido.");
+            return;
+        }
+
+        // Extrair project_id da URL automaticamente se não veio no JSON
         String url = creds.firebase_database_url;
-        if (url.indexOf("://") > 0) {
+        if (strlen(creds.firebase_project_id) == 0 && url.indexOf("://") > 0) {
             int start = url.indexOf("://") + 3;
             int end = url.indexOf(".", start);
             if (end > start) {
-                String projectId = url.substring(start, end);
-                strcpy(creds.firebase_project_id, projectId.c_str());
-                Serial.printf("   Firebase Project (auto): %s\n", creds.firebase_project_id);
+                safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), url.substring(start, end));
             }
         }
-        
-        // Set timestamp and first_sync flag
+
         creds.created_timestamp = millis() / 1000;
         creds.first_sync = true;
-        
-        Serial.println("💾 Salvando credenciais via JSON...");
-        
+
+        // F22: validação completa antes de confirmar — não mais HTTP 200 com credencial vazia
+        if (!configCredentials.isCredentialsValid()) {
+            sendErrorPage("Credenciais Incompletas", "Verifique base_id, ssid, senha WiFi, URL e token Firebase.");
+            return;
+        }
+
         if (configCredentials.saveCredentials()) {
-            Serial.println("✅ Credenciais JSON salvas com sucesso!");
-            
-            // WiFi será sincronizado no próximo cloud sync
-            Serial.println("💾 Credenciais JSON salvas - WiFi será sincronizado automaticamente");
-            
-            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>JSON Salvo</title>";
-            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
-            html += ".success{background:#d4edda;color:#155724;padding:20px;border-radius:8px;border:1px solid #c3e6cb}</style></head><body>";
-            html += "<div class='success'><h1>✅ JSON Processado!</h1><p>🔄 A Central está reiniciando...</p>";
-            html += "<p>Aguarde alguns segundos e verifique o monitor serial.</p></div></body></html>";
-            server.send(200, "text/html", html);
-            
-            // Usar flag para restart seguro
+            Serial.println("✅ Credenciais JSON salvas (segredos não são impressos no serial)");
+            sendSuccessPage();
+
             pendingRestart = true;
             restartRequestTime = millis();
             Serial.println("🔄 Restart agendado - aguardando cleanup...");
         } else {
-            Serial.println("❌ Erro ao salvar credenciais JSON!");
-            String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Erro</title>";
-            html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
-            html += ".error{background:#f8d7da;color:#721c24;padding:20px;border-radius:8px;border:1px solid #f5c6cb}</style></head><body>";
-            html += "<div class='error'><h1>❌ Erro ao Salvar</h1><p>Tente novamente ou verifique os dados.</p>";
-            html += "<a href='/'>Voltar</a></div></body></html>";
-            server.send(500, "text/html", html);
+            sendErrorPage("Erro ao Salvar", "Falha de gravação no LittleFS. Tente novamente.");
         } });
 }

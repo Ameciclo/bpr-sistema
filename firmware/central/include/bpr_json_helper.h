@@ -20,4 +20,7 @@ public:
     static String createProceedResponse();
     static String createBusyResponse(uint32_t retryAfterSec = 30);
     static String createConfigResponse(const String& bikeId, const JsonObject& config);
+    static String createDataAckResponse(const String& bikeId, uint32_t sessionId,
+                                        uint16_t sessionSalt, uint16_t seq,
+                                        bool isFinal, bool canClear);
 };

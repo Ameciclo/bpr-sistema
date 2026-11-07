@@ -13,6 +13,9 @@ public:
     static void forceDisconnectBike(const String& bikeId);
     static void sendConfigToHandle(uint16_t handle, const String& bikeId, const String& config);
     static void checkAndSendPendingConfig(const String& bikeId, uint16_t handle);
+    static uint16_t getHandleForBike(const String& bikeId);
+    // F11: pushes serializados no contexto do loop (NimBLE 1.4.3 notifica todos os assinantes)
+    static void processPushQueue();
     
     // Callback setters para BLE Server
     typedef void (*DataCallback)(const String& bikeId, const String& jsonData);

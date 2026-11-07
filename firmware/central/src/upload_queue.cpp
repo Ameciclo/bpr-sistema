@@ -1,6 +1,7 @@
 #include <ArduinoJson.h>
 #include "bike_manager.h"
 #include "ble_server.h"
+#include "bpr_json_helper.h"
 #include "constants.h"
 #include "time_sync.h"
 #include "upload_queue.h"
@@ -29,7 +30,7 @@ bool UploadQueue::confirmUpload(const String& bikeId) {
         pendingUploads[bikeId].confirmed = true;
         
         // Send confirmation to bike
-        String confirmation = BikeManager::confirmDataUpload(bikeId);
+        String confirmation = BPRJsonHelper::createProceedResponse();
         BPRBLEServer::pushConfigToBike(bikeId, confirmation);
         
         // Remove from pending queue

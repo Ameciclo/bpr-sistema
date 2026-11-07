@@ -103,7 +103,7 @@ public:
     bool loadConfig();
     bool saveConfig();
     bool isConfigValid();
-    bool updateFromCSV(const String& csvData);
+    bool updateFromCSV(const String& csvData, uint32_t remoteVersion = 0);
     void setConfigValue(int index, const String& value);
     
     const CentralConfig& getConfig() const { return config; }

@@ -46,8 +46,9 @@ unsigned long lastHeartbeat = 0;
 
 // Controle de sync
 static uint32_t lastSyncCheck = 0;
-static uint8_t syncFailureCount = 0;
 static uint32_t tempConfigApStartTime = 0;
+static bool syncRetryScheduled = false;   // F14: uma contagem por tentativa
+static uint32_t nextSyncRetryAt = 0;      // F14: agenda de retry com intervalo real
 
 // Flag para restart seguro
 bool pendingRestart = false;
@@ -345,23 +346,28 @@ void loop()
             if (result == SyncResult::SUCCESS) {
                 Serial.println("✅ Sync concluída com sucesso");
                 SyncMonitor::recordSuccess();
+                syncRetryScheduled = false;
                 changeState(STATE_BIKE_PAIRING);
             } else if (result == SyncResult::FAILURE) {
-                Serial.println("❌ Sync falhou");
-                SyncMonitor::recordFailure();
-                
-                if (SyncMonitor::shouldFallback()) {
-                    Serial.println("⚠️ Muitas falhas de sync - entrando em modo CONFIG_AP temporário");
-                    changeState(STATE_TEMP_CONFIG_AP);
-                } else {
-                    // Retry após delay não-bloqueante
-                    static uint32_t lastRetryTime = 0;
-                    if (millis() - lastRetryTime > 30000) {
-                        Serial.println("🔄 Tentando sync novamente...");
-                        lastRetryTime = millis();
-                        // Reset para tentar novamente
-                        changeState(STATE_CLOUD_SYNC);
+                // F14: contabiliza UMA vez por tentativa e agenda retry com
+                // intervalo real; update() não volta a rodar até o retry re-armar
+                if (!syncRetryScheduled) {
+                    Serial.println("❌ Sync falhou");
+                    SyncMonitor::recordFailure();
+
+                    if (SyncMonitor::shouldFallback()) {
+                        Serial.println("⚠️ Muitas falhas de sync - entrando em modo CONFIG_AP temporário");
+                        syncRetryScheduled = false;
+                        changeState(STATE_TEMP_CONFIG_AP);
+                    } else {
+                        syncRetryScheduled = true;
+                        nextSyncRetryAt = millis() + 30000; // backoff de 30s
+                        Serial.println("🔄 Retry de sync agendado em 30s");
                     }
+                } else if (millis() >= nextSyncRetryAt) {
+                    Serial.println("🔄 Tentando sync novamente...");
+                    syncRetryScheduled = false;
+                    CloudSync::retry();
                 }
             }
             // Se IN_PROGRESS, continua no próximo loop
