@@ -24,6 +24,13 @@ bool CloudSync::syncInProgress = false;
 SyncResult CloudSync::currentResult = SyncResult::SUCCESS;
 static uint32_t syncStartTime = 0;
 
+// O02: nunca loga a URL com credencial — só o caminho
+static String redactUrl(const String& url)
+{
+    int cut = url.indexOf("?auth=");
+    return (cut > 0) ? url.substring(0, cut) : url;
+}
+
 SyncResult CloudSync::enter()
 {
     Serial.println("📡 Entering CLOUD_SYNC mode");
@@ -88,6 +95,9 @@ SyncResult CloudSync::update()
         Serial.println("❌ Sync failed");
         return currentResult;
     }
+
+    // R15: descobertas locais (pending) publicadas para aprovação remota
+    uploadPendingBikes();
 
     // DOWNLOADS (Firebase -> local)
     if (!downloadCentralConfig())
@@ -169,7 +179,8 @@ bool CloudSync::connectWiFi()
     return true;
 }
 
-// F20: retorna a versão remota para o chamador guardar (não a hora local)
+// F20/R20: retorna a versão remota para o chamador guardar (não a hora local).
+// Corpo "null" (chave inexistente no RTDB) NÃO é versão zero — é ausência.
 static bool fetchRemoteVersion(const String &url, uint32_t &remoteVersion)
 {
     HTTPClient http;
@@ -185,7 +196,20 @@ static bool fetchRemoteVersion(const String &url, uint32_t &remoteVersion)
     String response = http.getString();
     http.end();
 
-    remoteVersion = (uint32_t)response.toInt();
+    response.trim();
+    if (response.length() == 0 || response.equalsIgnoreCase("null"))
+    {
+        return false; // versão ausente, não zero
+    }
+
+    char* endPtr = nullptr;
+    unsigned long parsed = strtoul(response.c_str(), &endPtr, 10);
+    if (endPtr == response.c_str() || *endPtr != '\0')
+    {
+        return false; // corpo não-numérico não é versão
+    }
+
+    remoteVersion = (uint32_t)parsed;
     return true;
 }
 
@@ -195,12 +219,15 @@ bool CloudSync::checkLastUpdateTime(const String &url, uint32_t localLastUpdate,
     uint32_t remoteLastUpdate = 0;
     if (!fetchRemoteVersion(url, remoteLastUpdate))
     {
-        Serial.printf("⚠️ %s last_update check failed - downloading for safety\n", componentName.c_str());
+        // R20: versão ausente/inconsultável — política: baixa por segurança,
+        // exceto quando não há config local (primeiro provisionamento)
+        Serial.printf("⚠️ %s version unavailable - downloading for safety\n", componentName.c_str());
         if (remoteOut) *remoteOut = 0;
-        return true; // Se falhar, baixa por segurança
+        return true;
     }
 
-    bool needsUpdate = (remoteLastUpdate > localLastUpdate);
+    // R20: sem config local, versão remota qualquer é mais nova (provisionamento)
+    bool needsUpdate = (remoteLastUpdate > localLastUpdate) || (localLastUpdate == 0);
 
     Serial.printf("📋 %s version check: local=%lu, remote=%lu -> %s\n",
                   componentName.c_str(), (unsigned long)localLastUpdate,
@@ -253,6 +280,8 @@ void CloudSync::updateConfigFromFirebase(const String &csvData, uint32_t remoteV
     }
     else
     {
+        // R20: aplicação falhou (CSV inválido, sem versão ou sem persistência) —
+        // o sync NÃO reporta sucesso de configuração
         Serial.println("❌ Failed to update config from Firebase CSV");
     }
 }
@@ -278,7 +307,8 @@ bool CloudSync::downloadCentralConfig()
 
     if (httpCode != HTTP_CODE_OK)
     {
-        Serial.printf("🚨 Central config download failed: HTTP %d\n", httpCode);
+        Serial.printf("🚨 Central config download failed: HTTP %d (%s)\n",
+                      httpCode, redactUrl(url).c_str());
         http.end();
         return false;
     }
@@ -286,12 +316,34 @@ bool CloudSync::downloadCentralConfig()
     String jsonArray = http.getString();
     http.end();
 
+    // R20: corpo "null" = config inexistente na nuvem — erro de contrato,
+    // não "sucesso com valores vazios"
+    jsonArray.trim();
+    if (jsonArray.length() == 0 || jsonArray.equalsIgnoreCase("null"))
+    {
+        Serial.println("🚨 Central config absent in cloud (null) - contract error");
+        return false;
+    }
+
+    // R20: sem versão remota válida a configuração não é aplicada
+    // (não existe mais fallback para millis())
+    if (remoteVersion == 0)
+    {
+        Serial.println("🚨 Central config without remote version - not applying");
+        return false;
+    }
+
     // Converter JSON array para CSV: [90,60,15,...] -> 90,60,15,...
     jsonArray.replace("[", "");
     jsonArray.replace("]", "");
 
-    // F20: guarda a VERSÃO REMOTA, não millis()/1000
     updateConfigFromFirebase(jsonArray, remoteVersion);
+
+    // R20: downloadCentralConfig só sucede se a configuração foi aplicada E salva
+    if (configManager.getConfig().last_update != remoteVersion)
+    {
+        return false;
+    }
 
     Serial.printf("✅ Central config downloaded (version %lu)\n", (unsigned long)remoteVersion);
     Serial.printf("   Sync interval: %d seconds\n", configManager.getConfig().intervals.sync_sec);
@@ -427,31 +479,20 @@ bool CloudSync::downloadBikeConfigs()
     return true; // sem configs para uma bike não derruba o sync inteiro
 }
 
-// F19: lotes imutáveis com chave estável — retries não duplicam histórico
-static String computeBatchKey(const String &jsonString)
-{
-    CRC32 crc;
-    crc.update((uint8_t*)jsonString.c_str(), jsonString.length());
-    uint32_t checksum = crc.finalize();
-
-    time_t now = time(nullptr);
-    if (now < 1000000000L) now = millis() / 1000;
-
-    char key[32];
-    snprintf(key, sizeof(key), "%lu-%08lx", (unsigned long)now, (unsigned long)checksum);
-    return String(key);
-}
-
+// F19/R06: a identidade do lote é a chave estável calculada pelo BufferManager
+// a partir da identidade dos itens — retries produzem a MESMA chave
 bool CloudSync::uploadBufferData()
 {
     int totalBatches = 0;
     const int maxBatches = MAX_TOTAL_ITEMS + 8; // guard contra loop se persistência falhar
 
-    // F18: sobe em lotes medidos; só confirma o que efetivamente subiu
+    // F18/R05: sobe em lotes; cada lote é confirmado individualmente pela
+    // identidade exata do seu manifesto
     while (totalBatches < maxBatches)
     {
         DynamicJsonDocument doc(BUFFER_PERSISTENCE_BUFFER);
-        int items = bufferManager.getDataForUpload(doc, UPLOAD_BATCH_MAX_ITEMS);
+        String batchKey;
+        int items = bufferManager.prepareUploadBatch(doc, UPLOAD_BATCH_MAX_ITEMS, batchKey);
         if (items == 0)
         {
             break;
@@ -460,7 +501,6 @@ bool CloudSync::uploadBufferData()
         String jsonString;
         serializeJson(doc, jsonString);
 
-        String batchKey = computeBatchKey(jsonString);
         String url = Endpoints::getBufferDataBatch(batchKey);
 
         HTTPClient http;
@@ -473,13 +513,24 @@ bool CloudSync::uploadBufferData()
         if (httpCode != HTTP_CODE_OK)
         {
             Serial.printf("❌ Buffer upload failed: HTTP %d (batch %s)\n", httpCode, batchKey.c_str());
-            Serial.printf("   URL: %s\n", url.c_str());
-            bufferManager.rollbackUpload();
+            Serial.printf("   URL: %s\n", redactUrl(url).c_str());
+            // R05: devolve exatamente os itens deste lote ao estado pendente
+            bufferManager.rollbackUpload(batchKey);
             return false;
         }
 
         Serial.printf("📤 Batch %s uploaded: %d items, %d bytes\n",
                       batchKey.c_str(), items, jsonString.length());
+
+        // R05: confirmação por lote — remove somente os itens entregues
+        if (!bufferManager.markAsConfirmed(batchKey))
+        {
+            // Confirm falhou (ex.: flash cheio): lote já subiu; manifesto
+            // permanece e a reconciliação do boot devolve os itens como
+            // pendentes — a nuvem deduplica pela chave estável
+            Serial.println("⚠️ Batch delivered but local confirm failed - will reconcile at boot");
+            return false;
+        }
         totalBatches++;
     }
 
@@ -489,17 +540,37 @@ bool CloudSync::uploadBufferData()
         return true;
     }
 
-    if (totalBatches >= maxBatches)
+    Serial.printf("📤 Upload complete: %d batches\n", totalBatches);
+    return true;
+}
+
+// R15: publica bikes pendentes descobertas localmente para gestão remota
+bool CloudSync::uploadPendingBikes()
+{
+    DynamicJsonDocument doc(1024);
+    if (!BikeManager::getPendingBikesForUpload(doc))
     {
-        // Persistência da marcação uploaded não avançou — não confirma, tenta no próximo sync
-        Serial.println("⚠️ Batch limit reached - not confirming this round");
-        bufferManager.rollbackUpload();
-        return true;
+        return true; // sem pendentes não é erro
     }
 
-    // Só agora, com TODOS os lotes confirmados, limpa o que foi enviado
-    bufferManager.markAsConfirmed();
-    Serial.printf("📤 Upload complete: %d batches\n", totalBatches);
+    String jsonString;
+    serializeJson(doc, jsonString);
+
+    String url = Endpoints::getPendingBikes();
+    HTTPClient http;
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    int httpCode = http.PATCH(jsonString);
+    http.end();
+
+    if (httpCode != HTTP_CODE_OK)
+    {
+        Serial.printf("⚠️ Pending bikes upload failed: HTTP %d (%s)\n",
+                      httpCode, redactUrl(url).c_str());
+        return false; // não derruba o sync; próxima rodada reenvia (idempotente)
+    }
+
+    Serial.println("📤 Pending bikes published for remote approval");
     return true;
 }
 
@@ -526,6 +597,7 @@ bool CloudSync::uploadHeartbeat()
     serializeJson(doc, jsonString);
 
     int httpCode = http.PUT(jsonString);
+    http.end();
 
     bool success = (httpCode == HTTP_CODE_OK);
 
@@ -536,10 +608,8 @@ bool CloudSync::uploadHeartbeat()
     }
     else
     {
-        Serial.printf("❌ Heartbeat falhou: HTTP %d\n", httpCode);
-        Serial.printf("   URL: %s\n", url.c_str());
+        Serial.printf("❌ Heartbeat falhou: HTTP %d (%s)\n", httpCode, redactUrl(url).c_str());
     }
 
-    http.end();
     return success;
 }

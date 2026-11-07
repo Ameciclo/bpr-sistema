@@ -2,6 +2,7 @@
 #define CONFIG_MANAGER_H
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "constants.h"
 
 // FSD Binary Config Structure
@@ -40,11 +41,14 @@ struct BikeConfig {
 class ConfigManager {
 private:
     BikeConfig config;
+    void resetToDefaults();
+    bool applyUpdate(JsonObject cfg, BikeConfig& candidate); // R09: aplica em candidata
+    static bool isValidConfig(const BikeConfig& cfg);
 
 public:
     ConfigManager();
     bool load();
-    void save();
+    bool save(); // R09: retorno verificável
     void generateUniqueId();
     bool processUpdate(const String& configJson);
     bool isValid();

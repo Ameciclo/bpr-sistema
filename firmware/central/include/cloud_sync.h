@@ -29,5 +29,6 @@ private:
     static bool downloadBikeRegistryData();
     static bool downloadBikeConfigs();
     static bool uploadBufferData();
+    static bool uploadPendingBikes(); // R15: publica descobertas locais
     static bool uploadHeartbeat();
 };

@@ -11,7 +11,7 @@ AtBaseState::AtBaseState(ConfigManager& configMgr, BufferManager& bufferMgr)
       bleConnected(false), lastStatusSent(0),
       transferActive(false), awaitingAck(false), fragIndex(0), fragTotal(0),
       fragRetries(0), lastFragmentSend(0), transferComplete(false),
-      configRequested(false) {
+      configRequested(false), busyUntilMs(0) {
     notifQueue = xQueueCreate(4, NOTIF_MAX_LEN);
 }
 
@@ -247,11 +247,17 @@ BikeState AtBaseState::update() {
     }
 
     if (transferActive) {
+        // R13: busy impõe espera real antes de nova tentativa
+        if (millis() < busyUntilMs) {
+            return STATE_AT_BASE;
+        }
+
         if (!awaitingAck) {
             if (sendFragment(fragIndex)) {
+                // R13: sucesso de ESCRITA não é ACK da aplicação — o contador
+                // de retries só zera quando o ACK do fragmento chega
                 awaitingAck = true;
                 lastFragmentSend = millis();
-                fragRetries = 0;
             } else {
                 fragRetries++;
                 if (fragRetries >= MAX_FRAGMENT_RETRIES) {
@@ -267,6 +273,8 @@ BikeState AtBaseState::update() {
             Serial.printf("⏰ ACK timeout for fragment %d (retry %d/%d)\n",
                           fragIndex, fragRetries, MAX_FRAGMENT_RETRIES);
             if (fragRetries >= MAX_FRAGMENT_RETRIES) {
+                // R13: ausência persistente de ACK encerra a tentativa
+                Serial.println("❌ No ACK after repeated retries - aborting transfer");
                 abortTransfer();
                 pClient->disconnect();
                 return STATE_SCANNING;
@@ -342,6 +350,7 @@ void AtBaseState::onNotification(const String& message) {
         }
 
         awaitingAck = false;
+        // R13: contador por fragmento zera apenas com ACK da aplicação
         fragRetries = 0;
         Serial.printf("✅ ACK for fragment %d/%d\n", seq + 1, fragTotal);
 
@@ -369,21 +378,18 @@ void AtBaseState::onNotification(const String& message) {
     }
 
     if (type == "busy") {
-        Serial.println("⏸️ Central busy - pausing transfer");
+        // R13: respeita retry_after_sec em vez de reiniciar imediatamente
+        uint32_t retryAfterSec = doc["retry_after_sec"] | 30;
+        busyUntilMs = millis() + retryAfterSec * 1000UL;
+        Serial.printf("⏸️ Central busy - pausing transfer for %lus\n", (unsigned long)retryAfterSec);
         if (transferActive) {
             abortTransfer();
         }
         return;
     }
 
-    if (type == "proceed") {
-        // Compatibilidade: permissão de limpeza direta
-        if (doc["can_clear_buffer"] | false) {
-            transferComplete = true;
-            transferActive = false;
-        }
-        return;
-    }
+    // R13/F05: a rota legada "proceed" (limpeza sem sessão/seq/ACK final) foi
+    // removida — limpeza somente via data_ack final com can_clear_buffer
 
     Serial.printf("ℹ️ Unhandled notification type: %s\n", type.c_str());
 }

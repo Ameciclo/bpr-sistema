@@ -125,6 +125,8 @@ void changeState(SystemState newState)
         // Inicializar buffer dinâmico baseado no heap disponível
         if (!bufferInitialized) {
             if (bufferManager.beginWithAvailableHeap()) {
+                // R05: reconcilia lotes de upload inconclusos de boots anteriores
+                bufferManager.begin();
                 Serial.println("✅ Buffer dinâmico inicializado");
                 bufferInitialized = true;
             } else {

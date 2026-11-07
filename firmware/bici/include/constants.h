@@ -20,9 +20,9 @@
 #define MAX_NETWORKS_PER_SCAN 20
 #define MAX_BATTERY 10
 
-// Session persistence (F08: header com magic/versão para validação)
+// Session persistence (F08/R22: header com magic/versão/CRC do payload)
 #define SESSION_FILE_MAGIC 0x42505253   // "BPRS"
-#define SESSION_FILE_VERSION 2
+#define SESSION_FILE_VERSION 3
 
 // BLE transfer protocol (F04/F05: fragmentação com ACK por fragmento)
 // MTU negociado 512 -> payload de escrita ~509; orçamento total por mensagem 460
@@ -34,13 +34,13 @@
 // Base discovery scheduling (F24: busca por agenda, não a cada loop)
 #define BASE_SEARCH_INTERVAL_MS 30000
 
-// State Machine (FSD compliant)
+// State Machine (FSD compliant) — O06: STATE_LOST removido (era inalcançável:
+// nenhum fluxo entrava nele; anúncio sem conexão é tratado pela busca agendada)
 enum BikeState {
     STATE_BOOT = 0,
     STATE_SCANNING = 1,
     STATE_AT_BASE = 2,
-    STATE_LOST = 3,
-    STATE_SLEEP = 4
+    STATE_SLEEP = 3
 };
 
 // FSD Binary Structures
@@ -70,13 +70,15 @@ struct SessionData {
     uint16_t battery_count;
     ScanData scans[MAX_SCANS];
     BatteryData battery[MAX_BATTERY];
+    uint16_t boot_id;           // R16: origem monotônica por boot
 } __attribute__((packed));
 
-// Header do arquivo de sessão (F08/F17: versão e tamanho validados no load)
+// Header do arquivo de sessão (F08/F17/R22: versão, tamanho e CRC validados no load)
 struct SessionFileHeader {
     uint32_t magic;
     uint32_t version;
     uint32_t payload_size;
+    uint32_t payload_crc;       // R22: integridade do conteúdo, não só do header
 } __attribute__((packed));
 
 // Utility Functions

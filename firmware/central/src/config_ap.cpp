@@ -50,6 +50,16 @@ static String htmlEscape(const String& value) {
     return out;
 }
 
+// R20: validação de candidata sem tocar o objeto ativo
+static bool isCandidateValid(const CredentialsConfig& creds) {
+    return strlen(creds.base_id) > 0 &&
+           strlen(creds.wifi_ssid) > 0 &&
+           strlen(creds.wifi_password) > 0 &&
+           strlen(creds.firebase_database_url) > 0 &&
+           strlen(creds.firebase_api_key) > 0 &&
+           strlen(creds.firebase_project_id) > 0;
+}
+
 static void sendErrorPage(const String& title, const String& detail) {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>" + title + "</title>";
     html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5;text-align:center}";
@@ -213,24 +223,27 @@ void ConfigAP::setupWebServer()
 
     server.on("/save", HTTP_POST, []()
               {
-        CredentialsConfig& creds = configCredentials.getCredentials();
+        // R20: aplica em CÓPIA candidata; credenciais ativas só são tocadas
+        // depois de validar E salvar — campo tardio inválido não deixa a RAM
+        // parcialmente modificada após um HTTP 400
+        CredentialsConfig candidate = configCredentials.getCredentials();
         bool ok = true;
 
         if (server.hasArg("base_id")) {
-            ok = ok && safeCopy(creds.base_id, sizeof(creds.base_id), server.arg("base_id"));
+            ok = ok && safeCopy(candidate.base_id, sizeof(candidate.base_id), server.arg("base_id"));
         }
         if (server.hasArg("ssid")) {
-            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), server.arg("ssid"));
+            ok = ok && safeCopy(candidate.wifi_ssid, sizeof(candidate.wifi_ssid), server.arg("ssid"));
         }
         // F23: vazio mantém o segredo salvo (não vaza no HTML)
         if (server.hasArg("pass") && server.arg("pass").length() > 0) {
-            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), server.arg("pass"));
+            ok = ok && safeCopy(candidate.wifi_password, sizeof(candidate.wifi_password), server.arg("pass"));
         }
         if (server.hasArg("url")) {
-            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), server.arg("url"));
+            ok = ok && safeCopy(candidate.firebase_database_url, sizeof(candidate.firebase_database_url), server.arg("url"));
         }
         if (server.hasArg("key") && server.arg("key").length() > 0) {
-            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), server.arg("key"));
+            ok = ok && safeCopy(candidate.firebase_api_key, sizeof(candidate.firebase_api_key), server.arg("key"));
         }
 
         if (!ok) {
@@ -239,25 +252,26 @@ void ConfigAP::setupWebServer()
         }
 
         // Extrair project_id da URL automaticamente
-        String url = creds.firebase_database_url;
+        String url = candidate.firebase_database_url;
         if (url.indexOf("://") > 0) {
             int start = url.indexOf("://") + 3;
             int end = url.indexOf(".", start);
             if (end > start) {
                 String projectId = url.substring(start, end);
-                safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), projectId);
+                safeCopy(candidate.firebase_project_id, sizeof(candidate.firebase_project_id), projectId);
             }
         }
 
-        creds.created_timestamp = millis() / 1000;
-        creds.first_sync = true;
+        candidate.created_timestamp = millis() / 1000;
+        candidate.first_sync = true;
 
         // F22: confirmação só depois de validar E salvar
-        if (!configCredentials.isCredentialsValid()) {
+        if (!isCandidateValid(candidate)) {
             sendErrorPage("Credenciais Incompletas", "Verifique base_id, ssid, senha WiFi, URL e token Firebase.");
             return;
         }
 
+        configCredentials.getCredentials() = candidate;
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais salvas (segredos não são impressos no serial)");
             sendSuccessPage();
@@ -305,44 +319,45 @@ void ConfigAP::setupWebServer()
             return;
         }
 
-        CredentialsConfig& creds = configCredentials.getCredentials();
+        // R20: aplica em CÓPIA candidata — objeto ativo intacto até validar E salvar
+        CredentialsConfig candidate = configCredentials.getCredentials();
         bool ok = true;
 
         // F22: schema único — plano E aninhado, incluindo firebase_api_key no nível plano
         if (!doc["base_id"].isNull()) {
-            ok = ok && safeCopy(creds.base_id, sizeof(creds.base_id), doc["base_id"].as<String>());
+            ok = ok && safeCopy(candidate.base_id, sizeof(candidate.base_id), doc["base_id"].as<String>());
         }
         if (!doc["wifi_ssid"].isNull()) {
-            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), doc["wifi_ssid"].as<String>());
+            ok = ok && safeCopy(candidate.wifi_ssid, sizeof(candidate.wifi_ssid), doc["wifi_ssid"].as<String>());
         }
         if (!doc["wifi_password"].isNull() && doc["wifi_password"].as<String>().length() > 0) {
-            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), doc["wifi_password"].as<String>());
+            ok = ok && safeCopy(candidate.wifi_password, sizeof(candidate.wifi_password), doc["wifi_password"].as<String>());
         }
         if (!doc["firebase_database_url"].isNull()) {
-            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), doc["firebase_database_url"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_database_url, sizeof(candidate.firebase_database_url), doc["firebase_database_url"].as<String>());
         }
         if (!doc["firebase_api_key"].isNull() && doc["firebase_api_key"].as<String>().length() > 0) {
-            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), doc["firebase_api_key"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_api_key, sizeof(candidate.firebase_api_key), doc["firebase_api_key"].as<String>());
         }
         if (!doc["firebase_project_id"].isNull()) {
-            ok = ok && safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), doc["firebase_project_id"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_project_id, sizeof(candidate.firebase_project_id), doc["firebase_project_id"].as<String>());
         }
 
         // Formato aninhado
         if (!doc["wifi"]["ssid"].isNull()) {
-            ok = ok && safeCopy(creds.wifi_ssid, sizeof(creds.wifi_ssid), doc["wifi"]["ssid"].as<String>());
+            ok = ok && safeCopy(candidate.wifi_ssid, sizeof(candidate.wifi_ssid), doc["wifi"]["ssid"].as<String>());
         }
         if (!doc["wifi"]["password"].isNull() && doc["wifi"]["password"].as<String>().length() > 0) {
-            ok = ok && safeCopy(creds.wifi_password, sizeof(creds.wifi_password), doc["wifi"]["password"].as<String>());
+            ok = ok && safeCopy(candidate.wifi_password, sizeof(candidate.wifi_password), doc["wifi"]["password"].as<String>());
         }
         if (!doc["firebase"]["database_url"].isNull()) {
-            ok = ok && safeCopy(creds.firebase_database_url, sizeof(creds.firebase_database_url), doc["firebase"]["database_url"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_database_url, sizeof(candidate.firebase_database_url), doc["firebase"]["database_url"].as<String>());
         }
         if (!doc["firebase"]["api_key"].isNull() && doc["firebase"]["api_key"].as<String>().length() > 0) {
-            ok = ok && safeCopy(creds.firebase_api_key, sizeof(creds.firebase_api_key), doc["firebase"]["api_key"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_api_key, sizeof(candidate.firebase_api_key), doc["firebase"]["api_key"].as<String>());
         }
         if (!doc["firebase"]["project_id"].isNull()) {
-            ok = ok && safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), doc["firebase"]["project_id"].as<String>());
+            ok = ok && safeCopy(candidate.firebase_project_id, sizeof(candidate.firebase_project_id), doc["firebase"]["project_id"].as<String>());
         }
 
         if (!ok) {
@@ -351,24 +366,25 @@ void ConfigAP::setupWebServer()
         }
 
         // Extrair project_id da URL automaticamente se não veio no JSON
-        String url = creds.firebase_database_url;
-        if (strlen(creds.firebase_project_id) == 0 && url.indexOf("://") > 0) {
+        String url = candidate.firebase_database_url;
+        if (strlen(candidate.firebase_project_id) == 0 && url.indexOf("://") > 0) {
             int start = url.indexOf("://") + 3;
             int end = url.indexOf(".", start);
             if (end > start) {
-                safeCopy(creds.firebase_project_id, sizeof(creds.firebase_project_id), url.substring(start, end));
+                safeCopy(candidate.firebase_project_id, sizeof(candidate.firebase_project_id), url.substring(start, end));
             }
         }
 
-        creds.created_timestamp = millis() / 1000;
-        creds.first_sync = true;
+        candidate.created_timestamp = millis() / 1000;
+        candidate.first_sync = true;
 
         // F22: validação completa antes de confirmar — não mais HTTP 200 com credencial vazia
-        if (!configCredentials.isCredentialsValid()) {
+        if (!isCandidateValid(candidate)) {
             sendErrorPage("Credenciais Incompletas", "Verifique base_id, ssid, senha WiFi, URL e token Firebase.");
             return;
         }
 
+        configCredentials.getCredentials() = candidate;
         if (configCredentials.saveCredentials()) {
             Serial.println("✅ Credenciais JSON salvas (segredos não são impressos no serial)");
             sendSuccessPage();

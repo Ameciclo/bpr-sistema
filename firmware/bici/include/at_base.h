@@ -39,6 +39,7 @@ private:
     uint32_t lastFragmentSend;
     bool transferComplete;
     bool configRequested;
+    uint32_t busyUntilMs;        // R13: espera real após busy
 
     // Notificações BLE -> loop (sem processamento pesado na task do NimBLE)
     QueueHandle_t notifQueue;

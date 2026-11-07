@@ -19,12 +19,13 @@ void LEDController::begin() {
 void LEDController::update() {
     uint32_t now = millis();
     uint32_t elapsed = now - patternStartTime;
-    
+    const LEDConfig& led = configManager.getConfig().led;
+
     switch (currentPattern) {
         case PATTERN_OFF:
             digitalWrite(LED_PIN, LOW);
             break;
-            
+
         case PATTERN_BOOT:
             if (elapsed % LED_BOOT_INTERVAL < LED_BOOT_INTERVAL / 2) {
                 digitalWrite(LED_PIN, HIGH);
@@ -32,7 +33,7 @@ void LEDController::update() {
                 digitalWrite(LED_PIN, LOW);
             }
             break;
-            
+
         case PATTERN_CONFIG:
             // Fast blink for config mode
             if (elapsed % 200 < 100) {
@@ -41,36 +42,43 @@ void LEDController::update() {
                 digitalWrite(LED_PIN, LOW);
             }
             break;
-            
+
         case PATTERN_BLE_READY:
-            if (elapsed % configManager.getConfig().led.ble_ms < configManager.getConfig().led.ble_ms / 10) {
+            // R14: guarda contra divisor zero (config inválida em runtime)
+            if (led.ble_ms == 0) {
+                digitalWrite(LED_PIN, LOW);
+            } else if (elapsed % led.ble_ms < led.ble_ms / 10) {
                 digitalWrite(LED_PIN, HIGH);
             } else {
                 digitalWrite(LED_PIN, LOW);
             }
             break;
-            
+
         case PATTERN_SYNC:
-            if (elapsed % configManager.getConfig().led.sync_ms < configManager.getConfig().led.sync_ms / 2) {
+            if (led.sync_ms == 0) {
+                digitalWrite(LED_PIN, LOW);
+            } else if (elapsed % led.sync_ms < led.sync_ms / 2) {
                 digitalWrite(LED_PIN, HIGH);
             } else {
                 digitalWrite(LED_PIN, LOW);
             }
             break;
-            
+
         case PATTERN_ERROR:
-            if (elapsed % configManager.getConfig().led.error_ms < configManager.getConfig().led.error_ms / 2) {
+            if (led.error_ms == 0) {
+                digitalWrite(LED_PIN, LOW);
+            } else if (elapsed % led.error_ms < led.error_ms / 2) {
                 digitalWrite(LED_PIN, HIGH);
             } else {
                 digitalWrite(LED_PIN, LOW);
             }
             break;
-            
+
         case PATTERN_BIKE_ARRIVED:
             // 3 quick blinks
             updateBlinkPattern(elapsed, 3, 150, 100);
             break;
-            
+
         case PATTERN_BIKE_LEFT:
             // 1 long blink
             if (elapsed < 1000) {
@@ -82,9 +90,9 @@ void LEDController::update() {
                 }
             }
             break;
-            
+
         case PATTERN_COUNT:
-            updateBlinkPattern(elapsed, targetBlinks, configManager.getConfig().led.count_ms, configManager.getConfig().led.count_ms / 2);
+            updateBlinkPattern(elapsed, targetBlinks, led.count_ms, led.count_ms / 2);
             break;
     }
 }
@@ -138,7 +146,13 @@ void LEDController::off() {
 }
 
 void LEDController::updateBlinkPattern(uint32_t elapsed, uint8_t maxBlinks, uint16_t onTime, uint16_t offTime) {
+    // R14: ciclo degenerado (divisores zero) é tratado — LED apaga em vez de
+    // dividir por zero
     uint16_t cycleTime = onTime + offTime;
+    if (cycleTime == 0) {
+        digitalWrite(LED_PIN, LOW);
+        return;
+    }
     uint32_t currentCycle = elapsed / cycleTime;
     uint32_t cyclePosition = elapsed % cycleTime;
     
@@ -150,8 +164,11 @@ void LEDController::updateBlinkPattern(uint32_t elapsed, uint8_t maxBlinks, uint
         }
     } else {
         digitalWrite(LED_PIN, LOW);
+        uint16_t countPauseMs = configManager.getConfig().led.count_pause_ms;
         // After count pattern, return to BLE ready
-        if (currentPattern == PATTERN_COUNT && elapsed > (maxBlinks * cycleTime + configManager.getConfig().led.count_pause_ms)) {
+        if (currentPattern == PATTERN_COUNT &&
+            countPauseMs > 0 &&
+            elapsed > (maxBlinks * cycleTime + countPauseMs)) {
             setPattern(PATTERN_BLE_READY);
         }
         // After bike arrived pattern, return to BLE ready

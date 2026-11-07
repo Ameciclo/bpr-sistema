@@ -1,0 +1,5 @@
+handle_zero_identified: no
+handle_zero_timeout_removed: no
+first_empty_handle_assigned_without_sender: bpr-123456
+arrival_callbacks_for_two_writes_same_bike: 2
+notification_calls: 1

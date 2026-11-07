@@ -1,0 +1,18 @@
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==120==ERROR: AddressSanitizer: SEGV on unknown address 0x00000000000a (pc 0x7f9ba5d333ba bp 0x7ffc120931a0 sp 0x7ffc12093188 T0)
+==120==The signal is caused by a WRITE memory access.
+==120==Hint: address points to the zero page.
+    #0 0x7f9ba5d333ba  (/lib/x86_64-linux-gnu/libc.so.6+0x1a13ba) (BuildId: 274eec488d230825a136fa9c4d85370fed7a0a5e)
+    #1 0x7f9ba6023bd4 in std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::operator=(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) (/lib/x86_64-linux-gnu/libstdc++.so.6+0x168bd4) (BuildId: 753c6c8608b61d4e67be8f0c890e03e0aa046b8b)
+    #2 0x55c60db8f4bc in String::operator=(String&&) audit-tests/stubs/Arduino.h:29
+    #3 0x55c60db824e1 in BufferManager::loadBikeBuffer(String const&, BikeBuffer&) bpr-sistema/firmware/central/src/buffer_manager.cpp:309
+    #4 0x55c60db88895 in BufferManager::getTotalDataCount() bpr-sistema/firmware/central/src/buffer_manager.cpp:508
+    #5 0x55c60db564f6 in main audit-tests/central_checks.cpp:15
+    #6 0x7f9ba5bbc1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: 274eec488d230825a136fa9c4d85370fed7a0a5e)
+    #7 0x7f9ba5bbc28a in __libc_start_main (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: 274eec488d230825a136fa9c4d85370fed7a0a5e)
+    #8 0x55c60db40f74 in _start (/workspace/scratch/bbf89f32ad8a/audit-tests/central_checks_asan+0xbf74) (BuildId: 8879008e0479c6a846d77f4daa0e946ee6e0503f)
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV (/lib/x86_64-linux-gnu/libc.so.6+0x1a13ba) (BuildId: 274eec488d230825a136fa9c4d85370fed7a0a5e) 
+==120==ABORTING

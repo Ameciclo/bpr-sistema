@@ -58,3 +58,9 @@ String Endpoints::getBufferDataBatch(const String& batchKey) {
     const String& baseId = configCredentials.getBaseId();
     return buildUrl("/bases/" + baseId + "/data/" + batchKey + ".json");
 }
+
+// R15: descobertas locais (bikes pendentes) publicadas para aprovação remota
+String Endpoints::getPendingBikes() {
+    const String& baseId = configCredentials.getBaseId();
+    return buildUrl("/bases/" + baseId + "/pending_bikes.json");
+}

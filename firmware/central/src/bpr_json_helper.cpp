@@ -24,32 +24,18 @@ void BPRJsonHelper::addHeartbeatFields(JsonDocument& doc) {
     doc["uptime"] = millis() / 1000;
 }
 
-void BPRJsonHelper::addConfigFields(JsonDocument& doc, const String& configType, const String& data) {
-    doc["config_type"] = configType;
-    doc["data"] = data;
-    addTimestamp(doc, "central_receive");
-}
-
 void BPRJsonHelper::addBikeResponse(JsonDocument& doc, const String& type, const String& bikeId) {
     doc["type"] = type;
     doc["bike_id"] = bikeId;
     doc["timestamp"] = time(nullptr);
 }
 
-String BPRJsonHelper::createProceedResponse() {
-    DynamicJsonDocument doc(256);
-    doc["type"] = "proceed";
-    doc["can_upload"] = true;
-    doc["can_clear_buffer"] = true;
-
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
-
-String BPRJsonHelper::createBusyResponse(uint32_t retryAfterSec) {
+String BPRJsonHelper::createBusyResponse(const String& bikeId, uint32_t retryAfterSec) {
     DynamicJsonDocument doc(256);
     doc["type"] = "busy";
+    // R13: resposta endereçada e correlacionada — a bike certa espera e as
+    // outras ignoram; retry_after_sec é respeitado pelo receptor
+    doc["bike_id"] = bikeId;
     doc["message"] = "Central busy - try again later";
     doc["retry_after_sec"] = retryAfterSec;
 

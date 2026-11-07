@@ -2,6 +2,7 @@
 #include <NimBLEDevice.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include "bike_manager.h"
 #include "ble_server.h"
 #include "constants.h"
@@ -15,6 +16,16 @@ struct ConfigPushRequest {
 };
 
 static QueueHandle_t pushQueue = nullptr;
+
+// R19: callbacks BLE rodam na task do NimBLE; mapas de conexão compartilham
+// com o loop — acesso serializado por mutex
+static SemaphoreHandle_t bleStateMutex = nullptr;
+static void bleStateLock() {
+    if (bleStateMutex) xSemaphoreTake(bleStateMutex, portMAX_DELAY);
+}
+static void bleStateUnlock() {
+    if (bleStateMutex) xSemaphoreGive(bleStateMutex);
+}
 
 // F10: sentinela real — zero É um handle válido
 static const uint16_t INVALID_HANDLE = 0xFFFF;
@@ -48,34 +59,44 @@ public:
         uint16_t conn_handle = desc->conn_handle;
         NimBLEAddress addr = NimBLEAddress(desc->peer_id_addr);
 
+        bleStateLock();
         BPRBLEServer::connectedBikes++;
-        Serial.printf("🔵 BLE CONNECT: %s | Handle: %d | Total: %d\n",
-                      addr.toString().c_str(), conn_handle, BPRBLEServer::connectedBikes);
-        NimBLEDevice::startAdvertising();
-
+        uint8_t total = BPRBLEServer::connectedBikes;
         // Store as unidentified with 10s timeout
         BPRBLEServer::connectedDevices[conn_handle] = "";
         BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000; // 10s timeout
+        bleStateUnlock();
+
+        Serial.printf("🔵 BLE CONNECT: %s | Handle: %d | Total: %d\n",
+                      addr.toString().c_str(), conn_handle, total);
+        NimBLEDevice::startAdvertising();
     }
 
     void onDisconnect(NimBLEServer *pServer, ble_gap_conn_desc *desc)
     {
-        if (BPRBLEServer::connectedBikes > 0)
-            BPRBLEServer::connectedBikes--;
-
         uint16_t conn_handle = desc->conn_handle;
         String bikeId = "";
+
+        bleStateLock();
+        if (BPRBLEServer::connectedBikes > 0)
+            BPRBLEServer::connectedBikes--;
+        uint8_t total = BPRBLEServer::connectedBikes;
         auto it = BPRBLEServer::connectedDevices.find(conn_handle);
         if (it != BPRBLEServer::connectedDevices.end())
         {
             bikeId = it->second;
             BPRBLEServer::connectedDevices.erase(it);
             BPRBLEServer::connectionTimeouts.erase(conn_handle);
-            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), BPRBLEServer::connectedBikes);
+        }
+        bleStateUnlock();
+
+        if (!bikeId.isEmpty())
+        {
+            Serial.printf("🔵 Bike %s disconnected (%d total)\n", bikeId.c_str(), total);
         }
         else
         {
-            Serial.printf("🔵 Device disconnected (%d total)\n", BPRBLEServer::connectedBikes);
+            Serial.printf("🔵 Device disconnected (%d total)\n", total);
         }
 
         NimBLEDevice::startAdvertising();
@@ -99,12 +120,6 @@ public:
         }
 
         uint16_t conn_handle = desc->conn_handle;
-        if (BPRBLEServer::connectedDevices.find(conn_handle) == BPRBLEServer::connectedDevices.end())
-        {
-            // Escrita de conexão não registrada (ex.: após onConnect perdido)
-            BPRBLEServer::connectedDevices[conn_handle] = "";
-            BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000;
-        }
 
         DynamicJsonDocument doc(BIKE_DATA_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
@@ -118,12 +133,54 @@ public:
                 return;
             }
 
-            // F10: mapeia o EMISSOR (handle do descritor), não um handle "vazio"
-            String previousId = BPRBLEServer::connectedDevices[conn_handle];
-            BPRBLEServer::connectedDevices[conn_handle] = bikeId;
-            BPRBLEServer::connectionTimeouts.erase(conn_handle); // identificada: sem timeout
+            bool firstIdentification = false;
+            bool identityConflict = false;
+            bleStateLock();
+            auto it = BPRBLEServer::connectedDevices.find(conn_handle);
+            if (it == BPRBLEServer::connectedDevices.end())
+            {
+                // Escrita de conexão não registrada (ex.: após onConnect perdido)
+                it = BPRBLEServer::connectedDevices.emplace(conn_handle, String("")).first;
+                BPRBLEServer::connectionTimeouts[conn_handle] = millis() + 10000;
+            }
 
+            String previousId = it->second;
             if (previousId.isEmpty())
+            {
+                // R18: ID já reivindicado por OUTRA conexão é recusado
+                bool idInUse = false;
+                for (auto& pair : BPRBLEServer::connectedDevices) {
+                    if (pair.first != conn_handle && pair.second == bikeId) {
+                        idInUse = true;
+                        break;
+                    }
+                }
+                if (!idInUse)
+                {
+                    it->second = bikeId;
+                    BPRBLEServer::connectionTimeouts.erase(conn_handle); // identificada: sem timeout
+                    firstIdentification = true;
+                }
+                else
+                {
+                    identityConflict = true;
+                }
+            }
+            else if (previousId != bikeId)
+            {
+                // R18: troca de identidade na MESMA conexão é recusada
+                identityConflict = true;
+            }
+            bleStateUnlock();
+
+            if (identityConflict)
+            {
+                Serial.printf("❌ Identity conflict on handle %d (claims %s) - rejected\n",
+                              conn_handle, bikeId.c_str());
+                return;
+            }
+
+            if (firstIdentification)
             {
                 Serial.printf("📝 Bike %s identified on handle %d\n", bikeId.c_str(), conn_handle);
                 // F10: evento de chegada apenas UMA vez por conexão
@@ -155,12 +212,43 @@ public:
             return;
         }
 
+        uint16_t conn_handle = desc->conn_handle;
+
         DynamicJsonDocument doc(BLE_COMMAND_BUFFER);
         DeserializationError error = deserializeJson(doc, value.c_str());
 
         if (!error && doc["bike_id"])
         {
             String bikeId = doc["bike_id"];
+
+            // R18: a configuração exige vínculo de identidade da CONEXÃO —
+            // handle não identificado ou ID divergente é recusado
+            String registeredId = "";
+            bleStateLock();
+            auto it = BPRBLEServer::connectedDevices.find(conn_handle);
+            if (it != BPRBLEServer::connectedDevices.end()) {
+                registeredId = it->second;
+            }
+            bleStateUnlock();
+
+            if (registeredId.isEmpty())
+            {
+                Serial.printf("❌ Config write from unidentified handle %d - rejected\n", conn_handle);
+                return;
+            }
+            if (registeredId != bikeId)
+            {
+                Serial.printf("❌ Config write identity mismatch on handle %d (%s != %s) - rejected\n",
+                              conn_handle, bikeId.c_str(), registeredId.c_str());
+                return;
+            }
+            // R18: mesma autorização do caminho de dados
+            if (!BikeManager::canConnect(bikeId))
+            {
+                Serial.printf("❌ Config write from non-allowed bike: %s\n", bikeId.c_str());
+                return;
+            }
+
             if (BPRBLEServer::configCallback) {
                 BPRBLEServer::configCallback(bikeId, String(value.c_str()));
             }
@@ -184,11 +272,21 @@ bool BPRBLEServer::start()
 
     Serial.println("🔵 Starting BLE Server");
 
+    if (!bleStateMutex) {
+        bleStateMutex = xSemaphoreCreateMutex();
+    }
+
     NimBLEDevice::init(BLE_DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+    // R23: a flag de build (CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU) é sobrescrita
+    // pelo sdkconfig do framework (256); o MTU preferido é definido em runtime
+    NimBLEDevice::setMTU(512);
+
     pServer = NimBLEDevice::createServer();
     static ServerCallbacks serverCallbacksInstance;
-    pServer->setCallbacks(&serverCallbacksInstance);
+    // R11: a 1.4.3 assume posse do callback por padrão e o destrói em
+    // deinit(true) — delete de objeto estático é UB; propriedade desligada
+    pServer->setCallbacks(&serverCallbacksInstance, false);
 
     if (!pushQueue) {
         pushQueue = xQueueCreate(8, sizeof(ConfigPushRequest));
@@ -217,7 +315,7 @@ bool BPRBLEServer::start()
     pAdvertising->setScanResponse(true);
     NimBLEDevice::startAdvertising();
 
-    Serial.println("📡 BLE Server started successfully");
+    Serial.println("📡 BLE Server started successfully (preferred MTU 512)");
     return true;
 }
 
@@ -230,15 +328,18 @@ void BPRBLEServer::stop()
         }
         pServer->getAdvertising()->stop();
         // F12: cleanup COMPLETO — a 1.4.3 reusa o servidor interno se clearAll=false
-        // e createService() duplicaria o UUID; deinit(true) libera servidor/serviços
+        // e createService() duplicaria o UUID; deinit(true) libera servidor/serviços.
+        // R11: callbacks estáticos NÃO são mais destruídos (setCallbacks(..., false))
         NimBLEDevice::deinit(true);
         pServer = nullptr;
         pService = nullptr;
         pDataChar = nullptr;
         pConfigChar = nullptr;
+        bleStateLock();
         connectedBikes = 0;
         connectedDevices.clear();
         connectionTimeouts.clear();
+        bleStateUnlock();
         isBusy = false;
         busyUntil = 0;
     }
@@ -247,17 +348,24 @@ void BPRBLEServer::stop()
 
 uint8_t BPRBLEServer::getConnectedBikes()
 {
-    return connectedBikes;
+    bleStateLock();
+    uint8_t count = connectedBikes;
+    bleStateUnlock();
+    return count;
 }
 
 uint16_t BPRBLEServer::getHandleForBike(const String& bikeId)
 {
+    bleStateLock();
+    uint16_t handle = INVALID_HANDLE;
     for (auto& pair : connectedDevices) {
         if (pair.second == bikeId) {
-            return pair.first;
+            handle = pair.first;
+            break;
         }
     }
-    return INVALID_HANDLE;
+    bleStateUnlock();
+    return handle;
 }
 
 bool BPRBLEServer::isBikeConnected(const String& bikeId)
@@ -320,12 +428,26 @@ void BPRBLEServer::sendConfigToHandle(uint16_t handle, const String& bikeId, con
         return;
     }
 
+    // R23: o envelope só cabe na notificação se respeitar o MTU NEGOCIADO
+    // desta conexão (valor útil = MTU - 3 bytes de overhead ATT)
+    uint16_t peerMtu = pServer->getPeerMTU(handle);
+    size_t maxNotifyPayload = (peerMtu > 3) ? (size_t)(peerMtu - 3) : 20;
+    if (config.length() > maxNotifyPayload)
+    {
+        // Não há fragmentação central→bike: recusa explícita em vez de
+        // notificação truncada anunciada como sucesso
+        Serial.printf("❌ Config for %s is %d bytes but negotiated MTU %d allows %d - NOT sent\n",
+                      bikeId.c_str(), config.length(), peerMtu, (int)maxNotifyPayload);
+        return;
+    }
+
     // F11: notificação da 1.4.3 alcança todos os assinantes; o envelope bike_id
     // permite à bike certa aplicar e às outras rejeitar
     pConfigChar->setValue(config.c_str());
     pConfigChar->notify(true);
 
-    Serial.printf("📤 Config sent to %s (handle %d): %d bytes\n", bikeId.c_str(), handle, config.length());
+    Serial.printf("📤 Config sent to %s (handle %d): %d bytes (MTU %d)\n",
+                  bikeId.c_str(), handle, config.length(), peerMtu);
 }
 
 void BPRBLEServer::checkAndSendPendingConfig(const String& bikeId, uint16_t handle)
@@ -467,11 +589,13 @@ void BPRBLEServer::checkConnectionTimeouts() {
     uint32_t now = millis();
     std::vector<uint16_t> toDisconnect;
 
+    bleStateLock();
     for (auto& pair : connectionTimeouts) {
         if (now > pair.second) {
             toDisconnect.push_back(pair.first);
         }
     }
+    bleStateUnlock();
 
     for (uint16_t handle : toDisconnect) {
         Serial.printf("⏰ Disconnecting unidentified device (handle %d) - timeout\n", handle);

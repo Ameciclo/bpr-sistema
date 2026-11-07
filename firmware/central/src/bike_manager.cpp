@@ -130,7 +130,12 @@ bool BikeManager::saveData()
 }
 
 // F03: converte o cadastro baixado (bike_registry.bin) na lista operacional,
-// preservando telemetria local (bateria, últimos contatos)
+// preservando telemetria local (bateria, últimos contatos).
+// R15: política explícita de capacidade e revogação:
+// - slots cheios de PENDING cedem lugar a um ALLOWED do cadastro remoto;
+// - cadastro válido E não-vazio que omite uma bike ALLOWED local a rebaixa
+//   para BLOCKED (revogação por ausência, auditada em log);
+// - cadastro vazio/nulo é "sem decisão" (não revoga nada — provisionamento).
 bool BikeManager::mergeFromRegistry()
 {
     if (!LittleFS.exists(BIKE_REGISTRY_FILE))
@@ -151,6 +156,12 @@ bool BikeManager::mergeFromRegistry()
         return false;
     }
 
+    if (registry.bike_count == 0)
+    {
+        Serial.println("ℹ️ Bike registry empty - no revocation, no merge");
+        return true;
+    }
+
     bool changed = false;
     for (int r = 0; r < registry.bike_count; r++)
     {
@@ -165,13 +176,45 @@ bool BikeManager::mergeFromRegistry()
 
         if (slot == -1)
         {
-            if (bikeStatus.bike_count >= 10) break;
-            slot = bikeStatus.bike_count;
+            if (bikeStatus.bike_count >= 10)
+            {
+                // R15: pendentes locais cedem lugar a autorizações remotas
+                int evict = -1;
+                uint32_t oldestCreated = UINT32_MAX;
+                for (int i = 0; i < bikeStatus.bike_count; i++)
+                {
+                    if ((BikeStatus)bikeStatus.statuses[i] == STATUS_PENDING &&
+                        bikeStatus.created_at[i] < oldestCreated)
+                    {
+                        oldestCreated = bikeStatus.created_at[i];
+                        evict = i;
+                    }
+                }
+                if (evict != -1)
+                {
+                    uint32_t evictedId = bikeStatus.bike_ids[evict];
+                    Serial.printf("🗑️ Pending bike %s evicted for allowed %s\n",
+                                  intToBikeId(evictedId).c_str(), intToBikeId(id).c_str());
+                    slot = evict; // reutiliza o slot do pendente
+                }
+                else
+                {
+                    // R15: sem espaço e sem pendente evictable — merge NÃO
+                    // afirma sucesso sem aplicar a autorização
+                    Serial.printf("❌ Registry merge: no slot for allowed bike %s\n",
+                                  intToBikeId(id).c_str());
+                    return false;
+                }
+            }
+            else
+            {
+                slot = bikeStatus.bike_count;
+                bikeStatus.bike_count++;
+            }
             bikeStatus.bike_ids[slot] = id;
             bikeStatus.created_at[slot] = registry.created_at[r];
             bikeStatus.last_contacts[slot] = registry.last_seen[r];
             bikeStatus.battery_levels[slot] = 0;
-            bikeStatus.bike_count++;
         }
         else
         {
@@ -185,6 +228,25 @@ bool BikeManager::mergeFromRegistry()
             bikeStatus.statuses[slot] = newStatus;
         }
         changed = true;
+    }
+
+    // R15: revogação por ausência — ALLOWED local fora do snapshot vira BLOCKED
+    for (int i = 0; i < bikeStatus.bike_count; i++)
+    {
+        if ((BikeStatus)bikeStatus.statuses[i] != STATUS_ALLOWED) continue;
+
+        bool present = false;
+        for (int r = 0; r < registry.bike_count; r++)
+        {
+            if (registry.bikes[r] == bikeStatus.bike_ids[i]) { present = true; break; }
+        }
+        if (!present)
+        {
+            Serial.printf("🚫 Bike %s revoked (absent from registry snapshot)\n",
+                          intToBikeId(bikeStatus.bike_ids[i]).c_str());
+            bikeStatus.statuses[i] = STATUS_BLOCKED;
+            changed = true;
+        }
     }
 
     bikeStatus.last_update = registry.last_update;
@@ -302,31 +364,28 @@ void BikeManager::updateHeartbeat(const String &bikeId, int battery, int heap,
                   bikeId.c_str(), battery, heap, sessions, bytes);
 }
 
+// R15: publica TODAS as descobertas pendentes (a política de "menos de 5
+// minutos" descartava justamente as descobertas mais antigas)
 bool BikeManager::getPendingBikesForUpload(DynamicJsonDocument &doc)
 {
     if (!dataLoaded)
         return false;
 
-    doc.clear();
-
     time_t now = time(nullptr);
-    if (now < 1000000000L) return false;
+    if (now < 1000000000L) return false; // sem relógio não há last_contact útil
+
+    doc.clear();
 
     for (int i = 0; i < bikeStatus.bike_count; i++)
     {
         BikeStatus status = (BikeStatus)bikeStatus.statuses[i];
         if (status == STATUS_PENDING && bikeStatus.created_at[i] > 0)
         {
-            uint32_t firstSeen = bikeStatus.created_at[i];
-
-            if ((now - firstSeen) < 300)
-            {
-                String bikeId = intToBikeId(bikeStatus.bike_ids[i]);
-                JsonObject bikeObj = doc.createNestedObject(bikeId);
-                bikeObj["status"] = status;
-                bikeObj["first_seen"] = firstSeen;
-                bikeObj["last_contact"] = bikeStatus.last_contacts[i];
-            }
+            String bikeId = intToBikeId(bikeStatus.bike_ids[i]);
+            JsonObject bikeObj = doc.createNestedObject(bikeId);
+            bikeObj["status"] = status;
+            bikeObj["first_seen"] = bikeStatus.created_at[i];
+            bikeObj["last_contact"] = bikeStatus.last_contacts[i];
         }
     }
 
@@ -441,6 +500,18 @@ void BikeManager::markConfigSent(const String &bikeId)
 
 void BikeManager::markConfigAcked(const String &bikeId, uint32_t appliedVersion)
 {
+    // R08: pendência só é encerrada quando o ACK confirma a revisão esperada;
+    // versão zero/antiga/diferente mantém a pendência com erro visível
+    int i = findConfigSlot(bikeConfigs, bikeId);
+    uint32_t expected = (i != -1) ? bikeConfigs.config_versions[i] : 0;
+
+    if (appliedVersion == 0 || (expected != 0 && appliedVersion != expected))
+    {
+        Serial.printf("⚠️ Config ACK from %s ignored (applied %lu, expected %lu) - still pending\n",
+                      bikeId.c_str(), (unsigned long)appliedVersion, (unsigned long)expected);
+        return;
+    }
+
     configChanged[bikeId] = false;
     configAckedVersion[bikeId] = appliedVersion;
     Serial.printf("✅ Config ACK from %s (applied version %lu)\n", bikeId.c_str(), (unsigned long)appliedVersion);
@@ -509,17 +580,6 @@ String BikeManager::generateSystemHeartbeat()
     return result;
 }
 
-void BikeManager::saveSystemHeartbeat()
-{
-    String heartbeatData = generateSystemHeartbeat();
-
-    if (!heartbeatData.isEmpty()) {
-        bufferManager.addConfigData("system_heartbeat", heartbeatData);
-        Serial.printf("💓 System heartbeat saved: %d allowed, %d pending, %d connected\n",
-                      getAllowedCount(), getPendingCount(), getConnectedCount());
-    }
-}
-
 bool BikeManager::needsConfigUpdate(const String &bikeId, uint32_t bikeLastUpdate)
 {
     if (!configsLoaded) return false;
@@ -542,20 +602,29 @@ std::vector<String> BikeManager::getBikesWithUpdates()
     return bikes;
 }
 
-// Getters simplificados para BikePairing
+// Getters simplificados para BikePairing (O06: valores reais do BufferManager)
 uint32_t BikeManager::getPendingBytes(const String &bikeId)
 {
-    return 0;
+    uint16_t sessions = 0;
+    uint32_t bytes = 0;
+    bufferManager.getBikePendingInfo(bikeId, sessions, bytes);
+    return bytes;
 }
 
 uint16_t BikeManager::getPendingSessions(const String &bikeId)
 {
-    return 0;
+    uint16_t sessions = 0;
+    uint32_t bytes = 0;
+    bufferManager.getBikePendingInfo(bikeId, sessions, bytes);
+    return sessions;
 }
 
 uint8_t BikeManager::getBufferUsage(const String &bikeId)
 {
-    return 0;
+    uint16_t sessions = 0;
+    uint32_t bytes = 0;
+    bufferManager.getBikePendingInfo(bikeId, sessions, bytes);
+    return (uint8_t)min<uint32_t>((bytes * 100UL) / (MAX_ITEMS_PER_BIKE * MAX_ITEM_DATA_SIZE), 100);
 }
 
 bool BikeManager::isBatteryLow(const String &bikeId)
@@ -647,7 +716,9 @@ bool BikeManager::downloadSingleBikeConfig(const String& bikeId)
     int slot = findConfigSlot(bikeConfigs, bikeId);
     uint32_t localVersion = (slot != -1) ? bikeConfigs.config_versions[slot] : 0;
 
-    // 1. Verificar versão remota desta bike
+    // 1. Verificar versão remota desta bike.
+    // R20: corpo "null" (chave inexistente) NÃO é versão zero — ausência é
+    // distinguida de valor válido
     String timestampUrl = "/bases/" + configCredentials.getBaseId() + "/bike_configs/last_update/" + bikeId + ".json?auth=" + configCredentials.getFirebaseKey();
     String fullTimestampUrl = configCredentials.getFirebaseURL() + timestampUrl;
 
@@ -655,20 +726,40 @@ bool BikeManager::downloadSingleBikeConfig(const String& bikeId)
     int timestampCode = http.GET();
 
     if (timestampCode == HTTP_CODE_OK) {
-        uint32_t remoteVersion = (uint32_t)http.getString().toInt();
+        String body = http.getString();
         http.end();
+        body.trim();
 
-        if (remoteVersion <= localVersion) {
-            Serial.printf("⏭️ Config %s already up to date (local %lu, remote %lu)\n",
-                          bikeId.c_str(), (unsigned long)localVersion, (unsigned long)remoteVersion);
-            return true;
+        bool versionPresent = body.length() > 0 && !body.equalsIgnoreCase("null");
+        if (versionPresent)
+        {
+            uint32_t remoteVersion = (uint32_t)body.toInt();
+            if (remoteVersion == 0 || remoteVersion <= localVersion) {
+                Serial.printf("⏭️ Config %s already up to date (local %lu, remote %lu)\n",
+                              bikeId.c_str(), (unsigned long)localVersion, (unsigned long)remoteVersion);
+                return true;
+            }
+
+            // 2. Baixar configuração
+            return fetchAndApplyBikeConfig(bikeId, remoteVersion);
         }
+        // versão ausente: sem config publicada para esta bike — não é erro
+        Serial.printf("ℹ️ No published config version for %s - skipping\n", bikeId.c_str());
+        return true;
     } else {
         http.end();
         Serial.printf("⚠️ No version for %s, downloading anyway\n", bikeId.c_str());
     }
 
-    // 2. Baixar configuração
+    // Versão indisponível (erro de rede): baixa por segurança, mas a versão
+    // aplicada será a publicada no corpo, se houver
+    return fetchAndApplyBikeConfig(bikeId, 0);
+}
+
+bool BikeManager::fetchAndApplyBikeConfig(const String& bikeId, uint32_t remoteVersion)
+{
+    HTTPClient http;
+
     String configUrl = "/bases/" + configCredentials.getBaseId() + "/bike_configs/" + bikeId + ".json?auth=" + configCredentials.getFirebaseKey();
     String fullConfigUrl = configCredentials.getFirebaseURL() + configUrl;
 
@@ -684,15 +775,23 @@ bool BikeManager::downloadSingleBikeConfig(const String& bikeId)
     String arrayData = http.getString();
     http.end();
 
+    // R20: corpo "null" = config inexistente para a bike — não aplica nada
+    arrayData.trim();
+    if (arrayData.length() == 0 || arrayData.equalsIgnoreCase("null")) {
+        Serial.printf("ℹ️ No config published for %s - nothing to apply\n", bikeId.c_str());
+        return true;
+    }
+
     // 3. Converter array JSON para CSV: "[300,5000,20,-85,3600,5,0]"
     arrayData.replace("[", "");
     arrayData.replace("]", "");
 
-    // 4. Aplicar configuração
-    bool success = updateBikeConfigFromCSV(bikeId, arrayData);
+    // 4. Aplicar configuração (R07: versão remota atravessa sem virar zero)
+    bool success = updateBikeConfigFromCSV(bikeId, arrayData, remoteVersion);
 
     if (success) {
-        Serial.printf("✅ Config downloaded for %s: %s\n", bikeId.c_str(), arrayData.c_str());
+        Serial.printf("✅ Config downloaded for %s: %s (version %lu)\n",
+                      bikeId.c_str(), arrayData.c_str(), (unsigned long)remoteVersion);
     }
 
     return success;
@@ -721,32 +820,56 @@ bool BikeManager::updateBikeConfigFromCSV(const String& bikeId, const String& cs
 
     BikeConfigData before = bikeConfigs;
 
-    // Parse CSV: "300,5000,20,-85,3600,5,0"
+    // R20: valida em CANDIDATA antes de tocar a configuração ativa
+    BikeConfigData candidate = bikeConfigs;
     int index = 0;
     int startPos = 0;
+    int fields = 0;
 
-    while (startPos < csvData.length() && index < 7) {
+    while (startPos < (int)csvData.length() && index < 7) {
         int commaPos = csvData.indexOf(',', startPos);
         String value = (commaPos == -1) ? csvData.substring(startPos) : csvData.substring(startPos, commaPos);
 
         switch (index) {
-            case 0: bikeConfigs.scan_intervals[bikeIndex] = value.toInt(); break;
-            case 1: bikeConfigs.scan_timeouts[bikeIndex] = value.toInt(); break;
-            case 2: bikeConfigs.max_networks[bikeIndex] = value.toInt(); break;
-            case 3: bikeConfigs.rssi_thresholds[bikeIndex] = value.toInt(); break;
-            case 4: bikeConfigs.sleep_durations[bikeIndex] = value.toInt(); break;
-            case 5: bikeConfigs.ble_scan_times[bikeIndex] = value.toInt(); break;
-            case 6: bikeConfigs.dev_modes[bikeIndex] = value.toInt(); break;
+            case 0: candidate.scan_intervals[bikeIndex] = value.toInt(); break;
+            case 1: candidate.scan_timeouts[bikeIndex] = value.toInt(); break;
+            case 2: candidate.max_networks[bikeIndex] = value.toInt(); break;
+            case 3: candidate.rssi_thresholds[bikeIndex] = value.toInt(); break;
+            case 4: candidate.sleep_durations[bikeIndex] = value.toInt(); break;
+            case 5: candidate.ble_scan_times[bikeIndex] = value.toInt(); break;
+            case 6: candidate.dev_modes[bikeIndex] = value.toInt(); break;
         }
 
+        fields++;
         if (commaPos == -1) break;
         startPos = commaPos + 1;
         index++;
     }
 
-    // F20: versão remota por bike, não hora local
-    bikeConfigs.config_versions[bikeIndex] = remoteVersion;
-    bikeConfigs.last_update = remoteVersion;
+    // R20: CSV incompleto não é aplicado
+    if (fields < 7) {
+        Serial.printf("❌ Config CSV for %s incomplete (%d/7 fields) - rejected\n", bikeId.c_str(), fields);
+        return false;
+    }
+
+    // R20: faixas validadas antes da conversão ter efeito
+    if (candidate.scan_intervals[bikeIndex] < 5 || candidate.scan_intervals[bikeIndex] > 86400 ||
+        candidate.scan_timeouts[bikeIndex] < 100 ||
+        candidate.max_networks[bikeIndex] < 1 || candidate.max_networks[bikeIndex] > 20 ||
+        candidate.sleep_durations[bikeIndex] < 60 ||
+        candidate.ble_scan_times[bikeIndex] < 1) {
+        Serial.printf("❌ Config CSV for %s out of range - rejected\n", bikeId.c_str());
+        return false;
+    }
+
+    bikeConfigs = candidate;
+
+    // F20: versão remota por bike, não hora local.
+    // R07: versão zero NÃO sobrescreve a versão local conhecida
+    if (remoteVersion > 0) {
+        bikeConfigs.config_versions[bikeIndex] = remoteVersion;
+        bikeConfigs.last_update = remoteVersion;
+    }
 
     bool valuesChanged = (memcmp(&before, &bikeConfigs, sizeof(BikeConfigData)) != 0);
     if (valuesChanged) {
@@ -755,10 +878,13 @@ bool BikeManager::updateBikeConfigFromCSV(const String& bikeId, const String& cs
     }
 
     if (!saveBikeConfigs()) {
+        // R20: falha de persistência restaura o estado anterior
+        bikeConfigs = before;
+        Serial.printf("❌ Config for %s not persisted - previous values kept\n", bikeId.c_str());
         return false;
     }
 
     Serial.printf("✅ Config updated for %s from CSV (version %lu)\n",
-                  bikeId.c_str(), (unsigned long)remoteVersion);
+                  bikeId.c_str(), (unsigned long)bikeConfigs.config_versions[bikeIndex]);
     return true;
 }

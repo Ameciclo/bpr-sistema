@@ -15,8 +15,8 @@ class ChannelPublisher {
 
     if (rideData) {
       message += `\n📊 *Viagem concluída:*\n`;
-      message += `📏 Distância: ${rideData.km} km\n`;
-      message += `🌱 CO₂ economizado: ${rideData.co2_saved_g}g\n`;
+      message += `📏 Distância: ${rideData.km} km *(estimativa)*\n`;
+      message += `🌱 CO₂ economizado: ${rideData.co2_saved_g}g *(estimativa, hipótese de substituição por carro)*\n`;
       message += `⏱️ Duração: ${rideData.duration_min} min\n`;
       
       if (rideData.points_count > 0) {
@@ -75,14 +75,18 @@ class ChannelPublisher {
     }
   }
 
-  // Publicar bike em movimento (tempo real)
-  async publishBikeInMotion(bikeId, location) {
+  // Publicar bike em movimento.
+  // A05: dado histórico (upload tardio) é rotulado como tal — não é
+  // anunciado como "rodando agora".
+  // A09: coordenadas publicadas em região aproximada (3 casas ≈ 100m), não
+  // trajeto individual preciso
+  async publishBikeInMotion(bikeId, location, isHistorical = false) {
     if (!this.publicChannelId) return;
 
     // Publicar apenas a cada 10 minutos para não spammar
     const lastPublish = this.lastMotionPublish?.get(bikeId) || 0;
     const now = Date.now();
-    
+
     if (now - lastPublish < 10 * 60 * 1000) return;
 
     if (!this.lastMotionPublish) {
@@ -90,9 +94,10 @@ class ChannelPublisher {
     }
     this.lastMotionPublish.set(bikeId, now);
 
+    const when = isHistorical ? 'registrado em viagem anterior' : 'agora';
     const message = `🚴 *Bike em movimento*\n\n` +
-      `🚲 ${bikeId.toUpperCase()} está rodando agora\n` +
-      `📍 Região: ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}\n` +
+      `🚲 ${bikeId.toUpperCase()} — movimento ${when}\n` +
+      `📍 Região aproximada: ${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}\n` +
       `📡 Precisão: ±${location.accuracy}m\n` +
       `⏰ ${new Date().toLocaleString('pt-BR')}`;
 

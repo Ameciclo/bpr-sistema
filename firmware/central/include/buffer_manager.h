@@ -1,11 +1,15 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <functional>
 #include <vector>
+#include "binary_structs.h"
 #include "constants.h"
 
 #define DATA_ITEM_MAX_SIZE 512
 
+// R02: itens são gravados/lidos um a um no arquivo por bike (registro de
+// tamanho fixo BufferItemBin); nada carrega a sessão inteira em RAM.
 struct DataItem {
     String bikeId;
     uint32_t timestamp;
@@ -19,34 +23,38 @@ struct DataItem {
     bool confirmed;
 };
 
-struct BikeBuffer {
-    DataItem buffer[MAX_ITEMS_PER_BIKE];
-    uint16_t dataCount;
-};
-
 class BufferManager {
 public:
     BufferManager();
 
-    // Inicialização dinâmica baseada no heap
+    // Inicialização
     bool beginWithAvailableHeap();
     uint32_t calculateCapacity();
     void cleanup();
+    void begin(); // inclui reconciliação de lotes inconclusos (R05)
 
-    // Métodos legados
-    void begin();
+    // Ingestão BLE
     bool addData(const String& bikeId, const uint8_t* data, size_t length,
                  uint32_t sessionId = 0, uint16_t sessionSalt = 0, uint16_t seq = 0);
     bool addBikeData(const String& bikeId, const String& jsonData);
-    bool addConfigData(const String& configType, const String& jsonData);
 
-    // Upload (F18/F19): um lote medido por chamada; retorna nº de itens incluídos
-    int getDataForUpload(DynamicJsonDocument& doc, int maxItems);
-    void markAsConfirmed();
-    void rollbackUpload();
+    // Upload (F18/F19/R05/R06): prepara UM lote, grava manifesto durável da
+    // identidade dos itens ANTES de marcá-los, e devolve a chave estável.
+    // Retorna nº de itens incluídos; 0 = sem pendentes ou falha de preparo.
+    int prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, String& batchId);
 
-    // Dedupe/completude de sessão (F04/F05)
+    // R05: confirmação/remove EXATAMENTE os itens do lote manifesto
+    bool markAsConfirmed(const String& batchId);
+    // R05: lote não entregue volta a pendente (item por item, in-place)
+    bool rollbackUpload(const String& batchId);
+    // R05: boot com lotes sem confirmação → reverte para pendente
+    void reconcilePendingBatches();
+
+    // Dedupe/completude de sessão (F04/F05/R12)
     bool hasCompleteSession(const String& bikeId, uint32_t sessionId, uint16_t salt, uint16_t totalFrags);
+
+    // O06: pendências reais por bike (sessões e bytes não enviados)
+    bool getBikePendingInfo(const String& bikeId, uint16_t& sessions, uint32_t& bytes);
 
     // Status
     int getDataCount();
@@ -66,18 +74,30 @@ private:
     // F15: caminho canônico por bike (/buffer/{bikeId}.bin)
     String getBikeBufferPath(const String& bikeId);
     std::vector<String> listBikeIds();
-    bool loadBikeBuffer(const String& bikeId, BikeBuffer& bikeBuffer);
-    bool saveBikeBuffer(const String& bikeId, const BikeBuffer& bikeBuffer);
+    std::vector<String> listManifestPaths();
 
-    // Persistência (métodos de compatibilidade)
-    void loadAllBuffers();
-    void saveBuffer();
+    // Streaming de registros de tamanho fixo.
+    // visitor retorna false para parar a iteração antecipadamente.
+    // Retorna true se o arquivo é válido (header + todos os itens lidos).
+    bool forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor);
+    bool setItemUploadedFlag(const String& path, uint32_t index, bool uploaded);
+
+    // R04: gravação recuperável (temporário + rename)
+    bool rewriteBikeBufferExcluding(const String& bikeId, const std::vector<DataItem>& manifestItems);
+
+    // R05: manifesto durável do lote
+    String getManifestPath(const String& batchId);
+    bool writeManifest(const String& batchId, const std::vector<DataItem>& items);
+    bool readManifest(const String& batchId, std::vector<DataItem>& items);
+    void removeManifest(const String& batchId);
+
+    // O04: backup bruto por cópia de arquivo
     void createBackup();
     void cleanupOldBackups();
     void printFileSize(const String& filePath);
     int getTotalDataCountUnlocked(); // chamadores já seguram o lock
 
-    // Concorrência BLE callback x loop (análise §6.4)
-    void lock();
+    // Concorrência BLE callback x loop (R10: aquisição com resultado obrigatório)
+    bool tryLock();
     void unlock();
 };

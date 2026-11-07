@@ -3,12 +3,31 @@
     "bikes": {
       "$bikeId": {
         ".read": true,
-        ".write": true,
+        ".write": "auth != null",
         "sessions": {
           "$sessionId": {
             ".validate": "newData.hasChildren(['start', 'mode'])"
           }
         }
+      }
+    },
+    "bases": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+    "rides": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+    "public_stats": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+    "subscriptions": {
+      "$userId": {
+        ".read": "auth != null && auth.uid === $userId",
+        ".write": "auth != null && auth.uid === $userId",
+        ".validate": "newData.hasChildren(['bikes', 'stations', 'system'])"
       }
     }
   }

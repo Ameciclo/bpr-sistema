@@ -103,8 +103,9 @@ public:
     bool loadConfig();
     bool saveConfig();
     bool isConfigValid();
+    static bool isConfigValidFor(const CentralConfig& cfg); // R14/R20
     bool updateFromCSV(const String& csvData, uint32_t remoteVersion = 0);
-    void setConfigValue(int index, const String& value);
+    static void setConfigValue(int index, const String& value, CentralConfig& target);
     
     const CentralConfig& getConfig() const { return config; }
     CentralConfig& getConfig() { return config; }
@@ -116,4 +117,5 @@ public:
 
 private:
     CentralConfig config;
+    void resetToDefaults(); // R20: restaura padrões reais em falha de load
 };

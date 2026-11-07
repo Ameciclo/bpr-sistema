@@ -2,6 +2,8 @@
 #include <CRC32.h>
 #include <LittleFS.h>
 #include <freertos/semphr.h>
+#include <algorithm>
+#include <cstddef>
 #include "binary_structs.h"
 #include "bpr_json_helper.h"
 #include "buffer_manager.h"
@@ -14,14 +16,49 @@ extern ConfigCredentials configCredentials;
 
 static SemaphoreHandle_t bufferMutex = nullptr;
 
-BufferManager::BufferManager() : maxCapacity(0), currentUsage(0), initialized(false), lastSync(0) {
-    bufferMutex = xSemaphoreCreateMutex();
+// Converte um registro binário em DataItem em RAM
+static void binToItem(const BufferItemBin& bin, DataItem& item, const String& bikeId) {
+    item.bikeId = bikeId;
+    item.timestamp = bin.timestamp;
+    item.size = bin.size;
+    item.crc32 = bin.crc32;
+    item.session_id = bin.session_id;
+    item.session_salt = bin.session_salt;
+    item.seq = bin.seq;
+    item.uploaded = (bin.uploaded != 0);
+    item.confirmed = (bin.confirmed != 0);
+    memcpy(item.data, bin.data, bin.size);
 }
 
-void BufferManager::lock() {
-    if (bufferMutex && xSemaphoreTake(bufferMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        Serial.println("⚠️ BufferManager lock timeout");
+static void itemToBin(const DataItem& item, BufferItemBin& bin) {
+    memset(&bin, 0, sizeof(bin));
+    bin.bikeId = bikeIdToInt(item.bikeId);
+    bin.timestamp = item.timestamp;
+    bin.size = item.size;
+    bin.crc32 = item.crc32;
+    bin.session_id = item.session_id;
+    bin.session_salt = item.session_salt;
+    bin.seq = item.seq;
+    bin.uploaded = item.uploaded ? 1 : 0;
+    bin.confirmed = item.confirmed ? 1 : 0;
+    memcpy(bin.data, item.data, item.size);
+}
+
+static bool sameIdentity(const DataItem& a, const DataItem& b) {
+    return a.session_id == b.session_id && a.session_salt == b.session_salt &&
+           a.seq == b.seq && a.crc32 == b.crc32 && a.bikeId == b.bikeId;
+}
+
+BufferManager::BufferManager() : maxCapacity(0), currentUsage(0), initialized(false), lastSync(0) {
+    if (!bufferMutex) {
+        bufferMutex = xSemaphoreCreateMutex();
     }
+}
+
+// R10: aquisição com resultado obrigatório — quem não consegue o lock NÃO
+// executa a região protegida (chamadores verificam o retorno)
+bool BufferManager::tryLock() {
+    return bufferMutex && xSemaphoreTake(bufferMutex, pdMS_TO_TICKS(2000)) == pdTRUE;
 }
 
 void BufferManager::unlock() {
@@ -32,7 +69,7 @@ void BufferManager::unlock() {
 
 bool BufferManager::beginWithAvailableHeap() {
     uint32_t freeHeap = ESP.getFreeHeap();
-    uint32_t systemReserve = 60000;  // BLE + sistema + BikeBuffer operado em heap
+    uint32_t systemReserve = 60000;  // BLE + sistema (streaming não usa heap por sessão)
 
     if (freeHeap < systemReserve + 20000) {
         Serial.printf("❌ Heap insuficiente: %d bytes\n", freeHeap);
@@ -60,12 +97,18 @@ void BufferManager::begin()
 {
     // Diretórios já criados no self-check
     cleanupOldBackups();
+    // R05: lotes preparados sem confirmação voltam a pendente
+    reconcilePendingBatches();
     Serial.printf("📥 DataBuffer initialized: %d total items\n", getTotalDataCount());
 }
 
 // F15: caminho canônico e determinístico por bike
 String BufferManager::getBikeBufferPath(const String& bikeId) {
     return String(BUFFER_DIR) + "/" + bikeId + ".bin";
+}
+
+String BufferManager::getManifestPath(const String& batchId) {
+    return String(BUFFER_DIR) + "/batch-" + batchId + ".manifest";
 }
 
 std::vector<String> BufferManager::listBikeIds() {
@@ -89,23 +132,30 @@ std::vector<String> BufferManager::listBikeIds() {
     return ids;
 }
 
-bool BufferManager::addConfigData(const String& configType, const String& jsonData)
-{
-    lock();
-    DynamicJsonDocument doc(BIKE_DATA_BUFFER);
-    BPRJsonHelper::addConfigFields(doc, configType, jsonData);
+std::vector<String> BufferManager::listManifestPaths() {
+    std::vector<String> paths;
+    if (!LittleFS.exists(BUFFER_DIR)) {
+        return paths;
+    }
+    File root = LittleFS.open(BUFFER_DIR);
+    if (!root) return paths;
 
-    String modifiedJson;
-    serializeJson(doc, modifiedJson);
-
-    bool ok = addData("central", (uint8_t *)modifiedJson.c_str(), modifiedJson.length());
-    unlock();
-    return ok;
+    File file = root.openNextFile();
+    while (file) {
+        String fileName = file.name();
+        if (fileName.endsWith(".manifest") && fileName.startsWith("batch-")) {
+            paths.push_back(String(BUFFER_DIR) + "/" + fileName);
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+    return paths;
 }
 
 bool BufferManager::addBikeData(const String& bikeId, const String& jsonData)
 {
-    lock();
+    if (!tryLock()) return false;
     DynamicJsonDocument doc(BIKE_DATA_BUFFER);
     DeserializationError error = deserializeJson(doc, jsonData);
 
@@ -116,23 +166,20 @@ bool BufferManager::addBikeData(const String& bikeId, const String& jsonData)
         return false;
     }
 
-    // F20: só carimba horário se o relógio for válido (helper verifica)
-    BPRJsonHelper::addTimestamp(doc, "central_receive");
-
-    String modifiedJson;
-    serializeJson(doc, modifiedJson);
-
+    // R03: o CONTEÚDO da bike não é mutado — o horário de recepção fica como
+    // metadado do item (timestamp), fora do CRC. Reenvio idêntico produz o
+    // mesmo CRC e cai no dedupe idempotente.
     // F04: extrai identificação de sessão/fragmento para dedupe
     uint32_t sessionId = doc["session_id"] | 0;
     uint16_t salt = doc["session_salt"] | 0;
     uint16_t seq = doc["seq"] | 0;
 
-    bool ok = addData(bikeId, (uint8_t *)modifiedJson.c_str(), modifiedJson.length(), sessionId, salt, seq);
+    bool ok = addData(bikeId, (const uint8_t*)jsonData.c_str(), jsonData.length(), sessionId, salt, seq);
     unlock();
     return ok;
 }
 
-// Sem lock interno: chamadores (addBikeData/addConfigData) seguram o lock
+// Sem lock interno: chamadores seguram o lock
 bool BufferManager::addData(const String& bikeId, const uint8_t* data, size_t length,
                             uint32_t sessionId, uint16_t sessionSalt, uint16_t seq)
 {
@@ -142,154 +189,261 @@ bool BufferManager::addData(const String& bikeId, const uint8_t* data, size_t le
         return false;
     }
 
-    // F15/F23: bikeId vira nome de arquivo — só aceita formato canônico ou "central"
-    if (bikeId != "central" && !isValidBikeIdFormat(bikeId)) {
+    // F15/F23/O03: bikeId vira nome de arquivo — só formato canônico
+    if (!isValidBikeIdFormat(bikeId)) {
         Serial.printf("❌ Invalid bike id for storage: %s\n", bikeId.c_str());
         return false;
     }
-
-    BikeBuffer* bikeBuffer = new BikeBuffer;
-    if (!bikeBuffer) return false;
-    bool loaded = loadBikeBuffer(bikeId, *bikeBuffer);
 
     CRC32 crc;
     crc.update(data, length);
     uint32_t checksum = crc.finalize();
 
-    // F05: dedupe idempotente — reenvio de fragmento já persistido não duplica
-    if (loaded) {
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            if (bikeBuffer->buffer[i].session_id == sessionId &&
-                bikeBuffer->buffer[i].session_salt == sessionSalt &&
-                bikeBuffer->buffer[i].seq == seq &&
-                bikeBuffer->buffer[i].crc32 == checksum) {
-                Serial.printf("♻️ Duplicate fragment %s sessão %lu seq %d - already stored\n",
-                              bikeId.c_str(), (unsigned long)sessionId, seq);
-                delete bikeBuffer;
-                return true;
-            }
+    String path = getBikeBufferPath(bikeId);
+    File file = LittleFS.open(path, "r+");
+    if (!file) {
+        // Primeiro item da bike: cria arquivo com header zerado
+        file = LittleFS.open(path, "w");
+        if (!file) {
+            Serial.printf("❌ Cannot create buffer file: %s\n", path.c_str());
+            return false;
+        }
+        BufferFileHeader header;
+        header.magic = BUFFER_MAGIC;
+        header.version = BUFFER_VERSION;
+        header.item_count = 0;
+        header.last_update = time(nullptr);
+        bool ok = file.write((uint8_t*)&header, sizeof(header)) == sizeof(header);
+        file.close();
+        if (!ok) {
+            LittleFS.remove(path);
+            return false;
+        }
+        file = LittleFS.open(path, "r+");
+        if (!file) return false;
+    }
+
+    BufferFileHeader header;
+    if (file.readBytes((char*)&header, sizeof(header)) != sizeof(header) ||
+        header.magic != BUFFER_MAGIC || header.version != BUFFER_VERSION ||
+        header.item_count > MAX_ITEMS_PER_BIKE) {
+        Serial.printf("❌ Buffer header invalid: %s\n", path.c_str());
+        file.close();
+        return false;
+    }
+
+    // F05/R03: dedupe idempotente sobre (bike, sessão, salt, seq, CRC do
+    // conteúdo original) — o horário de recepção NÃO entra na identidade
+    DataItem candidate;
+    candidate.bikeId = bikeId;
+    candidate.crc32 = checksum;
+    candidate.session_id = sessionId;
+    candidate.session_salt = sessionSalt;
+    candidate.seq = seq;
+    bool duplicate = false;
+    for (uint32_t i = 0; i < header.item_count && !duplicate; i++) {
+        BufferItemBin bin;
+        if (file.readBytes((char*)&bin, sizeof(bin)) != sizeof(bin)) {
+            Serial.printf("❌ Truncated item in %s at %d\n", path.c_str(), i);
+            file.close();
+            return false;
+        }
+        if (bin.session_id == sessionId && bin.session_salt == sessionSalt &&
+            bin.seq == seq && bin.crc32 == checksum) {
+            duplicate = true;
         }
     }
 
-    if (!loaded || bikeBuffer->dataCount >= MAX_ITEMS_PER_BIKE) {
-        Serial.printf("❌ Buffer full for bike %s\n", bikeId.c_str());
-        delete bikeBuffer;
+    if (duplicate) {
+        file.close();
+        Serial.printf("♻️ Duplicate fragment %s sessão %lu seq %d - already stored\n",
+                      bikeId.c_str(), (unsigned long)sessionId, seq);
+        return true;
+    }
+
+    if (header.item_count >= MAX_ITEMS_PER_BIKE) {
+        // R02: capacidade por bike dimensionada para a sessão máxima legítima;
+        // exceder indica violação de contrato, não uso normal
+        Serial.printf("❌ Buffer full for bike %s (%d items)\n", bikeId.c_str(), header.item_count);
+        file.close();
         return false;
     }
 
     if (getTotalDataCountUnlocked() >= MAX_TOTAL_ITEMS) {
         Serial.println("❌ Total buffer capacity reached");
-        delete bikeBuffer;
+        file.close();
         return false;
     }
 
-    int index = bikeBuffer->dataCount;
-    bikeBuffer->buffer[index].bikeId = bikeId;
-    bikeBuffer->buffer[index].timestamp = time(nullptr);
-    bikeBuffer->buffer[index].size = length;
-    bikeBuffer->buffer[index].crc32 = checksum;
-    bikeBuffer->buffer[index].session_id = sessionId;
-    bikeBuffer->buffer[index].session_salt = sessionSalt;
-    bikeBuffer->buffer[index].seq = seq;
-    bikeBuffer->buffer[index].uploaded = false;
-    bikeBuffer->buffer[index].confirmed = false;
-    memcpy(bikeBuffer->buffer[index].data, data, length);
-    bikeBuffer->dataCount++;
+    // Anexa o registro no fim lógico do arquivo; o header (item_count) só é
+    // atualizado DEPOIS do registro gravado — crash no meio deixa o arquivo
+    // consistente no estado anterior (registro órfão é sobrescrito depois)
+    DataItem item = candidate;
+    item.timestamp = time(nullptr);
+    item.size = length;
+    item.uploaded = false;
+    item.confirmed = false;
+    memcpy(item.data, data, length);
+
+    BufferItemBin bin;
+    itemToBin(item, bin);
+
+    size_t offset = sizeof(BufferFileHeader) + (size_t)header.item_count * sizeof(BufferItemBin);
+    if (!file.seek(offset)) {
+        file.close();
+        return false;
+    }
+    if (file.write((uint8_t*)&bin, sizeof(bin)) != sizeof(bin)) {
+        Serial.printf("❌ Failed to append item for %s (header untouched)\n", bikeId.c_str());
+        file.close();
+        return false;
+    }
+
+    header.item_count++;
+    header.last_update = time(nullptr);
+    if (!file.seek(0) ||
+        file.write((uint8_t*)&header, sizeof(header)) != sizeof(header)) {
+        // Registro gravado mas header não: item fica invisível (não confirmado
+        // para a bike) — estado seguro, próximo append sobrescreve o órfão
+        Serial.printf("❌ Failed to update header for %s - item not acked\n", bikeId.c_str());
+        file.close();
+        return false;
+    }
+    file.close();
 
     Serial.printf("📦 Data added: %s [%d bytes, CRC:%08X, sessão %lu seq %d]\n",
                   bikeId.c_str(), length, checksum, (unsigned long)sessionId, seq);
-
-    // F16: só retorna sucesso depois de persistir de fato
-    bool saved = saveBikeBuffer(bikeId, *bikeBuffer);
-    if (!saved) {
-        Serial.printf("❌ Failed to persist buffer for %s\n", bikeId.c_str());
-    }
-    delete bikeBuffer;
-    return saved;
+    return true;
 }
 
-// F04/F05: sessão completa = todos os fragmentos 0..total-1 persistidos
+// F04/F05/R12: sessão completa = todos os fragmentos 0..total-1 persistidos
 bool BufferManager::hasCompleteSession(const String& bikeId, uint32_t sessionId, uint16_t salt, uint16_t totalFrags)
 {
     if (totalFrags == 0) return false;
-    lock();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
+    // R12: total maior que a janela por bike não pode ficar completo aqui
+    if (totalFrags > MAX_SESSION_FRAGMENTS) return false;
+    if (!tryLock()) return false;
     bool complete = false;
-    if (loadBikeBuffer(bikeId, *bikeBuffer)) {
-        bool seen[MAX_ITEMS_PER_BIKE] = {false};
-        int found = 0;
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            const DataItem& item = bikeBuffer->buffer[i];
-            if (item.session_id == sessionId && item.session_salt == salt &&
-                item.seq < totalFrags && !seen[item.seq]) {
-                seen[item.seq] = true;
-                found++;
-            }
+    bool seen[MAX_SESSION_FRAGMENTS] = {false};
+    int found = 0;
+
+    forEachItem(getBikeBufferPath(bikeId), [&](const DataItem& item, uint32_t) {
+        // R12: seq limitado pelo array E pelo total informado
+        if (item.session_id == sessionId && item.session_salt == salt &&
+            item.seq < totalFrags && item.seq < MAX_SESSION_FRAGMENTS && !seen[item.seq]) {
+            seen[item.seq] = true;
+            found++;
         }
-        complete = (found == totalFrags);
-    }
-    delete bikeBuffer;
+        return true;
+    });
+
+    complete = (found == (int)totalFrags);
     unlock();
     return complete;
 }
 
-// F18/F19: monta UM lote por chamada com bytes medidos; marca como enviado
-int BufferManager::getDataForUpload(DynamicJsonDocument& doc, int maxItems)
+// Streaming de registros: valida header e cada item (tamanho + CRC, F17)
+bool BufferManager::forEachItem(const String& path, const std::function<bool(const DataItem&, uint32_t)>& visitor)
 {
-    lock();
+    if (!LittleFS.exists(path)) {
+        return true; // sem arquivo = buffer vazio válido
+    }
+
+    File file = LittleFS.open(path, "r");
+    if (!file) return false;
+
+    BufferFileHeader header;
+    if (file.readBytes((char*)&header, sizeof(header)) != sizeof(header) ||
+        header.magic != BUFFER_MAGIC || header.version != BUFFER_VERSION ||
+        header.item_count > MAX_ITEMS_PER_BIKE) {
+        file.close();
+        Serial.printf("❌ Buffer header invalid: %s\n", path.c_str());
+        return false;
+    }
+
+    String bikeId = path.substring(String(BUFFER_DIR).length() + 1);
+    bikeId = bikeId.substring(0, bikeId.length() - 4);
+
+    bool keepGoing = true;
+    for (uint32_t i = 0; i < header.item_count && keepGoing; i++) {
+        BufferItemBin bin;
+        if (file.readBytes((char*)&bin, sizeof(bin)) != sizeof(bin)) {
+            Serial.printf("⚠️ Truncated item in %s at %d - stopping at %d items\n",
+                          path.c_str(), i, (int)(i));
+            break;
+        }
+        if (bin.size > MAX_ITEM_DATA_SIZE) {
+            Serial.printf("⚠️ Item %d in %s has invalid size %d - stopping\n", i, path.c_str(), bin.size);
+            break;
+        }
+        // F17: CRC verificado na leitura
+        CRC32 crc;
+        crc.update(bin.data, bin.size);
+        if (crc.finalize() != bin.crc32) {
+            Serial.printf("⚠️ CRC mismatch in %s item %d - stopping\n", path.c_str(), i);
+            break;
+        }
+
+        DataItem item;
+        binToItem(bin, item, bikeId);
+        keepGoing = visitor(item, i);
+    }
+
+    file.close();
+    return true;
+}
+
+// Atualiza in-place o byte `uploaded` de um registro de tamanho fixo
+bool BufferManager::setItemUploadedFlag(const String& path, uint32_t index, bool uploaded)
+{
+    File file = LittleFS.open(path, "r+");
+    if (!file) return false;
+
+    size_t offset = sizeof(BufferFileHeader) + (size_t)index * sizeof(BufferItemBin) +
+                    offsetof(BufferItemBin, uploaded);
+    uint8_t flag = uploaded ? 1 : 0;
+    bool ok = file.seek(offset) && file.write(&flag, 1) == 1;
+    file.close();
+    return ok;
+}
+
+// F18/F19/R05/R06: prepara um lote medido com identidade estável
+int BufferManager::prepareUploadBatch(DynamicJsonDocument& doc, int maxItems, String& batchId)
+{
+    if (!tryLock()) return 0;
     if (maxItems <= 0 || maxItems > UPLOAD_BATCH_MAX_ITEMS) {
         maxItems = UPLOAD_BATCH_MAX_ITEMS;
     }
 
-    // Candidatos: itens não enviados
-    std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
-
     struct Candidate {
         String bikeId;
-        int index;
-        String decoded;
-        size_t itemBytes;
+        uint32_t index;
+        size_t itemBytes; // estimativa = metadados do envelope + bytes do item
     };
     std::vector<Candidate> candidates;
 
+    // Passo 1: coleta só metadados dos pendentes (sem decodificar payload —
+    // O01/R02: nada de materializar todos os itens em RAM)
+    std::vector<String> ids = listBikeIds();
     for (const String& bikeId : ids) {
-        if (!loadBikeBuffer(bikeId, *bikeBuffer)) continue;
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            if (!bikeBuffer->buffer[i].uploaded) {
+        forEachItem(getBikeBufferPath(bikeId), [&](const DataItem& item, uint32_t index) {
+            if (!item.uploaded) {
                 Candidate c;
                 c.bikeId = bikeId;
-                c.index = i;
-                String decoded;
-                decoded.reserve(bikeBuffer->buffer[i].size);
-                for (size_t j = 0; j < bikeBuffer->buffer[i].size; j++) {
-                    decoded += (char)bikeBuffer->buffer[i].data[j];
-                }
-                c.decoded = decoded;
-                c.itemBytes = 120; // metadados do envelope por item
+                c.index = index;
+                c.itemBytes = 120 + item.size + 16; // envelope + conteúdo + folga
                 candidates.push_back(c);
             }
-        }
+            return true;
+        });
     }
 
     if (candidates.empty()) {
-        delete bikeBuffer;
         unlock();
         return 0;
     }
 
-    // Passo 1 (F18): medir bytes de cada item antes de montar o documento
-    DynamicJsonDocument testDoc(BIKE_DATA_BUFFER);
-    for (Candidate& c : candidates) {
-        testDoc.clear();
-        if (deserializeJson(testDoc, c.decoded) == DeserializationError::Ok) {
-            c.itemBytes += measureJson(testDoc);
-        } else {
-            c.itemBytes += c.decoded.length() + 16;
-        }
-    }
-
-    // Passo 2: selecionar itens que cabem no orçamento do lote
+    // Passo 2: seleciona itens que cabem no orçamento do lote
     const size_t byteBudget = BUFFER_PERSISTENCE_BUFFER - 600;
     size_t used = 200; // envelope
     std::vector<int> selected;
@@ -301,355 +455,437 @@ int BufferManager::getDataForUpload(DynamicJsonDocument& doc, int maxItems)
     }
 
     if (selected.empty()) {
-        delete bikeBuffer;
         unlock();
         return 0;
     }
 
-    // Passo 3: montar o documento do lote
+    // Passo 3: monta o documento do lote (decodifica SÓ os selecionados)
     BPRJsonHelper::addTimestamp(doc);
     doc["base_id"] = configCredentials.getBaseId();
 
     JsonArray dataArray = doc.createNestedArray("data");
-    std::vector<String> includedBikeIds;
-    std::vector<int> includedIndexes;
+    std::vector<DataItem> manifestItems;
+    std::vector<uint32_t> manifestIndexes; // índice do registro no arquivo por bike
 
     for (int sel : selected) {
         const Candidate& c = candidates[sel];
-        if (!loadBikeBuffer(c.bikeId, *bikeBuffer)) continue;
-        if (c.index >= bikeBuffer->dataCount || bikeBuffer->buffer[c.index].uploaded) continue;
+        bool included = false;
+        forEachItem(getBikeBufferPath(c.bikeId), [&](const DataItem& item, uint32_t index) {
+            if (index != c.index || item.uploaded || included) return true;
+            included = true;
 
-        const DataItem& meta = bikeBuffer->buffer[c.index];
+            JsonObject itemObj = dataArray.createNestedObject();
+            itemObj["bike_id"] = item.bikeId;
+            itemObj["ts"] = item.timestamp;
+            itemObj["size"] = item.size;
+            itemObj["crc32"] = String(item.crc32, HEX);
+            itemObj["session_id"] = item.session_id;
+            itemObj["session_salt"] = item.session_salt;
+            itemObj["seq"] = item.seq;
 
-        JsonObject item = dataArray.createNestedObject();
-        item["bike_id"] = c.bikeId;
-        item["ts"] = meta.timestamp;
-        item["size"] = meta.size;
-        item["crc32"] = String(meta.crc32, HEX);
-        item["session_id"] = meta.session_id;
-        item["seq"] = meta.seq;
+            String decoded;
+            decoded.reserve(item.size);
+            for (size_t j = 0; j < item.size; j++) {
+                decoded += (char)item.data[j];
+            }
+            StaticJsonDocument<BIKE_DATA_BUFFER> inner;
+            if (deserializeJson(inner, decoded) == DeserializationError::Ok) {
+                itemObj["data_decoded"] = inner;
+            } else {
+                itemObj["data"] = decoded;
+            }
 
-        testDoc.clear();
-        if (deserializeJson(testDoc, c.decoded) == DeserializationError::Ok) {
-            item["data_decoded"] = testDoc;
-        } else {
-            item["data"] = c.decoded;
-        }
-
-        includedBikeIds.push_back(c.bikeId);
-        includedIndexes.push_back(c.index);
+            manifestItems.push_back(item);
+            manifestIndexes.push_back(index);
+            return true;
+        });
     }
 
     int included = dataArray.size();
     if (included == 0 || doc.overflowed()) {
         Serial.println("❌ Batch build failed (empty or overflow)");
-        delete bikeBuffer;
         unlock();
         return 0;
     }
 
     doc["data_count"] = included;
 
-    // Passo 4: marcar EXATAMENTE os itens incluídos como enviados e persistir
-    for (int i = 0; i < included; i++) {
-        if (loadBikeBuffer(includedBikeIds[i], *bikeBuffer)) {
-            int idx = includedIndexes[i];
-            if (idx < bikeBuffer->dataCount) {
-                bikeBuffer->buffer[idx].uploaded = true;
-                saveBikeBuffer(includedBikeIds[i], *bikeBuffer);
-            }
-        }
+    // R06: chave estável derivada da IDENTIDADE dos itens (ordenada), sem
+    // horário — retry do mesmo conjunto produz a mesma chave
+    std::sort(manifestItems.begin(), manifestItems.end(), [](const DataItem& a, const DataItem& b) {
+        if (a.bikeId != b.bikeId) return a.bikeId < b.bikeId;
+        if (a.session_id != b.session_id) return a.session_id < b.session_id;
+        if (a.session_salt != b.session_salt) return a.session_salt < b.session_salt;
+        return a.seq < b.seq;
+    });
+    CRC32 keyCrc;
+    keyCrc.update((const uint8_t*)configCredentials.getBaseId().c_str(),
+                  configCredentials.getBaseId().length());
+    for (const DataItem& item : manifestItems) {
+        String line = item.bikeId + "|" + String(item.session_id) + "|" +
+                      String(item.session_salt) + "|" + String(item.seq) + "\n";
+        keyCrc.update((const uint8_t*)line.c_str(), line.length());
+    }
+    char keyBuf[16];
+    snprintf(keyBuf, sizeof(keyBuf), "%08lx", (unsigned long)keyCrc.finalize());
+    batchId = String(keyBuf);
+
+    // R05: manifesto durável ANTES de marcar qualquer item como enviado
+    if (!writeManifest(batchId, manifestItems)) {
+        Serial.println("❌ Batch manifest write failed - batch not prepared");
+        unlock();
+        return 0;
     }
 
-    delete bikeBuffer;
+    // Passo 4: marca EXATAMENTE os itens incluídos (in-place) e persiste
+    for (size_t i = 0; i < manifestItems.size(); i++) {
+        setItemUploadedFlag(getBikeBufferPath(manifestItems[i].bikeId), manifestIndexes[i], true);
+    }
+
     unlock();
     return included;
 }
 
-// F18/F19: confirmar remove SOMENTE itens enviados; pendências ficam intactas
-void BufferManager::markAsConfirmed()
+// R05: manifesto durável com a identidade exata do lote
+bool BufferManager::writeManifest(const String& batchId, const std::vector<DataItem>& items)
 {
-    lock();
-    createBackup();
+    DynamicJsonDocument doc(2048);
+    doc["batch_id"] = batchId;
+    doc["state"] = "prepared";
 
-    std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
-
-    for (const String& bikeId : ids) {
-        if (!loadBikeBuffer(bikeId, *bikeBuffer)) continue;
-
-        BikeBuffer remaining;
-        remaining.dataCount = 0;
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            if (!bikeBuffer->buffer[i].uploaded) {
-                remaining.buffer[remaining.dataCount++] = bikeBuffer->buffer[i];
-            }
-        }
-
-        if (remaining.dataCount == 0) {
-            LittleFS.remove(getBikeBufferPath(bikeId));
-            Serial.printf("🗑️ Buffer fully uploaded and removed: %s\n", bikeId.c_str());
-        } else if (remaining.dataCount != bikeBuffer->dataCount) {
-            saveBikeBuffer(bikeId, remaining);
-            Serial.printf("📦 Partial confirm for %s: %d items remain\n", bikeId.c_str(), remaining.dataCount);
-        }
+    JsonArray arr = doc.createNestedArray("items");
+    for (const DataItem& item : items) {
+        JsonObject o = arr.createNestedObject();
+        o["bike_id"] = item.bikeId;
+        o["session_id"] = item.session_id;
+        o["session_salt"] = item.session_salt;
+        o["seq"] = item.seq;
+        o["crc32"] = String(item.crc32, HEX);
     }
 
-    delete bikeBuffer;
-    lastSync = millis();
-    Serial.println("✅ Uploaded buffers cleared after confirmed upload");
-}
-
-void BufferManager::rollbackUpload()
-{
-    lock();
-    std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
-
-    for (const String& bikeId : ids) {
-        if (!loadBikeBuffer(bikeId, *bikeBuffer)) continue;
-        bool changed = false;
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            if (bikeBuffer->buffer[i].uploaded) {
-                bikeBuffer->buffer[i].uploaded = false;
-                changed = true;
-            }
-        }
-        if (changed) {
-            saveBikeBuffer(bikeId, *bikeBuffer);
-        }
-    }
-
-    delete bikeBuffer;
-    unlock();
-    Serial.println("⚠️ Upload failed - uploaded items marked as pending again");
-}
-
-// F17: validação completa — magic, versão, contagem limitada pelo array real,
-// tamanho por item, CRC e leitura de bytes exatos
-bool BufferManager::loadBikeBuffer(const String& bikeId, BikeBuffer& bikeBuffer)
-{
-    bikeBuffer.dataCount = 0;
-
-    String path = getBikeBufferPath(bikeId);
-    if (!LittleFS.exists(path)) {
-        return true; // sem arquivo = buffer vazio válido
-    }
-
-    File bufferFile = LittleFS.open(path, "r");
-    if (!bufferFile) return false;
-
-    BufferFileHeader header;
-    if (bufferFile.readBytes((char*)&header, sizeof(header)) != sizeof(header)) {
-        bufferFile.close();
-        Serial.printf("❌ Buffer header read failed: %s\n", path.c_str());
-        return false;
-    }
-
-    if (header.magic != BUFFER_MAGIC || header.version != BUFFER_VERSION ||
-        header.item_count > MAX_ITEMS_PER_BIKE) {
-        bufferFile.close();
-        Serial.printf("❌ Buffer header invalid: %s\n", path.c_str());
-        return false;
-    }
-
-    for (uint32_t i = 0; i < header.item_count; i++) {
-        BufferItemBin item;
-        if (bufferFile.readBytes((char*)&item, sizeof(item)) != sizeof(item)) {
-            Serial.printf("⚠️ Truncated buffer item in %s: keeping %d/%d items\n",
-                          path.c_str(), bikeBuffer.dataCount, header.item_count);
-            break;
-        }
-
-        if (item.size > MAX_ITEM_DATA_SIZE) {
-            Serial.printf("⚠️ Item %d in %s has invalid size %d - skipping file\n",
-                          i, path.c_str(), item.size);
-            bikeBuffer.dataCount = 0;
-            bufferFile.close();
-            return false;
-        }
-
-        // F17: CRC verificado no load (era calculado só ao gravar)
-        CRC32 crc;
-        crc.update(item.data, item.size);
-        if (crc.finalize() != item.crc32) {
-            Serial.printf("⚠️ CRC mismatch in %s item %d - skipping file\n", path.c_str(), i);
-            bikeBuffer.dataCount = 0;
-            bufferFile.close();
-            return false;
-        }
-
-        DataItem& dst = bikeBuffer.buffer[bikeBuffer.dataCount];
-        dst.bikeId = intToBikeId(item.bikeId);
-        dst.timestamp = item.timestamp;
-        dst.size = item.size;
-        dst.crc32 = item.crc32;
-        dst.session_id = item.session_id;
-        dst.session_salt = item.session_salt;
-        dst.seq = item.seq;
-        dst.uploaded = item.uploaded;
-        dst.confirmed = item.confirmed;
-        memcpy(dst.data, item.data, item.size);
-        bikeBuffer.dataCount++;
-    }
-
-    bufferFile.close();
+    String path = getManifestPath(batchId);
+    File file = LittleFS.open(path, "w");
+    if (!file) return false;
+    serializeJson(doc, file);
+    file.close();
     return true;
 }
 
-bool BufferManager::saveBikeBuffer(const String& bikeId, const BikeBuffer& bikeBuffer)
+bool BufferManager::readManifest(const String& batchId, std::vector<DataItem>& items)
 {
-    String path = getBikeBufferPath(bikeId);
+    String path = getManifestPath(batchId);
+    if (!LittleFS.exists(path)) return false;
 
-    if (bikeBuffer.dataCount == 0) {
-        if (LittleFS.exists(path)) {
-            LittleFS.remove(path);
-        }
-        return true;
+    File file = LittleFS.open(path, "r");
+    if (!file) return false;
+
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+    if (err) return false;
+
+    for (JsonObject o : doc["items"].as<JsonArray>()) {
+        DataItem item;
+        item.bikeId = o["bike_id"].as<String>();
+        item.session_id = o["session_id"] | 0;
+        item.session_salt = o["session_salt"] | 0;
+        item.seq = o["seq"] | 0;
+        item.crc32 = (uint32_t)strtoul(o["crc32"].as<String>().c_str(), NULL, 16);
+        items.push_back(item);
     }
+    return true;
+}
 
-    File file = LittleFS.open(path, "w");
-    if (!file) {
+void BufferManager::removeManifest(const String& batchId)
+{
+    LittleFS.remove(getManifestPath(batchId));
+}
+
+// R05: confirmação remove SOMENTE os itens do lote; pendências ficam intactas
+bool BufferManager::markAsConfirmed(const String& batchId)
+{
+    std::vector<DataItem> items;
+    if (!readManifest(batchId, items)) {
+        Serial.printf("⚠️ Confirm without manifest %s - ignoring\n", batchId.c_str());
         return false;
     }
 
-    BufferFileHeader header;
-    header.magic = BUFFER_MAGIC;
-    header.version = BUFFER_VERSION;
-    header.item_count = bikeBuffer.dataCount;
-    header.last_update = time(nullptr);
+    if (!tryLock()) return false;
+    createBackup();
 
-    bool ok = file.write((uint8_t*)&header, sizeof(header)) == sizeof(header);
-
-    for (int i = 0; ok && i < bikeBuffer.dataCount; i++) {
-        BufferItemBin item;
-        memset(&item, 0, sizeof(item));
-        item.bikeId = bikeIdToInt(bikeBuffer.buffer[i].bikeId);
-        item.timestamp = bikeBuffer.buffer[i].timestamp;
-        item.size = bikeBuffer.buffer[i].size;
-        item.crc32 = bikeBuffer.buffer[i].crc32;
-        item.session_id = bikeBuffer.buffer[i].session_id;
-        item.session_salt = bikeBuffer.buffer[i].session_salt;
-        item.seq = bikeBuffer.buffer[i].seq;
-        item.uploaded = bikeBuffer.buffer[i].uploaded;
-        item.confirmed = bikeBuffer.buffer[i].confirmed;
-        memcpy(item.data, bikeBuffer.buffer[i].data, bikeBuffer.buffer[i].size);
-
-        if (file.write((uint8_t*)&item, sizeof(item)) != sizeof(item)) {
+    // Agrupa por bike e reescreve cada arquivo excluindo os itens do lote
+    std::sort(items.begin(), items.end(), [](const DataItem& a, const DataItem& b) {
+        return a.bikeId < b.bikeId;
+    });
+    size_t i = 0;
+    bool ok = true;
+    while (i < items.size()) {
+        String bikeId = items[i].bikeId;
+        std::vector<DataItem> bikeItems;
+        while (i < items.size() && items[i].bikeId == bikeId) {
+            bikeItems.push_back(items[i]);
+            i++;
+        }
+        if (!rewriteBikeBufferExcluding(bikeId, bikeItems)) {
+            Serial.printf("❌ Failed to rewrite buffer for %s on confirm\n", bikeId.c_str());
             ok = false;
         }
     }
 
-    file.close();
-    if (!ok) {
-        Serial.printf("❌ Failed to write buffer file: %s\n", path.c_str());
-        LittleFS.remove(path);
+    if (ok) {
+        removeManifest(batchId);
+        lastSync = millis();
+        Serial.printf("✅ Batch %s confirmed and cleared (%d items)\n", batchId.c_str(), (int)items.size());
     }
+    unlock();
     return ok;
 }
 
-void BufferManager::loadAllBuffers() {
-    // Buffers são carregados sob demanda, por bike
+// R04: reescrita recuperável — temporário + rename; falha preserva o original
+bool BufferManager::rewriteBikeBufferExcluding(const String& bikeId, const std::vector<DataItem>& manifestItems)
+{
+    String path = getBikeBufferPath(bikeId);
+    String tmpPath = path + ".tmp";
+
+    if (!LittleFS.exists(path)) {
+        return true; // nada a reescrever (itens já removidos)
+    }
+
+    File out = LittleFS.open(tmpPath, "w");
+    if (!out) return false;
+
+    BufferFileHeader header;
+    header.magic = BUFFER_MAGIC;
+    header.version = BUFFER_VERSION;
+    header.item_count = 0;
+    header.last_update = time(nullptr);
+    if (out.write((uint8_t*)&header, sizeof(header)) != sizeof(header)) {
+        out.close();
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    uint32_t kept = 0;
+    bool writeOk = true;
+    bool valid = forEachItem(path, [&](const DataItem& item, uint32_t) {
+        bool inBatch = false;
+        for (const DataItem& m : manifestItems) {
+            if (sameIdentity(item, m)) {
+                inBatch = true;
+                break;
+            }
+        }
+        if (inBatch) return true;
+
+        BufferItemBin bin;
+        itemToBin(item, bin);
+        if (out.write((uint8_t*)&bin, sizeof(bin)) != sizeof(bin)) {
+            writeOk = false;
+            return false; // aborta a iteração
+        }
+        kept++;
+        return true;
+    });
+    out.close();
+
+    if (!valid || !writeOk) {
+        // Falha de escrita ou arquivo original inválido — preserva o original
+        Serial.printf("❌ Rewrite failed for %s - original preserved\n", bikeId.c_str());
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    // Reescreve o header do temporário com a contagem correta
+    File fix = LittleFS.open(tmpPath, "r+");
+    bool ok = false;
+    if (fix) {
+        header.item_count = kept;
+        ok = fix.seek(0) && fix.write((uint8_t*)&header, sizeof(header)) == sizeof(header);
+        fix.close();
+    }
+    if (!ok) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    if (kept == 0) {
+        LittleFS.remove(tmpPath);
+        LittleFS.remove(path);
+        Serial.printf("🗑️ Buffer fully uploaded and removed: %s\n", bikeId.c_str());
+        return true;
+    }
+
+    LittleFS.remove(path);
+    if (!LittleFS.rename(tmpPath, path)) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    return true;
 }
 
-void BufferManager::saveBuffer() {
-    // Buffers são salvos individualmente
+// R05: lote sem entrega comprovada volta a pendente
+bool BufferManager::rollbackUpload(const String& batchId)
+{
+    std::vector<DataItem> items;
+    if (!readManifest(batchId, items)) {
+        return false;
+    }
+
+    if (!tryLock()) return false;
+    for (const DataItem& item : items) {
+        String path = getBikeBufferPath(item.bikeId);
+        forEachItem(path, [&](const DataItem& it, uint32_t index) {
+            if (sameIdentity(it, item) && it.uploaded) {
+                setItemUploadedFlag(path, index, false);
+            }
+            return true;
+        });
+    }
+    removeManifest(batchId);
+    unlock();
+    Serial.printf("⚠️ Batch %s rolled back to pending\n", batchId.c_str());
+    return true;
 }
 
+// R05: boot com lotes preparados sem confirmação — reconciliação conservadora:
+// os itens voltam a pendente (a nuvem deduplica pela chave estável do lote)
+void BufferManager::reconcilePendingBatches()
+{
+    std::vector<String> manifests = listManifestPaths();
+    for (const String& path : manifests) {
+        String fileName = path.substring(path.lastIndexOf('/') + 1);
+        if (!fileName.startsWith("batch-") || !fileName.endsWith(".manifest")) continue;
+        String batchId = fileName.substring(6, fileName.length() - 9);
+        Serial.printf("🔁 Unconfirmed batch at boot: %s -> back to pending\n", batchId.c_str());
+        rollbackUpload(batchId);
+    }
+}
+
+// O06: pendências reais por bike
+bool BufferManager::getBikePendingInfo(const String& bikeId, uint16_t& sessions, uint32_t& bytes)
+{
+    sessions = 0;
+    bytes = 0;
+    if (!tryLock()) return false;
+    std::vector<uint32_t> seenSessions;
+    std::vector<uint16_t> seenSalts;
+
+    forEachItem(getBikeBufferPath(bikeId), [&](const DataItem& item, uint32_t) {
+        if (item.uploaded) return true;
+        bytes += item.size;
+        bool known = false;
+        for (size_t i = 0; i < seenSessions.size(); i++) {
+            if (seenSessions[i] == item.session_id && seenSalts[i] == item.session_salt) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            seenSessions.push_back(item.session_id);
+            seenSalts.push_back(item.session_salt);
+            if (sessions < 0xFFFF) sessions++;
+        }
+        return true;
+    });
+
+    unlock();
+    return true;
+}
+
+// O04: backup bruto por cópia de arquivo íntegro (não substitui rename/manifesto)
 void BufferManager::createBackup()
 {
-    int totalCount = getTotalDataCountUnlocked();
-    if (totalCount == 0) return;
+    std::vector<String> ids = listBikeIds();
+    if (ids.empty()) return;
 
     if (!LittleFS.exists("/backup")) {
         LittleFS.mkdir("/backup");
     }
 
-    // Criar backup consolidado de todos os buffers
-    DynamicJsonDocument backupDoc(BUFFER_PERSISTENCE_BUFFER);
-    backupDoc["timestamp"] = time(nullptr);
-    backupDoc["total_items"] = totalCount;
-
-    JsonArray bikesArray = backupDoc.createNestedArray("bikes");
-
-    std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
-
+    String stamp = String(millis());
+    int copies = 0;
     for (const String& bikeId : ids) {
-        if (!loadBikeBuffer(bikeId, *bikeBuffer) || bikeBuffer->dataCount == 0) continue;
+        String src = getBikeBufferPath(bikeId);
+        if (!LittleFS.exists(src)) continue;
 
-        JsonObject bikeObj = bikesArray.createNestedObject();
-        bikeObj["bike_id"] = bikeId;
-        bikeObj["data_count"] = bikeBuffer->dataCount;
-
-        JsonArray dataArray = bikeObj.createNestedArray("data");
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            JsonObject item = dataArray.createNestedObject();
-            item["ts"] = bikeBuffer->buffer[i].timestamp;
-            item["size"] = bikeBuffer->buffer[i].size;
-            item["crc32"] = String(bikeBuffer->buffer[i].crc32, HEX);
-            item["session_id"] = bikeBuffer->buffer[i].session_id;
-            item["seq"] = bikeBuffer->buffer[i].seq;
-
-            String dataStr;
-            dataStr.reserve(bikeBuffer->buffer[i].size);
-            for (size_t j = 0; j < bikeBuffer->buffer[i].size; j++) {
-                dataStr += (char)bikeBuffer->buffer[i].data[j];
-            }
-            item["data"] = dataStr;
+        File in = LittleFS.open(src, "r");
+        if (!in) continue;
+        size_t srcSize = in.size();
+        File out = LittleFS.open("/backup/" + stamp + "_" + bikeId + ".bkp", "w");
+        if (!out) {
+            in.close();
+            continue;
+        }
+        uint8_t buf[256];
+        size_t copied = 0;
+        while (copied < srcSize) {
+            size_t n = in.read(buf, sizeof(buf));
+            if (n == 0) break;
+            if (out.write(buf, n) != n) break;
+            copied += n;
+        }
+        in.close();
+        out.close();
+        if (copied == srcSize) {
+            copies++;
+        } else {
+            LittleFS.remove("/backup/" + stamp + "_" + bikeId + ".bkp");
         }
     }
-    delete bikeBuffer;
 
-    File backup = LittleFS.open("/backup/data.bkp", "w");
-    if (backup) {
-        serializeJson(backupDoc, backup);
-        backup.close();
-        Serial.println("💾 Backup created: /backup/data.bkp");
+    if (copies > 0) {
+        Serial.printf("💾 Backup created: %d bike buffers (stamp %s)\n", copies, stamp.c_str());
     }
 }
 
 void BufferManager::cleanupOldBackups()
 {
-    uint32_t retentionHours = configManager.getBackupRetentionHours();
-    uint32_t cutoffTime = time(nullptr) - (retentionHours * 3600);
-
-    if (!hasEnoughSpace())
-    {
-        Serial.println("⚠️ Low storage - aggressive cleanup mode");
-        cutoffTime = time(nullptr) - (retentionHours * 1800);
-    }
-
     if (!LittleFS.exists("/backup")) return;
 
+    // Mantém os 3 backups mais recentes (ordem por timestamp de nome)
+    std::vector<String> stamps;
     File root = LittleFS.open("/backup");
     if (!root) return;
     File file = root.openNextFile();
-
-    while (file)
-    {
+    while (file) {
         String fileName = file.name();
         file.close();
-        if (fileName.endsWith(".bkp"))
-        {
-            String fullPath = String("/backup/") + fileName;
-            File backupFile = LittleFS.open(fullPath, "r");
-            if (backupFile) {
-                DynamicJsonDocument doc(256);
-                if (deserializeJson(doc, backupFile) == DeserializationError::Ok) {
-                    uint32_t fileTime = doc["timestamp"] | 0;
-                    if (fileTime > 1000000000L && fileTime < cutoffTime) {
-                        backupFile.close();
-                        LittleFS.remove(fullPath);
-                        Serial.printf("🗑️ Old backup removed: %s\n", fileName.c_str());
-                        file = root.openNextFile();
-                        continue;
-                    }
+        if (fileName.endsWith(".bkp")) {
+            int under = fileName.indexOf('_');
+            if (under > 0) {
+                String stamp = fileName.substring(0, under);
+                if (std::find(stamps.begin(), stamps.end(), stamp) == stamps.end()) {
+                    stamps.push_back(stamp);
                 }
-                backupFile.close();
             }
         }
         file = root.openNextFile();
+    }
+    root.close();
+
+    if (stamps.size() <= 3) return;
+    std::sort(stamps.begin(), stamps.end());
+
+    size_t toRemove = stamps.size() - 3;
+    for (size_t i = 0; i < toRemove; i++) {
+        String oldStamp = stamps[i];
+        File root2 = LittleFS.open("/backup");
+        if (!root2) return;
+        std::vector<String> doomed;
+        File f = root2.openNextFile();
+        while (f) {
+            String name = f.name();
+            f.close();
+            if (name.endsWith(".bkp") && name.startsWith(oldStamp + "_")) {
+                doomed.push_back("/backup/" + name);
+            }
+            f = root2.openNextFile();
+        }
+        root2.close();
+        for (const String& p : doomed) {
+            LittleFS.remove(p);
+        }
+        Serial.printf("🗑️ Old backup removed (stamp %s)\n", oldStamp.c_str());
     }
 }
 
@@ -672,19 +908,18 @@ int BufferManager::getTotalDataCountUnlocked()
 {
     int totalCount = 0;
     std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
     for (const String& bikeId : ids) {
-        if (loadBikeBuffer(bikeId, *bikeBuffer)) {
-            totalCount += bikeBuffer->dataCount;
-        }
+        forEachItem(getBikeBufferPath(bikeId), [&](const DataItem&, uint32_t) {
+            totalCount++;
+            return true;
+        });
     }
-    delete bikeBuffer;
     return totalCount;
 }
 
 int BufferManager::getTotalDataCount()
 {
-    lock();
+    if (!tryLock()) return 0;
     int count = getTotalDataCountUnlocked();
     unlock();
     return count;
@@ -692,19 +927,17 @@ int BufferManager::getTotalDataCount()
 
 int BufferManager::getPendingCount()
 {
-    lock();
+    if (!tryLock()) return 0;
     int pending = 0;
     std::vector<String> ids = listBikeIds();
-    BikeBuffer* bikeBuffer = new BikeBuffer;
     for (const String& bikeId : ids) {
-        if (!loadBikeBuffer(bikeId, *bikeBuffer)) continue;
-        for (int i = 0; i < bikeBuffer->dataCount; i++) {
-            if (!bikeBuffer->buffer[i].uploaded) {
+        forEachItem(getBikeBufferPath(bikeId), [&](const DataItem& item, uint32_t) {
+            if (!item.uploaded) {
                 pending++;
             }
-        }
+            return true;
+        });
     }
-    delete bikeBuffer;
     unlock();
     return pending;
 }

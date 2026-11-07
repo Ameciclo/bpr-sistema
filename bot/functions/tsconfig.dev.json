@@ -1,5 +1,17 @@
 {
+  "compilerOptions": {
+    "module": "commonjs",
+    "noEmit": true,
+    "strict": true,
+    "target": "es2017",
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  // A06: entrypoints de desenvolvimento — verificados no modo dev, fora do
+  // build/deploy das Functions (tsconfig.json exclui local*.ts)
   "include": [
-    ".eslintrc.js"
+    ".eslintrc.js",
+    "src/local-bot.ts",
+    "src/local.ts"
   ]
 }

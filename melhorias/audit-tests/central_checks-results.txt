@@ -1,0 +1,12 @@
+allow_bike_from_downloaded_registry: no
+runtime_status_count: 0
+config_slots_after_11_updates_same_bike: 10
+hasConfigUpdate_after_download: false
+zero_led_config_accepted: yes
+central_config_last_update: 10
+buffer_files_after_two_adds: 2
+buffer_files_after_upload_preparation: 4
+addData_when_flash_write_fails: success
+network_packet_134_bytes_accepted: no
+bike_config_downloads_first_sync: 0
+hex_id_central_roundtrip: bpr-000000

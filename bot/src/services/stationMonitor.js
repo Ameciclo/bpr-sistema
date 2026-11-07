@@ -37,22 +37,39 @@ class StationMonitor {
       const heartbeatRef = firebaseService.db.ref(`bases/${baseId}/last_heartbeat`);
       const snapshot = await heartbeatRef.once('value');
       const heartbeat = snapshot.val();
-      
+
       const now = Date.now();
-      const isOnline = heartbeat && (now - heartbeat.timestamp < this.HEARTBEAT_TIMEOUT);
+      let isOnline = null; // null = sem evidência (horário inválido/ausente)
+
+      if (heartbeat && typeof heartbeat.timestamp === 'number' && heartbeat.timestamp > 0) {
+        // A03: o firmware grava Unix em SEGUNDOS — compara em milissegundos
+        const tsMs = heartbeat.timestamp < 1e11
+          ? heartbeat.timestamp * 1000
+          : heartbeat.timestamp;
+
+        if (heartbeat.timestamp_valid === false) {
+          // A03: horário desconhecido não inventa conectividade
+          isOnline = null;
+          console.warn(`⏰ Heartbeat de ${baseId} sem horário válido (timestamp_valid=false)`);
+        } else {
+          isOnline = (now - tsMs) < this.HEARTBEAT_TIMEOUT;
+        }
+      }
+
       const wasOnline = this.stationStatus.get(baseId);
-      
-      // Mudança de status
-      if (wasOnline !== isOnline) {
+      // A03: transição notificada apenas entre estados CONHECIDOS
+      if (isOnline !== null && wasOnline !== isOnline) {
         this.stationStatus.set(baseId, isOnline);
-        
+
         if (!isOnline) {
           await this.notifyStationOffline(baseId, baseData);
         } else {
           await this.notifyStationOnline(baseId, baseData);
         }
+      } else if (isOnline !== null) {
+        this.stationStatus.set(baseId, isOnline);
       }
-      
+
     } catch (error) {
       console.error(`Erro ao verificar heartbeat da base ${baseId}:`, error);
     }
@@ -114,15 +131,19 @@ class StationMonitor {
       const now = Date.now();
       
       Object.entries(bikes).forEach(([bikeId, bikeData]) => {
-        // Considerar disponível se teve contato BLE recente (< 5 min)
-        const lastContact = bikeData.last_ble_contact || 0;
-        const isAvailable = (now - lastContact) < 5 * 60 * 1000;
-        
+        // Considerar disponível se teve contato BLE recente (< 5 min).
+        // A03: tolera seconds (contrato do firmware) e milissegundos
+        const rawContact = bikeData.last_ble_contact || 0;
+        const lastContactMs = rawContact > 0 && rawContact < 1e11
+          ? rawContact * 1000
+          : rawContact;
+        const isAvailable = (now - lastContactMs) < 5 * 60 * 1000;
+
         if (isAvailable) {
           available.push({
             id: bikeId,
             battery: bikeData.battery_voltage || 0,
-            lastContact: lastContact,
+            lastContact: lastContactMs,
             status: bikeData.status || 'unknown'
           });
         }
@@ -146,13 +167,16 @@ class StationMonitor {
       }
 
       const availableBikes = await this.getAvailableBikes(stationId);
-      const isOnline = this.stationStatus.get(stationId) !== false;
-      
+      // A03: ausência de evidência não é "online" — só o estado verificado
+      const knownOnline = this.stationStatus.has(stationId)
+        ? this.stationStatus.get(stationId)
+        : null;
+
       return {
         id: stationId,
         name: baseData.name || stationId,
         location: baseData.location,
-        isOnline,
+        isOnline: knownOnline, // true | false | null (desconhecido)
         maxBikes: baseData.max_bikes || 10,
         availableBikes: availableBikes.length,
         bikes: availableBikes,

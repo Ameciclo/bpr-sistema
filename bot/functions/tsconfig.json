@@ -11,7 +11,14 @@
     "esModuleInterop": true
   },
   "compileOnSave": true,
+  // A06: entrypoints suportados pelo build/deploy = src/index.ts.
+  // local*.ts são utilitários de desenvolvimento executados a partir do
+  // workspace bot/ (que tem dotenv); ficam fora do build das Functions.
   "include": [
     "src"
+  ],
+  "exclude": [
+    "src/local-bot.ts",
+    "src/local.ts"
   ]
 }

@@ -1,4 +1,6 @@
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <queue>
 #include <vector>
 #include "bike_manager.h"
@@ -49,7 +51,41 @@ static PairingState pairingState;
 // Sistema de eventos
 static BikeEventCallback eventCallback = nullptr;
 
-// Sistema de fila com prioridade
+// R19: callbacks BLE (task do NimBLE) apenas ENFILEIRAM eventos; todo o
+// processamento — parsing, gestão de cadastro, persistência, pushes — roda
+// no contexto do loop(). Fila limitada = backpressure explícito.
+struct BleEvent {
+    uint8_t type; // 0=connect 1=disconnect 2=data 3=config
+    char bikeId[16];
+    char payload[MAX_BLE_MESSAGE_SIZE + 1];
+};
+static QueueHandle_t eventQueue = nullptr;
+static const uint8_t BLE_EVENT_CONNECT = 0;
+static const uint8_t BLE_EVENT_DISCONNECT = 1;
+static const uint8_t BLE_EVENT_DATA = 2;
+static const uint8_t BLE_EVENT_CONFIG = 3;
+
+static bool enqueueBleEvent(uint8_t type, const String& bikeId, const String& payload = "")
+{
+    if (!eventQueue) return false;
+    if (payload.length() > MAX_BLE_MESSAGE_SIZE) return false;
+
+    BleEvent ev;
+    ev.type = type;
+    strncpy(ev.bikeId, bikeId.c_str(), sizeof(ev.bikeId) - 1);
+    ev.bikeId[sizeof(ev.bikeId) - 1] = '\0';
+    strncpy(ev.payload, payload.c_str(), sizeof(ev.payload) - 1);
+    ev.payload[sizeof(ev.payload) - 1] = '\0';
+
+    if (xQueueSend(eventQueue, &ev, 0) != pdTRUE) {
+        Serial.printf("⚠️ BLE event queue full - dropping %s event for %s\n",
+                      type == BLE_EVENT_DATA ? "data" : "config", bikeId.c_str());
+        return false;
+    }
+    return true;
+}
+
+// Sistema de fila com prioridade (consumida somente no loop — R19)
 struct BikeQueueItem {
     String bikeId;
     String jsonData;
@@ -71,15 +107,27 @@ struct BikeQueueComparator {
 
 static std::priority_queue<BikeQueueItem, std::vector<BikeQueueItem>, BikeQueueComparator> priorityQueue;
 
-// Forward declarations dos callbacks
+// Callbacks BLE: fazem o mínimo e delegam ao loop via fila
 static void onBikeConnected(const String &bikeId);
 static void onBikeDisconnected(const String &bikeId);
 static void onBikeDataReceived(const String &bikeId, const String &jsonData);
 static void onConfigRequest(const String &bikeId, const String &request);
 
+// Processadores reais (contexto do loop)
+static void processBikeConnected(const String &bikeId);
+static void processBikeDisconnected(const String &bikeId);
+static void processBikeData(const String &bikeId, const String &jsonData);
+static void processConfigRequest(const String &bikeId, const String &request);
+
 void BikePairing::enter()
 {
     Serial.println("🔵 Entering BIKE_PAIRING mode");
+
+    if (!eventQueue) {
+        eventQueue = xQueueCreate(16, sizeof(BleEvent));
+    } else {
+        xQueueReset(eventQueue);
+    }
 
     // Initialize bike manager (carrega status + configs + merge do registry)
     BikeManager::init();
@@ -113,6 +161,21 @@ void BikePairing::update()
         lastAdvertisingUpdate = now;
     }
 
+    // R19: drena os eventos BLE no contexto do loop
+    if (eventQueue) {
+        BleEvent ev;
+        while (xQueueReceive(eventQueue, &ev, 0) == pdTRUE) {
+            String bikeId(ev.bikeId);
+            String payload(ev.payload);
+            switch (ev.type) {
+                case BLE_EVENT_CONNECT: processBikeConnected(bikeId); break;
+                case BLE_EVENT_DISCONNECT: processBikeDisconnected(bikeId); break;
+                case BLE_EVENT_DATA: processBikeData(bikeId, payload); break;
+                case BLE_EVENT_CONFIG: processConfigRequest(bikeId, payload); break;
+            }
+        }
+    }
+
     // F11: envia pushes enfileirados (ACKs/configs) no contexto do loop
     BPRBLEServer::processPushQueue();
 
@@ -127,6 +190,9 @@ void BikePairing::exit()
         priorityQueue.pop();
     }
     pairingState.reset();
+    if (eventQueue) {
+        xQueueReset(eventQueue);
+    }
 
     // Marcar BLE como BUSY durante sync (bike respeita e mantém dados)
     BPRBLEServer::setBusyStatus(true, 120);
@@ -203,8 +269,31 @@ bool BikePairing::isSafeToExit()
     return true;
 }
 
-// Callbacks para BLE Server (registrados via setters)
+// ---- Callbacks (task BLE): apenas enfileiram ----------------------------
+
 static void onBikeConnected(const String &bikeId)
+{
+    enqueueBleEvent(BLE_EVENT_CONNECT, bikeId);
+}
+
+static void onBikeDisconnected(const String &bikeId)
+{
+    enqueueBleEvent(BLE_EVENT_DISCONNECT, bikeId);
+}
+
+static void onBikeDataReceived(const String &bikeId, const String &jsonData)
+{
+    enqueueBleEvent(BLE_EVENT_DATA, bikeId, jsonData);
+}
+
+static void onConfigRequest(const String &bikeId, const String &request)
+{
+    enqueueBleEvent(BLE_EVENT_CONFIG, bikeId, request);
+}
+
+// ---- Processadores (contexto do loop) ------------------------------------
+
+static void processBikeConnected(const String &bikeId)
 {
     BikePairing::triggerEvent(BIKE_ARRIVED, BPRBLEServer::getConnectedBikes());
     Serial.printf("🚲 Bike %s connected\n", bikeId.c_str());
@@ -237,19 +326,29 @@ static void onBikeConnected(const String &bikeId)
     }
 }
 
-static void onBikeDisconnected(const String &bikeId)
+static void processBikeDisconnected(const String &bikeId)
 {
     BikePairing::triggerEvent(BIKE_LEFT, BPRBLEServer::getConnectedBikes());
     Serial.printf("🚲 Bike %s disconnected\n", bikeId.c_str());
 }
 
-static void onBikeDataReceived(const String &bikeId, const String &jsonData)
+static void processBikeData(const String &bikeId, const String &jsonData)
 {
+    // R19: admissão vinculada ao estado real da central, não só ao prazo de
+    // busy — durante CLOUD_SYNC/CONFIG_AP a recepção é recusada
+    if (currentState != STATE_BIKE_PAIRING)
+    {
+        Serial.printf("⚠️ Data rejected from %s - central not in PAIRING state\n", bikeId.c_str());
+        String busyResponse = BPRJsonHelper::createBusyResponse(bikeId, 30);
+        BPRBLEServer::pushConfigToBike(bikeId, busyResponse);
+        return;
+    }
+
     // Rejeitar dados se central está busy
     if (BPRBLEServer::isCentralBusy())
     {
         Serial.printf("⚠️ Data rejected from %s - Central is BUSY\n", bikeId.c_str());
-        String busyResponse = BPRJsonHelper::createBusyResponse(30);
+        String busyResponse = BPRJsonHelper::createBusyResponse(bikeId, 30);
         BPRBLEServer::pushConfigToBike(bikeId, busyResponse);
         return;
     }
@@ -288,8 +387,6 @@ static void onBikeDataReceived(const String &bikeId, const String &jsonData)
             JsonObject pendingData = doc["pending_data"];
             sessions = pendingData["sessions_count"] | 0;
             bytes = pendingData["total_bytes"] | 0;
-            oldestTs = 0;
-            bufferPercent = 0;
         }
 
         BikeManager::updateHeartbeat(bikeId, batteryPercent, heap, sessions, bytes, oldestTs, bufferPercent);
@@ -323,7 +420,7 @@ static void onBikeDataReceived(const String &bikeId, const String &jsonData)
     }
 }
 
-static void onConfigRequest(const String &bikeId, const String &request)
+static void processConfigRequest(const String &bikeId, const String &request)
 {
     pairingState.status = PAIRING_SENDING_CONFIG;
     pairingState.updateActivity();
@@ -334,16 +431,19 @@ static void onConfigRequest(const String &bikeId, const String &request)
     if (error)
     {
         Serial.printf("❌ Config request parse error: %s\n", error.f_str());
+        pairingState.status = PAIRING_IDLE;
         return;
     }
 
     String type = doc["type"] | "config_request";
 
-    // F06: confirmação de aplicação pela bike
+    // F06/R08: confirmação de aplicação pela bike
     if (type == "config_ack")
     {
         uint32_t appliedVersion = doc["applied_version"] | 0;
-        bool ok = (doc["status"] | "error") == "ok";
+        // R08: compara CONTEÚDO da string, não endereços de literais
+        String status = doc["status"] | "error";
+        bool ok = (status == "ok");
         BikeManager::markConfigAcked(bikeId, ok ? appliedVersion : 0);
         pairingState.status = PAIRING_IDLE;
         return;
@@ -418,7 +518,7 @@ void BikePairing::processDataFromBike(const String &bikeId, const String &jsonDa
     {
         // Persistência falhou ou buffer cheio: bike mantém os dados e tenta depois
         Serial.printf("⚠️ Cannot store fragment from %s - asking to retry\n", bikeId.c_str());
-        String busyResponse = BPRJsonHelper::createBusyResponse(30);
+        String busyResponse = BPRJsonHelper::createBusyResponse(bikeId, 30);
         BPRBLEServer::pushConfigToBike(bikeId, busyResponse);
     }
 }

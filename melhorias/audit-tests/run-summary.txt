@@ -1,0 +1,7 @@
+bici_checks: 15 observed behaviors reproduced
+central_checks: 12 observed behaviors reproduced
+ble_checks: 5 observed behaviors reproduced
+retry_checks: 5 observed behaviors reproduced
+portal_checks: 3 observed behaviors reproduced
+malformed buffer: memory fault reproduced under ASan
+40 output checks plus malformed-buffer memory fault verified. These confirm defects; they do not mean the firmware is correct.

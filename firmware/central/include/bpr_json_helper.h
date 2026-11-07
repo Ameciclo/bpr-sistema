@@ -9,16 +9,14 @@ public:
     
     // Para heartbeats
     static void addHeartbeatFields(JsonDocument& doc);
-    
-    // Para dados de config
-    static void addConfigFields(JsonDocument& doc, const String& configType, const String& data);
-    
+
     // Para respostas de bike
     static void addBikeResponse(JsonDocument& doc, const String& type, const String& bikeId);
     
     // Respostas padronizadas para bikes
-    static String createProceedResponse();
-    static String createBusyResponse(uint32_t retryAfterSec = 30);
+    // R13/F05: "proceed" (limpeza sem correlação) removido — limpeza só via
+    // data_ack final com can_clear_buffer
+    static String createBusyResponse(const String& bikeId, uint32_t retryAfterSec = 30);
     static String createConfigResponse(const String& bikeId, const JsonObject& config);
     static String createDataAckResponse(const String& bikeId, uint32_t sessionId,
                                         uint16_t sessionSalt, uint16_t seq,

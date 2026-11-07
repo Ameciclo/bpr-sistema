@@ -26,7 +26,6 @@
 #include "power_manager.h"
 #include "at_base.h"
 #include "scanning.h"
-#include "lost.h"
 
 // Global managers
 ConfigManager configManager;
@@ -36,7 +35,6 @@ PowerManager powerManager;
 // State handlers
 AtBaseState* atBaseState = nullptr;
 ScanningState* scanningState = nullptr;
-LostState* lostState = nullptr;
 
 // Current state
 BikeState currentState = STATE_BOOT;
@@ -62,6 +60,9 @@ void setup() {
 
     Serial.println("🚲 BPR Bici Modular v2.0");
 
+    // R16: identidade de boot antes de qualquer sessão
+    bufferManager.beginBoot();
+
     // F07: carregar config persistida ANTES de gerar identidade
     bool configLoaded = configManager.load();
     if (!configLoaded || strlen(configManager.getConfig().bike_id) == 0) {
@@ -83,7 +84,6 @@ void setup() {
     // Initialize state handlers
     atBaseState = new AtBaseState(configManager, bufferManager);
     scanningState = new ScanningState(configManager, bufferManager);
-    lostState = new LostState(configManager, bufferManager);
 }
 
 void loop() {
@@ -108,10 +108,6 @@ void loop() {
 
         case STATE_AT_BASE:
             nextState = atBaseState->update();
-            break;
-
-        case STATE_LOST:
-            nextState = lostState->update();
             break;
 
         case STATE_SLEEP:
@@ -179,8 +175,11 @@ BikeState handleBoot() {
 void handleSleep() {
     Serial.println("💤 Entering deep sleep");
 
-    // F08: persistir ANTES de encerrar a sessão (save aceita sessão com dados)
-    bufferManager.save();
+    // F08/R04: persistir ANTES de encerrar a sessão; falha do checkpoint é
+    // propagada e diagnosticada (último arquivo íntegra permanece no LittleFS)
+    if (!bufferManager.save()) {
+        Serial.println("🚨 CHECKPOINT FAILED BEFORE SLEEP - newest data not persisted");
+    }
     bufferManager.endSession();
 
     // Deep sleep for configured duration

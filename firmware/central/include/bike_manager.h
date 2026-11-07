@@ -40,6 +40,7 @@ public:
     static bool loadBikeConfigs();
     static bool saveBikeConfigs();
     static bool downloadSingleBikeConfig(const String& bikeId);
+    static bool fetchAndApplyBikeConfig(const String& bikeId, uint32_t remoteVersion); // R07/R20
     static bool updateBikeConfigFromCSV(const String& bikeId, const String& csvData, uint32_t remoteVersion = 0);
     static std::vector<String> getAllowedBikeIds();
 
@@ -60,5 +61,4 @@ public:
 
     // === SYSTEM HEARTBEAT ===
     static String generateSystemHeartbeat();
-    static void saveSystemHeartbeat();
 };

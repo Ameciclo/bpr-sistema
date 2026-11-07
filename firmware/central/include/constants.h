@@ -42,11 +42,17 @@
 #define LED_COUNT_INTERVAL 300
 #define LED_COUNT_PAUSE 2000
 
-// Buffer limits — derivados da capacidade real: 10 bikes x 10 itens (F17)
-#define MAX_BIKES 10
-#define MAX_ITEMS_PER_BIKE 10
-#define MAX_TOTAL_ITEMS (MAX_BIKES * MAX_ITEMS_PER_BIKE)
-#define MAX_BUFFER_SIZE MAX_TOTAL_ITEMS // compat: capacidade total de itens
+// Buffer limits — R02: contrato único de capacidade.
+// A bike produz até MAX_SESSION_FRAGMENTS por sessão (50 scans densos podem
+// gerar ~5 chunks/scan + fragmento final); a central precisa acomodar a
+// sessão máxima legítima INTEIRA por bike para poder confirmá-la.
+// MAX_TOTAL_ITEMS limita o agregado pelo flash disponível (LittleFS 960 KB):
+// 800 itens × 536 B ≈ 429 KB de payload, com folga para backups.
+#define MAX_BIKES 10                     // cadastro operacional (≠ conexões BLE simultâneas)
+#define MAX_SESSION_FRAGMENTS 256        // pior caso: 50 scans × 5 chunks + final
+#define MAX_ITEMS_PER_BIKE MAX_SESSION_FRAGMENTS
+#define MAX_TOTAL_ITEMS 800
+#define MAX_BUFFER_SIZE MAX_TOTAL_ITEMS  // compat: capacidade total de itens
 #define MINIMAL_FREE_FS_SPACE 20480
 
 // Upload batching (F18/F19)

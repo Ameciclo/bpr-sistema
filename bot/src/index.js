@@ -148,7 +148,8 @@ bot.command('bikes', async (ctx) => {
     
     for (const station of stations) {
       message += `🏢 *${station.name}*\n`;
-      message += `🔄 Status: ${station.isOnline ? '✅ Online' : '❌ Offline'}\n`;
+      const onlineLabel = station.isOnline === null ? '❔ Sem evidência' : (station.isOnline ? '✅ Online' : '❌ Offline');
+      message += `🔄 Status: ${onlineLabel}\n`;
       message += `🚲 Bikes: ${station.availableBikes}/${station.maxBikes}\n`;
       
       if (station.bikes.length > 0) {
@@ -313,7 +314,8 @@ bot.command('estacao', async (ctx) => {
     }
     
     let message = `🏢 *${station.name}*\n\n`;
-    message += `🔄 Status: ${station.isOnline ? '✅ Online' : '❌ Offline'}\n`;
+    const onlineLabel = station.isOnline === null ? '❔ Sem evidência' : (station.isOnline ? '✅ Online' : '❌ Offline');
+    message += `🔄 Status: ${onlineLabel}\n`;
     message += `🚲 Bikes disponíveis: ${station.availableBikes}/${station.maxBikes}\n`;
     
     if (station.location) {
